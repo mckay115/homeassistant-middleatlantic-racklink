@@ -1,5 +1,5 @@
 {
-    "domain": "middleatlantic-racklink",
+    "domain": "middle_atlantic-racklink",
     "name": "Middle Atlantic Racklink Power Sequencer",
     "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
     "dependencies": [],
