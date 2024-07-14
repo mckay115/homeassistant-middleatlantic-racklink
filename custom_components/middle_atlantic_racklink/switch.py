@@ -24,15 +24,14 @@ class RacklinkOutlet(SwitchEntity):
         return self._state
 
     async def async_turn_on(self, **kwargs):
-        await self._controller.set_outlet_state(self._outlet, 0x01)
+        await self._controller.set_outlet_state(self._outlet, True)
         self._state = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
-        await self._controller.set_outlet_state(self._outlet, 0x00)
+        await self._controller.set_outlet_state(self._outlet, False)
         self._state = False
         self.async_write_ha_state()
 
     async def async_update(self):
-        await self._controller.get_outlet_state(self._outlet)
-        self._state = self._controller.outlet_states.get(self._outlet)
+        self._state = await self._controller.get_outlet_state(self._outlet)

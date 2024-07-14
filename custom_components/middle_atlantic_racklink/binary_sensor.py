@@ -23,5 +23,4 @@ class RacklinkSurgeProtection(BinarySensorEntity):
         return "safety"
 
     async def async_update(self):
-        await self._controller.get_sensor_value(0x59)
-        self._state = self._controller.sensors.get("surge_protection") == 0x01
+        self._state = await self._controller.get_sensor_value(0x59)

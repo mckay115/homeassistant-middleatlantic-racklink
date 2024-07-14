@@ -15,11 +15,12 @@ class RacklinkController:
         self.writer = None
         self.outlet_states = {}
         self.sensors = {}
+        self._lock = asyncio.Lock()
 
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
         await self.login()
-        asyncio.create_task(self.listen_for_updates())
+        self.hass.loop.create_task(self.listen_for_updates())
 
     async def disconnect(self):
         if self.writer:
@@ -27,23 +28,23 @@ class RacklinkController:
             await self.writer.wait_closed()
 
     async def login(self):
-        login_msg = self.create_message(0x02, 0x01, f"{self.username}|{self.password}".encode())
-        await self.send_message(login_msg)
-        response = await self.read_message()
-        # Handle login response
+        login_msg = self._create_message(0x02, 0x01, f"{self.username}|{self.password}".encode())
+        response = await self._send_and_receive(login_msg)
+        if response[2] != 0x01:
+            raise ValueError("Login failed")
 
-    async def send_message(self, message):
-        self.writer.write(message)
-        await self.writer.drain()
+    async def _send_and_receive(self, message):
+        async with self._lock:
+            self.writer.write(message)
+            await self.writer.drain()
+            return await self._read_message()
 
-    async def read_message(self):
+    async def _read_message(self):
         header = await self.reader.readexactly(1)
         if header != b'\xfe':
             raise ValueError("Invalid header")
         
-        length = await self.reader.readexactly(1)
-        length = struct.unpack('B', length)[0]
-        
+        length = struct.unpack('B', await self.reader.readexactly(1))[0]
         data = await self.reader.readexactly(length)
         
         checksum = await self.reader.readexactly(1)
@@ -54,7 +55,7 @@ class RacklinkController:
         
         return data
 
-    def create_message(self, command, subcommand, data=b''):
+    def _create_message(self, command, subcommand, data=b''):
         message = struct.pack('BBB', 0xfe, len(data) + 3, 0x00)
         message += struct.pack('BB', command, subcommand)
         message += data
@@ -63,29 +64,55 @@ class RacklinkController:
         return message
 
     async def get_outlet_state(self, outlet):
-        message = self.create_message(0x20, 0x02, struct.pack('B', outlet))
-        await self.send_message(message)
-        response = await self.read_message()
-        # Parse response and update outlet_states
+        message = self._create_message(0x20, 0x02, struct.pack('B', outlet))
+        response = await self._send_and_receive(message)
+        state = response[3]
+        self.outlet_states[outlet] = state == 0x01
+        return self.outlet_states[outlet]
 
     async def set_outlet_state(self, outlet, state):
-        message = self.create_message(0x20, 0x01, struct.pack('BB', outlet, state))
-        await self.send_message(message)
-        response = await self.read_message()
-        # Parse response and update outlet_states
+        message = self._create_message(0x20, 0x01, struct.pack('BB', outlet, 0x01 if state else 0x00))
+        response = await self._send_and_receive(message)
+        self.outlet_states[outlet] = state
+        return state
 
     async def get_sensor_value(self, sensor_type):
-        message = self.create_message(sensor_type, 0x02)
-        await self.send_message(message)
-        response = await self.read_message()
-        # Parse response and update sensors
+        message = self._create_message(sensor_type, 0x02)
+        response = await self._send_and_receive(message)
+        value = self._parse_sensor_value(sensor_type, response[3:])
+        self.sensors[sensor_type] = value
+        return value
+
+    def _parse_sensor_value(self, sensor_type, data):
+        if sensor_type in [0x51, 0x52, 0x55]:  # Voltage, Temperature
+            return int(data.decode())
+        elif sensor_type in [0x53, 0x54, 0x57]:  # Current, Power Factor
+            return float(data.decode())
+        elif sensor_type == 0x56:  # Wattage
+            return int(data.decode())
+        elif sensor_type == 0x59:  # Surge Protection
+            return data[0] == 0x01
+        else:
+            return data.decode()
 
     async def listen_for_updates(self):
         while True:
             try:
-                message = await self.read_message()
-                # Parse message and update relevant states
-                # Dispatch state change events
+                message = await self._read_message()
+                command = message[1]
+                subcommand = message[2]
+                
+                if command == 0x20 and subcommand == 0x12:  # Outlet status change
+                    outlet = message[3]
+                    state = message[4] == 0x01
+                    self.outlet_states[outlet] = state
+                    self.hass.bus.async_fire(f"{DOMAIN}_outlet_state_changed", {"outlet": outlet, "state": state})
+                
+                elif command in [0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59]:  # Sensor updates
+                    value = self._parse_sensor_value(command, message[3:])
+                    self.sensors[command] = value
+                    self.hass.bus.async_fire(f"{DOMAIN}_sensor_updated", {"sensor_type": command, "value": value})
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:

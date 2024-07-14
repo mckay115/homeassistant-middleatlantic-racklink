@@ -2,10 +2,10 @@ from homeassistant.helpers.entity import Entity
 from .const import DOMAIN
 
 SENSOR_TYPES = {
-    "voltage": {"command": 0x52, "name": "Voltage", "unit": "V"},
-    "current": {"command": 0x54, "name": "Current", "unit": "A"},
-    "power": {"command": 0x56, "name": "Power", "unit": "W"},
-    "temperature": {"command": 0x55, "name": "Temperature", "unit": "°F"},
+    0x52: {"name": "Voltage", "unit": "V"},
+    0x54: {"name": "Current", "unit": "A"},
+    0x56: {"name": "Power", "unit": "W"},
+    0x55: {"name": "Temperature", "unit": "°F"},
 }
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -19,7 +19,6 @@ class RacklinkSensor(Entity):
     def __init__(self, controller, sensor_type, sensor_info):
         self._controller = controller
         self._sensor_type = sensor_type
-        self._command = sensor_info["command"]
         self._name = sensor_info["name"]
         self._unit = sensor_info["unit"]
         self._state = None
@@ -37,5 +36,4 @@ class RacklinkSensor(Entity):
         return self._unit
 
     async def async_update(self):
-        await self._controller.get_sensor_value(self._command)
-        self._state = self._controller.sensors.get(self._sensor_type)
+        self._state = await self._controller.get_sensor_value(self._sensor_type)
