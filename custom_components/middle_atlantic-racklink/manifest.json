@@ -1,0 +1,10 @@
+{
+    "domain": "middleatlantic-racklink",
+    "name": "Middle Atlantic Racklink Power Sequencer",
+    "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
+    "dependencies": [],
+    "codeowners": ["@mckay115"],
+    "requirements": [],
+    "iot_class": "local_push",
+    "version": "0.1.0"
+  }

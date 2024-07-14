@@ -1,0 +1,6 @@
+{
+    "name": "RackLink Power Sequencer",
+    "render_readme": true,
+    "domains": ["switch", "sensor", "binary_sensor"],
+    "iot_class": "local_push"
+  }
