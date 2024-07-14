@@ -1,4 +1,4 @@
-DOMAIN = "racklink"
+DOMAIN = "middle_atlantic-racklink"
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_USERNAME = "username"
