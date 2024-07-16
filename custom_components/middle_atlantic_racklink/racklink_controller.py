@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import struct
+from typing import Dict, Any
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -13,14 +14,18 @@ class RacklinkController:
         self.password = password
         self.reader = None
         self.writer = None
-        self.outlet_states = {}
-        self.sensors = {}
+        self.outlet_states: Dict[int, bool] = {}
+        self.sensors: Dict[int, Any] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self):
-        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
-        await self.login()
-        self.hass.loop.create_task(self.listen_for_updates())
+        try:
+            self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+            await self.login()
+            self.hass.loop.create_task(self.listen_for_updates())
+        except Exception as e:
+            _LOGGER.error(f"Failed to connect: {e}")
+            raise
 
     async def disconnect(self):
         if self.writer:
@@ -66,13 +71,13 @@ class RacklinkController:
     async def get_outlet_state(self, outlet):
         message = self._create_message(0x20, 0x02, struct.pack('B', outlet))
         response = await self._send_and_receive(message)
-        state = response[3]
-        self.outlet_states[outlet] = state == 0x01
-        return self.outlet_states[outlet]
+        state = response[3] == 0x01
+        self.outlet_states[outlet] = state
+        return state
 
     async def set_outlet_state(self, outlet, state):
         message = self._create_message(0x20, 0x01, struct.pack('BB', outlet, 0x01 if state else 0x00))
-        response = await self._send_and_receive(message)
+        await self._send_and_receive(message)
         self.outlet_states[outlet] = state
         return state
 
@@ -95,6 +100,19 @@ class RacklinkController:
         else:
             return data.decode()
 
+    async def sequence_power_outlets(self, direction, delay):
+        message = self._create_message(0x36, 0x01, struct.pack('B', direction) + delay.encode())
+        await self._send_and_receive(message)
+
+    async def set_epo_state(self, state):
+        message = self._create_message(0x37, 0x01, struct.pack('B', 0x01 if state else 0x00))
+        await self._send_and_receive(message)
+
+    async def get_product_info(self, info_type):
+        message = self._create_message(info_type, 0x02)
+        response = await self._send_and_receive(message)
+        return response[3:].decode().strip()
+
     async def listen_for_updates(self):
         while True:
             try:
@@ -106,12 +124,12 @@ class RacklinkController:
                     outlet = message[3]
                     state = message[4] == 0x01
                     self.outlet_states[outlet] = state
-                    self.hass.bus.async_fire(f"{DOMAIN}_outlet_state_changed", {"outlet": outlet, "state": state})
+                    self.hass.bus.async_fire("racklink_outlet_state_changed", {"outlet": outlet, "state": state})
                 
                 elif command in [0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59]:  # Sensor updates
                     value = self._parse_sensor_value(command, message[3:])
                     self.sensors[command] = value
-                    self.hass.bus.async_fire(f"{DOMAIN}_sensor_updated", {"sensor_type": command, "value": value})
+                    self.hass.bus.async_fire("racklink_sensor_updated", {"sensor_type": command, "value": value})
                 
             except asyncio.CancelledError:
                 break
