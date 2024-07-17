@@ -1,26 +1,17 @@
-import asyncio
-import logging
+"""The Middle Atlantic Racklink integration."""
+from __future__ import annotations
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
 from homeassistant.const import Platform
-import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
+from homeassistant.core import HomeAssistant
+
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
 
-_LOGGER = logging.getLogger(__name__)
-
-PLATFORMS = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
-
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the RackLink component."""
-    hass.data[DOMAIN] = {}
-    return True
+PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up RackLink from a config entry."""
+    """Set up Middle Atlantic Racklink from a config entry."""
     controller = RacklinkController(
         hass,
         entry.data["host"],
@@ -31,7 +22,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await controller.connect()
 
-    hass.data[DOMAIN][entry.entry_id] = controller
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = controller
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -39,9 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    if unload_ok:
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         controller = hass.data[DOMAIN].pop(entry.entry_id)
         await controller.disconnect()
 
