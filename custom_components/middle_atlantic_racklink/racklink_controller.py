@@ -1,8 +1,8 @@
-"""Controller for Middle Atlantic Racklink devices."""
 import asyncio
 import logging
 import struct
 from typing import Dict, Any
+from asyncio import TimeoutError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,13 +26,19 @@ class RacklinkController:
 
     async def connect(self):
         try:
-            self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port),
+                timeout=10
+            )
             await self.login()
             await self.get_initial_status()
             self.hass.loop.create_task(self.listen_for_updates())
-        except Exception as e:
+        except (OSError, TimeoutError, ValueError) as e:
             _LOGGER.error(f"Failed to connect: {e}")
-            raise
+            if self.writer:
+                self.writer.close()
+                await self.writer.wait_closed()
+            raise ValueError(f"Connection failed: {e}")
 
     async def disconnect(self):
         if self.writer:
@@ -41,9 +47,14 @@ class RacklinkController:
 
     async def login(self):
         login_msg = self._create_message(0x02, 0x01, f"{self.username}|{self.password}".encode())
-        response = await self._send_and_receive(login_msg)
-        if response[2] != 0x01:
-            raise ValueError("Login failed")
+        try:
+            response = await asyncio.wait_for(self._send_and_receive(login_msg), timeout=10)
+            if response[2] != 0x01:
+                raise ValueError("Login failed: Invalid credentials")
+        except TimeoutError:
+            raise ValueError("Login failed: Timeout")
+        except Exception as e:
+            raise ValueError(f"Login failed: {e}")
 
     async def get_initial_status(self):
         await self.get_pdu_details()
@@ -142,20 +153,27 @@ class RacklinkController:
             return await self._read_message()
 
     async def _read_message(self):
-        header = await self.reader.readexactly(1)
-        if header != b'\xfe':
-            raise ValueError("Invalid header")
-        
-        length = struct.unpack('B', await self.reader.readexactly(1))[0]
-        data = await self.reader.readexactly(length)
-        
-        checksum = await self.reader.readexactly(1)
-        tail = await self.reader.readexactly(1)
-        
-        if tail != b'\xff':
-            raise ValueError("Invalid tail")
-        
-        return data
+        try:
+            header = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
+            if header != b'\xfe':
+                raise ValueError(f"Invalid header: {header.hex()}")
+            
+            length_byte = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
+            length = struct.unpack('B', length_byte)[0]
+            
+            data = await asyncio.wait_for(self.reader.readexactly(length), timeout=5)
+            
+            checksum = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
+            tail = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
+            
+            if tail != b'\xff':
+                raise ValueError(f"Invalid tail: {tail.hex()}")
+            
+            return data
+        except TimeoutError:
+            raise ValueError("Timeout while reading message")
+        except Exception as e:
+            raise ValueError(f"Error reading message: {e}")
 
     async def listen_for_updates(self):
         while True:

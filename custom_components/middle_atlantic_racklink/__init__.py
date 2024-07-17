@@ -1,9 +1,7 @@
-"""The Middle Atlantic Racklink integration."""
-from __future__ import annotations
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
@@ -20,7 +18,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data["password"],
     )
 
-    await controller.connect()
+    try:
+        await controller.connect()
+    except ValueError as err:
+        raise ConfigEntryNotReady(f"Failed to connect: {err}") from err
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = controller
 
