@@ -1,0 +1,29 @@
+{
+    "_meta": {
+        "hash": {
+            "sha256": "61e521468e65ed6f75e55430a1c5c1a13ab8d0e974835e31ec0936288dbfbf0d"
+        },
+        "pipfile-spec": 6,
+        "requires": {
+            "python_version": "3.12"
+        },
+        "sources": [
+            {
+                "name": "pypi",
+                "url": "https://pypi.org/simple",
+                "verify_ssl": true
+            }
+        ]
+    },
+    "default": {
+        "telnetlib3": {
+            "hashes": [
+                "sha256:b3c0f984a7fb1b6ee16e6fdaa410c56389b0dc492174a99c6661b1ba4c9d457d",
+                "sha256:dbcbc16456a0e03a62431be7cfefff00515ab2f4ce2afbaf0d3a0e51a98c948d"
+            ],
+            "index": "pypi",
+            "version": "==2.0.4"
+        }
+    },
+    "develop": {}
+}
