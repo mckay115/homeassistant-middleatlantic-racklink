@@ -2,7 +2,7 @@
 
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Integration-blue)
 ![License](https://img.shields.io/github/license/mckay115/homeassistant-middleatlantic-racklink)
-![Version](https://img.shields.io/github/v/release/mckay115/homeassistant-middleatlantic-racklink)
+![Version](https://img.shields.io/github/v/release/mckay115/homeassistant-middleatlantic-racklink?include_prereleases)
 
 ## Overview
 
