@@ -1,4 +1,4 @@
-# Home Assistant Integration for Middle Atlantic RackLink API
+# Middle Atlantic RackLink API
 
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Integration-blue)
 ![License](https://img.shields.io/github/license/mckay115/homeassistant-middleatlantic-racklink)
