@@ -23,7 +23,7 @@ This custom integration enables Home Assistant to interface with Middle Atlantic
 2. Open HACS in Home Assistant.
 3. Go to the Integrations section.
 4. Click on the three dots in the top right corner and select "Custom repositories."
-5. Add the repository URL: `https://github.com/yourusername/repo` and select the category as "Integration."
+5. Add the repository URL: `https://github.com/mckay115/homeassistant-middleatlantic-racklink` and select the category as "Integration."
 6. Find the "Middle Atlantic RackLink API" integration in HACS and click "Install."
 7. Restart Home Assistant.
 
