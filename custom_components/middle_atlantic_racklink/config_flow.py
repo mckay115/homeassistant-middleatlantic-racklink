@@ -16,17 +16,25 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input=None) -> FlowResult:
         """Handle the initial step."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="user",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(CONF_HOST): str,
-                        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
-                        vol.Required(CONF_USERNAME): str,
-                        vol.Required(CONF_PASSWORD): str,
-                    }
-                ),
+        errors = {}
+        
+        if user_input is not None:
+            return self.async_create_entry(
+                title=user_input[CONF_HOST], 
+                data=user_input
             )
 
-        return self.async_create_entry(title=user_input[CONF_HOST], data=user_input)
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST, description={"suggested_value": "192.168.1.100"}): str,
+                vol.Required(CONF_PORT, default=DEFAULT_PORT, description={"suggested_value": DEFAULT_PORT}): int,
+                vol.Required(CONF_USERNAME, description={"suggested_value": "admin"}): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=data_schema,
+            errors=errors
+        )
