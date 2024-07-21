@@ -8,5 +8,6 @@
   "iot_class": "local_push",
   "requirements": [],
   "version": "0.1.4",
-  "zeroconf": ["_middleatlantic._tcp.local."]
+  "zeroconf": ["_middleatlantic._tcp.local."],
+  "icon": "custom_components/middle_atlantic_racklink/icon.png"
 }
