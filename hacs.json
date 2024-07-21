@@ -1,6 +1,11 @@
 {
-    "name": "RackLink Power Sequencer",
-    "render_readme": true,
-    "domains": ["switch", "sensor", "binary_sensor"],
-    "iot_class": "local_push"
-  }
+  "name": "RackLink Power Sequencer",
+  "render_readme": true,
+  "domains": ["switch", "sensor", "binary_sensor"],
+  "iot_class": "local_push",
+  "country": ["US"],
+  "homeassistant": "2021.12.0",
+  "integration_type": "device",
+  "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
+  "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues"
+}
