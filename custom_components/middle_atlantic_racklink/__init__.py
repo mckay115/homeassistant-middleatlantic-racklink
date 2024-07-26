@@ -11,11 +11,10 @@ PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_S
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Middle Atlantic Racklink from a config entry."""
     controller = RacklinkController(
-        hass,
         entry.data["host"],
         entry.data["port"],
         entry.data["username"],
-        entry.data["password"],
+        entry.data["password"]
     )
 
     try:
