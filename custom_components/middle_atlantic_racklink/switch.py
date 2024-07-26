@@ -54,7 +54,13 @@ class RacklinkOutlet(SwitchEntity):
         await self._controller.set_outlet_state(self._outlet, False)
         self._state = False
 
+    async def async_added_to_hass(self):
+        """Run when entity about to be added."""
+        await self.async_update()
+
     async def async_update(self):
+        """Fetch new state data for this outlet."""
+        await self._controller.get_all_outlet_states()
         self._state = self._controller.outlet_states.get(self._outlet, False)
         self._name = self._controller.outlet_names.get(self._outlet, f"Outlet {self._outlet}")
 
@@ -63,7 +69,11 @@ class RacklinkOutlet(SwitchEntity):
 
     @property
     def extra_state_attributes(self):
-        return {"can_cycle": True}
+        return {
+            "can_cycle": True,
+            "power": self._controller.outlet_power.get(self._outlet),
+            "current": self._controller.outlet_current.get(self._outlet)
+        }
 
 class RacklinkAllOn(SwitchEntity):
     def __init__(self, controller):
