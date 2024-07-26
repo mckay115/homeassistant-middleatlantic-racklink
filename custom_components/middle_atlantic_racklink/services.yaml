@@ -1,0 +1,7 @@
+cycle_all_outlets:
+  name: Cycle All Outlets
+  description: Cycles power for all outlets on the PDU.
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+      domain: switch
