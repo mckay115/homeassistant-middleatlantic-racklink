@@ -21,6 +21,8 @@ class RacklinkController:
         self.pdu_mac = ""
         self.outlet_states = {}
         self.outlet_names = {}
+        self.outlet_power = {}
+        self.outlet_current = {}
         self.sensors = {}
 
     async def connect(self):
@@ -81,12 +83,17 @@ class RacklinkController:
 
     async def get_all_outlet_states(self):
         response = await self.send_command("show outlets all details")
-        for match in re.finditer(r"Outlet (\d+):\r\n(.*?)Power state: (On|Off)", response, re.DOTALL):
+        pattern = r"Outlet (\d+):\r\n(.*?)Power state: (On|Off).*?RMS Current: (.+)A.*?Active Power: (.+)W"
+        for match in re.finditer(pattern, response, re.DOTALL):
             outlet = int(match.group(1))
             name = match.group(2).strip()
             state = match.group(3) == "On"
+            current = float(match.group(4))
+            power = float(match.group(5))
             self.outlet_states[outlet] = state
             self.outlet_names[outlet] = name
+            self.outlet_power[outlet] = power
+            self.outlet_current[outlet] = current
 
     async def set_outlet_state(self, outlet, state):
         cmd = f"power outlets {outlet} {'on' if state else 'off'} /y"
@@ -141,7 +148,6 @@ class RacklinkController:
 
     async def get_surge_protection_status(self):
         response = await self.send_command("show pdu details")
-        # Adjust the regex pattern based on the actual output
         match = re.search(r"Surge Protection: (\w+)", response)
         if match:
             return match.group(1) == "Active"
@@ -157,6 +163,8 @@ class RacklinkController:
             temp_match = re.search(r"Temperature: (.+)°C", response)
             if temp_match:
                 self.sensors["temperature"] = float(temp_match.group(1))
+            else:
+                self.sensors["temperature"] = None
         except AttributeError:
             _LOGGER.error("Failed to parse sensor values")
 
