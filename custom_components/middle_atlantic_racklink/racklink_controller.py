@@ -1,60 +1,63 @@
 import asyncio
+import telnetlib
+import re
 import logging
-import struct
-from typing import Dict, Any
-from asyncio import TimeoutError
 
 _LOGGER = logging.getLogger(__name__)
 
 class RacklinkController:
-    def __init__(self, hass, host, port, username, password):
-        self.hass = hass
+    def __init__(self, host, port, username, password):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
-        self.reader = None
-        self.writer = None
-        self.outlet_states: Dict[int, bool] = {}
-        self.outlet_names: Dict[int, str] = {}
-        self.sensors: Dict[int, Any] = {}
-        self._lock = asyncio.Lock()
+        self.telnet = None
+        self.response_cache = ""
+        self.last_cmd = ""
+        self.context = ""
         self.pdu_name = ""
         self.pdu_firmware = ""
         self.pdu_serial = ""
         self.pdu_mac = ""
+        self.outlet_states = {}
+        self.outlet_names = {}
+        self.sensors = {}
 
     async def connect(self):
         try:
-            self.reader, self.writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=10
-            )
+            self.telnet = telnetlib.Telnet(self.host, self.port, timeout=10)
             await self.login()
             await self.get_initial_status()
-            self.hass.loop.create_task(self.listen_for_updates())
-        except (OSError, TimeoutError, ValueError) as e:
-            _LOGGER.error(f"Failed to connect: {e}")
-            if self.writer:
-                self.writer.close()
-                await self.writer.wait_closed()
+        except Exception as e:
+            _LOGGER.error(f"Connection failed: {e}")
             raise ValueError(f"Connection failed: {e}")
 
-    async def disconnect(self):
-        if self.writer:
-            self.writer.close()
-            await self.writer.wait_closed()
+    async def reconnect(self):
+        _LOGGER.info("Attempting to reconnect...")
+        await self.disconnect()
+        await self.connect()
+
+    async def send_command(self, cmd):
+        try:
+            self.telnet.write(f"{cmd}\r\n".encode())
+            self.last_cmd = cmd
+            self.context = cmd.replace(" ", "")
+            response = self.telnet.read_until(b"#", timeout=5).decode()
+            self.response_cache = response
+            return response
+        except Exception as e:
+            _LOGGER.error(f"Error sending command: {e}")
+            await self.reconnect()
+            return await self.send_command(cmd)
 
     async def login(self):
-        login_msg = self._create_message(0x02, 0x01, f"{self.username}|{self.password}".encode())
-        try:
-            response = await asyncio.wait_for(self._send_and_receive(login_msg), timeout=10)
-            if response[2] != 0x01:
-                raise ValueError("Login failed: Invalid credentials")
-        except TimeoutError:
-            raise ValueError("Login failed: Timeout")
-        except Exception as e:
-            raise ValueError(f"Login failed: {e}")
+        self.telnet.read_until(b"Username:")
+        self.telnet.write(f"{self.username}\r\n".encode())
+        self.telnet.read_until(b"Password:")
+        self.telnet.write(f"{self.password}\r\n".encode())
+        response = self.telnet.read_until(b"#", timeout=5)
+        if b"#" not in response:
+            raise ValueError("Login failed: Invalid credentials")
 
     async def get_initial_status(self):
         await self.get_pdu_details()
@@ -62,139 +65,106 @@ class RacklinkController:
         await self.get_sensor_values()
 
     async def get_pdu_details(self):
-        message = self._create_message(0x90, 0x02)
-        response = await self._send_and_receive(message)
-        self.pdu_name = response[3:].decode().strip()
+        response = await self.send_command("show pdu details")
+        try:
+            self.pdu_name = re.search(r"'(.+)'", response).group(1)
+            self.pdu_firmware = re.search(r"Firmware Version: (.+)", response).group(1).strip()
+            self.pdu_serial = re.search(r"Serial Number: (.+)", response).group(1).strip()
+        except AttributeError:
+            _LOGGER.error("Failed to parse PDU details")
 
-        message = self._create_message(0x91, 0x02)
-        response = await self._send_and_receive(message)
-        self.pdu_firmware = response[3:].decode().strip()
-
-        message = self._create_message(0x95, 0x02)
-        response = await self._send_and_receive(message)
-        self.pdu_mac = response[3:].decode().strip()
+        response = await self.send_command("show network interface eth1")
+        try:
+            self.pdu_mac = re.search(r"MAC address: (.+)", response).group(1).strip()
+        except AttributeError:
+            _LOGGER.error("Failed to parse MAC address")
 
     async def get_all_outlet_states(self):
-        for outlet in range(1, 17):
-            await self.get_outlet_state(outlet)
-
-    async def get_sensor_values(self):
-        for sensor_type in [0x52, 0x54, 0x56, 0x55, 0x59]:
-            await self.get_sensor_value(sensor_type)
-
-    async def get_outlet_state(self, outlet):
-        message = self._create_message(0x20, 0x02, struct.pack('B', outlet))
-        response = await self._send_and_receive(message)
-        state = response[3] == 0x01
-        self.outlet_states[outlet] = state
-        return state
+        response = await self.send_command("show outlets all details")
+        for match in re.finditer(r"Outlet (\d+):\r\n(.*?)Power state: (On|Off)", response, re.DOTALL):
+            outlet = int(match.group(1))
+            name = match.group(2).strip()
+            state = match.group(3) == "On"
+            self.outlet_states[outlet] = state
+            self.outlet_names[outlet] = name
 
     async def set_outlet_state(self, outlet, state):
-        message = self._create_message(0x20, 0x01, struct.pack('BB', outlet, 0x01 if state else 0x00))
-        await self._send_and_receive(message)
+        cmd = f"power outlets {outlet} {'on' if state else 'off'} /y"
+        await self.send_command(cmd)
         self.outlet_states[outlet] = state
-        return state
-
-    async def get_sensor_value(self, sensor_type):
-        message = self._create_message(sensor_type, 0x02)
-        response = await self._send_and_receive(message)
-        value = self._parse_sensor_value(sensor_type, response[3:])
-        self.sensors[sensor_type] = value
-        return value
-
-    def _parse_sensor_value(self, sensor_type, data):
-        if sensor_type in [0x51, 0x52, 0x55]:
-            return int(data.decode())
-        elif sensor_type in [0x53, 0x54, 0x57]:
-            return float(data.decode())
-        elif sensor_type == 0x56:
-            return int(data.decode())
-        elif sensor_type == 0x59:
-            return data[0] == 0x01
-        else:
-            return data.decode()
-
-    async def set_outlet_name(self, outlet, name):
-        message = self._create_message(0x21, 0x01, struct.pack('B', outlet) + name.encode())
-        await self._send_and_receive(message)
-        self.outlet_names[outlet] = name
-
-    async def get_outlet_name(self, outlet):
-        message = self._create_message(0x21, 0x02, struct.pack('B', outlet))
-        response = await self._send_and_receive(message)
-        name = response[3:].decode().strip()
-        self.outlet_names[outlet] = name
-        return name
 
     async def cycle_outlet(self, outlet):
-        message = self._create_message(0x20, 0x01, struct.pack('BB', outlet, 0x02))
-        await self._send_and_receive(message)
+        cmd = f"power outlets {outlet} cycle /y"
+        await self.send_command(cmd)
+
+    async def set_outlet_name(self, outlet, name):
+        cmd = f"config"
+        await self.send_command(cmd)
+        cmd = f"outlet {outlet} name \"{name}\""
+        await self.send_command(cmd)
+        cmd = f"apply"
+        await self.send_command(cmd)
+        self.outlet_names[outlet] = name
 
     async def set_all_outlets(self, state):
-        message = self._create_message(0x36, 0x01, struct.pack('B', 0x01 if state else 0x03))
-        await self._send_and_receive(message)
+        cmd = f"power outlets all {'on' if state else 'off'} /y"
+        await self.send_command(cmd)
+        for outlet in self.outlet_states:
+            self.outlet_states[outlet] = state
 
     async def cycle_all_outlets(self):
-        message = self._create_message(0x36, 0x01, struct.pack('B', 0x02))
-        await self._send_and_receive(message)
+        cmd = "power outlets all cycle /y"
+        await self.send_command(cmd)
 
-    def _create_message(self, command, subcommand, data=b''):
-        message = struct.pack('BBB', 0xfe, len(data) + 3, 0x00)
-        message += struct.pack('BB', command, subcommand)
-        message += data
-        checksum = sum(message[1:]) & 0x7f
-        message += struct.pack('BB', checksum, 0xff)
-        return message
+    async def set_pdu_name(self, name):
+        cmd = f"config"
+        await self.send_command(cmd)
+        cmd = f"pdu name \"{name}\""
+        await self.send_command(cmd)
+        cmd = f"apply"
+        await self.send_command(cmd)
+        self.pdu_name = name
 
-    async def _send_and_receive(self, message):
-        async with self._lock:
-            self.writer.write(message)
-            await self.writer.drain()
-            return await self._read_message()
+    async def disconnect(self):
+        if self.telnet:
+            self.telnet.close()
 
-    async def _read_message(self):
-        try:
-            header = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
-            if header != b'\xfe':
-                raise ValueError(f"Invalid header: {header.hex()}")
-            
-            length_byte = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
-            length = struct.unpack('B', length_byte)[0]
-            
-            data = await asyncio.wait_for(self.reader.readexactly(length), timeout=5)
-            
-            checksum = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
-            tail = await asyncio.wait_for(self.reader.readexactly(1), timeout=5)
-            
-            if tail != b'\xff':
-                raise ValueError(f"Invalid tail: {tail.hex()}")
-            
-            return data
-        except TimeoutError:
-            raise ValueError("Timeout while reading message")
-        except Exception as e:
-            raise ValueError(f"Error reading message: {e}")
-
-    async def listen_for_updates(self):
+    async def periodic_update(self):
         while True:
             try:
-                message = await self._read_message()
-                command = message[1]
-                subcommand = message[2]
-                
-                if command == 0x20 and subcommand == 0x12:
-                    outlet = message[3]
-                    state = message[4] == 0x01
-                    self.outlet_states[outlet] = state
-                    self.hass.bus.async_fire("racklink_outlet_state_changed", {"outlet": outlet, "state": state})
-                
-                elif command in [0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59]:
-                    value = self._parse_sensor_value(command, message[3:])
-                    self.sensors[command] = value
-                    self.hass.bus.async_fire("racklink_sensor_updated", {"sensor_type": command, "value": value})
-                
-            except asyncio.CancelledError:
-                break
+                await self.get_all_outlet_states()
+                await self.get_sensor_values()
             except Exception as e:
-                _LOGGER.error(f"Error reading message: {e}")
-                await asyncio.sleep(5)
+                _LOGGER.error(f"Error during periodic update: {e}")
+                await self.reconnect()
+            await asyncio.sleep(60)  # Update every 60 seconds
+
+    async def get_surge_protection_status(self):
+        response = await self.send_command("show pdu details")
+        # Adjust the regex pattern based on the actual output
+        match = re.search(r"Surge Protection: (\w+)", response)
+        if match:
+            return match.group(1) == "Active"
+        return None
+    
+    async def get_sensor_values(self):
+        response = await self.send_command("show inlets all details")
+        try:
+            self.sensors["voltage"] = float(re.search(r"RMS Voltage: (.+)V", response).group(1))
+            self.sensors["current"] = float(re.search(r"RMS Current: (.+)A", response).group(1))
+            self.sensors["power"] = float(re.search(r"Active Power: (.+)W", response).group(1))
+            
+            temp_match = re.search(r"Temperature: (.+)°C", response)
+            if temp_match:
+                self.sensors["temperature"] = float(temp_match.group(1))
+        except AttributeError:
+            _LOGGER.error("Failed to parse sensor values")
+
+    async def get_all_outlet_statuses(self):
+        response = await self.send_command("show outlets all")
+        statuses = {}
+        for match in re.finditer(r"Outlet (\d+).*?Power State: (\w+)", response, re.DOTALL):
+            outlet = int(match.group(1))
+            state = match.group(2) == "On"
+            statuses[outlet] = state
+        return statuses

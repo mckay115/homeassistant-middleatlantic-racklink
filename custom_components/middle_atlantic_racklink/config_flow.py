@@ -8,21 +8,36 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.data_entry_flow import FlowResult
 
 from .const import DEFAULT_PORT, DOMAIN
+from .racklink_controller import RacklinkController
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Middle Atlantic Racklink."""
 
     VERSION = 1
 
+    async def validate_input(self, user_input):
+        controller = RacklinkController(
+            user_input[CONF_HOST],
+            user_input[CONF_PORT],
+            user_input[CONF_USERNAME],
+            user_input[CONF_PASSWORD],
+        )
+        try:
+            await controller.connect()
+            await controller.disconnect()
+        except ValueError as err:
+            raise ValueError(f"Could not connect to the device: {err}")
+
     async def async_step_user(self, user_input=None) -> FlowResult:
         """Handle the initial step."""
         errors = {}
         
         if user_input is not None:
-            return self.async_create_entry(
-                title=user_input[CONF_HOST], 
-                data=user_input
-            )
+            try:
+                await self.validate_input(user_input)
+                return self.async_create_entry(title=user_input[CONF_HOST], data=user_input)
+            except ValueError as err:
+                errors["base"] = "cannot_connect"
 
         data_schema = vol.Schema(
             {

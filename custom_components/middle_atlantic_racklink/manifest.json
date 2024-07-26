@@ -7,6 +7,6 @@
   "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
   "iot_class": "local_push",
   "requirements": [],
-  "version": "0.1.5",
+  "version": "0.1.6",
   "zeroconf": ["_middleatlantic._tcp.local."]
 }

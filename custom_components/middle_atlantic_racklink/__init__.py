@@ -27,6 +27,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    hass.loop.create_task(controller.periodic_update())
+
+    def cycle_all_outlets(call):
+        hass.async_create_task(controller.cycle_all_outlets())
+
+    hass.services.async_register(DOMAIN, "cycle_all_outlets", cycle_all_outlets)
+
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
