@@ -1,12 +1,13 @@
 from homeassistant.helpers.entity import Entity
+from .const import DOMAIN
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     controller = hass.data[DOMAIN][config_entry.entry_id]
     sensors = [
-        RacklinkVoltage(controller, "voltage"),
-        RacklinkCurrent(controller, "current"),
-        RacklinkPower(controller, "power"),
-        RacklinkTemperature(controller, "temperature")
+        RacklinkVoltage(controller),
+        RacklinkCurrent(controller),
+        RacklinkPower(controller),
+        RacklinkTemperature(controller)
     ]
     async_add_entities(sensors)
 
@@ -17,6 +18,18 @@ class RacklinkSensor(Entity):
         self._unit = unit
         self._state = None
         self._sensor_type = sensor_type
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def unit_of_measurement(self):
+        return self._unit
 
     @property
     def unique_id(self):
