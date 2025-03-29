@@ -2,9 +2,9 @@ name: Code Quality
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   schedule:
     - cron: "0 0 * * *"
 
@@ -26,10 +26,10 @@ jobs:
           black --check custom_components/middle_atlantic_racklink
       - name: Run isort
         run: |
-          isort --check-only custom_components/middle_atlantic_racklink
+          isort --check-only --profile=black custom_components/middle_atlantic_racklink
       - name: Run pylint
         run: |
           pylint custom_components/middle_atlantic_racklink
       - name: Run mypy
         run: |
-          mypy custom_components/middle_atlantic_racklink 
+          mypy custom_components/middle_atlantic_racklink
