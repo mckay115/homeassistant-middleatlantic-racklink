@@ -2,7 +2,9 @@ name: Validate with hassfest
 
 on:
   push:
+    branches: [ main, master ]
   pull_request:
+    branches: [ main, master ]
   schedule:
     - cron: "0 0 * * *"
 
@@ -10,5 +12,17 @@ jobs:
   validate:
     runs-on: "ubuntu-latest"
     steps:
-      - uses: "actions/checkout@v2"
+      - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
+      - name: Validate manifest
+        run: |
+          hassfest
+      - name: Validate translations
+        run: |
+          hassfest --validate-translations
+      - name: Validate services
+        run: |
+          hassfest --validate-services
+      - name: Validate config flow
+        run: |
+          hassfest --validate-config-flow
