@@ -1,39 +1,14 @@
 {
   "domain": "middle_atlantic_racklink",
   "name": "Middle Atlantic Racklink Power Sequencer",
-  "bluetooth": [
-    {
-      "service_uuid": "0000180f-0000-1000-8000-00805f9b34fb"
-    }
-  ],
   "codeowners": ["@mckay115"],
   "config_flow": true,
   "dependencies": ["telnetlib3"],
-  "dhcp": [
-    {
-      "hostname": "racklink-*",
-      "macaddress": "00*"
-    }
-  ],
   "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
-  "homekit": {
-    "models": ["RLNK-P415", "RLNK-P420", "RLNK-P915R", "RLNK-P915R-SP", "RLNK-P920R", "RLNK-P920R-SP"]
-  },
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
   "quality_scale": "platinum",
   "requirements": ["telnetlib3>=1.0.4"],
-  "ssdp": [
-    {
-      "st": "urn:schemas-upnp-org:device:PowerSequencer:1"
-    }
-  ],
-  "version": "0.2.2",
-  "zeroconf": [
-    {
-      "type": "_middleatlantic._tcp.local.",
-      "name": "racklink-*"
-    }
-  ]
+  "version": "0.2.2"
 }
