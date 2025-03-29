@@ -25,7 +25,9 @@ jobs:
           pip install telnetlib3>=1.0.4
       - name: Run tests
         run: |
-          pytest --cov=custom_components/middle_atlantic_racklink tests/ --cov-report=xml
+          python -m pytest --cov=custom_components/middle_atlantic_racklink tests/ --cov-report=xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}
       - name: Upload coverage
         uses: codecov/codecov-action@v3
         with:

@@ -1,11 +1,20 @@
 """Configuration for pytest."""
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
-from custom_components.middle_atlantic_racklink import DOMAIN
+# Add the repository root to the Python path if needed
+ROOT_DIR = Path(__file__).parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from custom_components.middle_atlantic_racklink.const import DOMAIN
 
 
 @pytest.fixture
