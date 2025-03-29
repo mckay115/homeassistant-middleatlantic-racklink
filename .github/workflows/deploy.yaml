@@ -6,6 +6,12 @@ on:
   # Allow manual trigger from the GitHub Actions tab
   workflow_dispatch:
 
+# Add explicit permissions for the GITHUB_TOKEN
+permissions:
+  contents: write # This allows creating releases and tags
+  packages: read
+  actions: read
+
 jobs:
   deploy:
     runs-on: "ubuntu-latest"
@@ -104,8 +110,6 @@ jobs:
           files: dist/middle_atlantic_racklink.zip
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update HACS version
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
