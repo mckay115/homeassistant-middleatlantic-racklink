@@ -1,3 +1,5 @@
+"""Switch platform for Middle Atlantic Racklink."""
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import ServiceCall
 
