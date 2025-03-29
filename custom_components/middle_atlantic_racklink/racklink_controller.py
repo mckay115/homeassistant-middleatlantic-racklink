@@ -25,11 +25,11 @@ class RacklinkController:
         self.response_cache = ""
         self.last_cmd = ""
         self.context = ""
-        self.pdu_name = ""
+        self.pdu_name = f"Racklink PDU ({host})"  # Default name until we get real one
         self.pdu_firmware = ""
-        self.pdu_serial = ""
+        self.pdu_serial = f"{host}_{port}"  # Default identifier until we get real one
         self.pdu_mac = ""
-        self.pdu_model = ""
+        self.pdu_model = "Racklink PDU"  # Default model until we get real one
         self.outlet_states: Dict[int, bool] = {}
         self.outlet_names: Dict[int, str] = {}
         self.outlet_power: Dict[int, float] = {}
@@ -53,7 +53,8 @@ class RacklinkController:
     @property
     def connected(self) -> bool:
         """Return if we are connected to the device."""
-        return self._connected
+        # Only consider truly connected if we have a telnet object and _connected flag
+        return self._connected and self.telnet is not None
 
     @property
     def available(self) -> bool:
@@ -112,6 +113,128 @@ class RacklinkController:
             self._connected = False
             raise ConnectionError("Connection closed while writing data") from exc
 
+    async def start_background_connection(self) -> None:
+        """Start background connection task that won't block Home Assistant startup."""
+        if self._connection_task is not None and not self._connection_task.done():
+            _LOGGER.debug("Background connection task already running")
+            return
+
+        _LOGGER.debug("Starting background connection for %s", self.host)
+        self._connection_task = asyncio.create_task(self._background_connect())
+
+    async def _background_connect(self) -> None:
+        """Connect in background to avoid blocking Home Assistant."""
+        try:
+            # Attempt connection with a timeout but don't load initial status
+            # This will be handled separately to prevent blocking
+            await asyncio.wait_for(
+                self._connect_only(), timeout=self._telnet_timeout * 2
+            )
+
+            # Once connected, start loading data in separate tasks
+            if self._connected:
+                asyncio.create_task(self._load_initial_data())
+
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Background connection to %s timed out, will retry on first update",
+                self.host,
+            )
+        except Exception as err:
+            _LOGGER.error("Error in background connection to %s: %s", self.host, err)
+
+    async def _connect_only(self) -> None:
+        """Connect to the device but skip loading initial status."""
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not connecting to %s", self.host)
+            return
+
+        async with self._connection_lock:
+            if self._connected:
+                _LOGGER.debug("Already connected to %s, skipping connection", self.host)
+                return
+
+            _LOGGER.info(
+                "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
+            )
+            try:
+                # Create telnet connection with timeout
+                self.telnet = await asyncio.wait_for(
+                    self._create_telnet_connection(), timeout=self._telnet_timeout
+                )
+
+                if not self.telnet:
+                    raise ConnectionError(
+                        f"Failed to connect to {self.host}:{self.port}"
+                    )
+
+                await self.login()
+                self._connected = True
+                self._available = True
+                self._last_error = None
+                self._last_error_time = None
+                self._reconnect_attempts = 0
+                _LOGGER.info(
+                    "Successfully connected to Middle Atlantic Racklink at %s (basic connection)",
+                    self.host,
+                )
+            except (asyncio.TimeoutError, ConnectionError) as e:
+                if self.telnet:
+                    await asyncio.to_thread(self.telnet.close)
+                    self.telnet = None
+                self._connected = False
+                self._handle_error(f"Connection failed: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
+            except Exception as e:
+                if self.telnet:
+                    await asyncio.to_thread(self.telnet.close)
+                    self.telnet = None
+                self._connected = False
+                self._handle_error(f"Unexpected error during connection: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
+
+    async def _load_initial_data(self) -> None:
+        """Load initial data in a separate non-blocking task."""
+        if not self._connected:
+            _LOGGER.warning("Cannot load initial data, not connected")
+            return
+
+        _LOGGER.debug("Starting to load initial device data for %s", self.host)
+
+        # Create a sequence of tasks but don't wait for their completion
+        try:
+            # Phase 1: Get PDU details (needed for basic operation)
+            _LOGGER.debug("Loading PDU details for %s", self.host)
+            await asyncio.wait_for(self.get_pdu_details(), timeout=self._telnet_timeout)
+
+            # Phase 2: Get outlet states (after a short delay)
+            await asyncio.sleep(0.5)  # Small delay to not overload the device
+            if not self._connected:
+                return
+
+            _LOGGER.debug("Loading outlet states for %s", self.host)
+            await asyncio.wait_for(
+                self.get_all_outlet_states(), timeout=self._telnet_timeout
+            )
+
+            # Phase 3: Get sensor values (after another delay)
+            await asyncio.sleep(0.5)  # Small delay to not overload the device
+            if not self._connected:
+                return
+
+            _LOGGER.debug("Loading sensor values for %s", self.host)
+            await asyncio.wait_for(
+                self.get_sensor_values(), timeout=self._telnet_timeout
+            )
+
+            self._last_update = asyncio.get_event_loop().time()
+            _LOGGER.info("Successfully loaded all initial data for %s", self.host)
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("Timeout loading initial data for %s", self.host)
+        except Exception as err:
+            _LOGGER.error("Error loading initial data for %s: %s", self.host, err)
+
     async def connect(self) -> None:
         """Connect to the RackLink device."""
         # Don't connect if shutdown was requested
@@ -139,7 +262,8 @@ class RacklinkController:
                     )
 
                 await self.login()
-                await self.get_initial_status()
+                # Use the separate initial status loading method
+                asyncio.create_task(self._load_initial_data())
                 self._connected = True
                 self._available = True
                 self._last_error = None
@@ -276,27 +400,6 @@ class RacklinkController:
             self._handle_error(f"Login failed: {e}")
             raise ValueError(f"Login failed: {e}") from e
 
-    async def start_background_connection(self) -> None:
-        """Start background connection task that won't block Home Assistant startup."""
-        if self._connection_task is not None and not self._connection_task.done():
-            _LOGGER.debug("Background connection task already running")
-            return
-
-        _LOGGER.debug("Starting background connection for %s", self.host)
-        self._connection_task = asyncio.create_task(self._background_connect())
-
-    async def _background_connect(self) -> None:
-        """Connect in background to avoid blocking Home Assistant."""
-        try:
-            await asyncio.wait_for(self.connect(), timeout=self._telnet_timeout * 2)
-        except asyncio.TimeoutError:
-            _LOGGER.error(
-                "Background connection to %s timed out, will retry on first update",
-                self.host,
-            )
-        except Exception as err:
-            _LOGGER.error("Error in background connection to %s: %s", self.host, err)
-
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         async with self._connection_lock:
@@ -327,9 +430,8 @@ class RacklinkController:
 
     async def get_initial_status(self):
         """Get initial device status."""
-        await self.get_pdu_details()
-        await self.get_all_outlet_states()
-        await self.get_sensor_values()
+        # This method is kept for backwards compatibility but now uses the non-blocking approach
+        asyncio.create_task(self._load_initial_data())
         self._last_update = asyncio.get_event_loop().time()
 
     async def get_pdu_details(self):
