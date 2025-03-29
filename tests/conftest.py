@@ -1,6 +1,7 @@
-"""Common test fixtures."""
+"""Configuration for pytest."""
 
 import pytest
+
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
@@ -8,12 +9,23 @@ from custom_components.middle_atlantic_racklink import DOMAIN
 
 
 @pytest.fixture
-async def hass() -> HomeAssistant:
-    """Create a Home Assistant instance."""
+def hass():
+    """Return a Home Assistant instance for testing."""
     hass = HomeAssistant()
-    await hass.async_start()
-    yield hass
-    await hass.async_stop()
+    hass.config.components.add("http")
+    return hass
+
+
+@pytest.fixture
+def mock_now():
+    """Return a fixed datetime."""
+    return "2023-01-01T12:00:00Z"
+
+
+@pytest.fixture
+def enable_custom_integrations(hass):
+    """Enable custom integrations in Home Assistant."""
+    hass.data.pop("custom_components", None)
 
 
 @pytest.fixture

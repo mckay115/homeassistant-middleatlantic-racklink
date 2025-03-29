@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   schedule:
     - cron: "0 0 * * *"
 
@@ -21,11 +21,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio pytest-cov
+          pip install homeassistant
+          pip install telnetlib3>=1.0.4
       - name: Run tests
         run: |
-          pytest --cov=custom_components/middle_atlantic_racklink tests/
+          pytest --cov=custom_components/middle_atlantic_racklink tests/ --cov-report=xml
       - name: Upload coverage
         uses: codecov/codecov-action@v3
         with:
           file: ./coverage.xml
-          fail_ci_if_error: true 
+          fail_ci_if_error: true
