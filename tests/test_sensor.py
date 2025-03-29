@@ -4,12 +4,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import (
-    UnitOfElectricCurrent,
-    UnitOfPower,
-    UnitOfTemperature,
-    UnitOfVoltage,
-)
 
 from custom_components.middle_atlantic_racklink.sensor import (
     RacklinkCurrent,
@@ -48,7 +42,7 @@ async def test_current_sensor(controller):
     assert sensor.native_value == 10.5
     assert sensor.device_class == SensorDeviceClass.CURRENT
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == UnitOfElectricCurrent.AMPERE
+    assert sensor.native_unit_of_measurement == "A"
 
 
 @pytest.mark.asyncio
@@ -90,7 +84,7 @@ async def test_power_sensor(controller):
     assert sensor.native_value == 1200.0
     assert sensor.device_class == SensorDeviceClass.POWER
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == UnitOfPower.WATT
+    assert sensor.native_unit_of_measurement == "W"
 
 
 @pytest.mark.asyncio
@@ -104,7 +98,7 @@ async def test_temperature_sensor(controller):
     assert sensor.native_value == 25.5
     assert sensor.device_class == SensorDeviceClass.TEMPERATURE
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == UnitOfTemperature.CELSIUS
+    assert sensor.native_unit_of_measurement == "°C"
 
 
 @pytest.mark.asyncio
@@ -118,7 +112,7 @@ async def test_voltage_sensor(controller):
     assert sensor.native_value == 120.0
     assert sensor.device_class == SensorDeviceClass.VOLTAGE
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == UnitOfVoltage.VOLT
+    assert sensor.native_unit_of_measurement == "V"
 
 
 @pytest.mark.asyncio
