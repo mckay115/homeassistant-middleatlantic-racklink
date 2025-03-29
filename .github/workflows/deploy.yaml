@@ -1,0 +1,64 @@
+name: Deploy to Test Environment
+
+on:
+  push:
+    branches: [main, master]
+  # Allow manual trigger from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zip the integration
+        run: |
+          mkdir -p dist
+          cd custom_components
+          zip -r ../dist/middle_atlantic_racklink.zip middle_atlantic_racklink
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: middle-atlantic-racklink
+          path: dist/middle_atlantic_racklink.zip
+          retention-days: 7
+
+      # The following step is an example of how you might deploy to your Home Assistant test instance
+      # You would need to customize this for your specific deployment method
+      # This example assumes you have an SSH key stored as a GitHub secret
+      # and you're deploying to a Home Assistant instance via SSH
+      - name: Deploy to HA test instance
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HA_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.HA_SSH_HOST }}
+          SSH_USER: ${{ secrets.HA_SSH_USER }}
+          SSH_PORT: ${{ secrets.HA_SSH_PORT || '22' }}
+          REMOTE_DIR: ${{ secrets.HA_CUSTOM_COMPONENTS_DIR || '/config/custom_components' }}
+        run: |
+          # Only run if SSH key is provided
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            # Set up SSH
+            mkdir -p ~/.ssh
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -p $SSH_PORT $SSH_HOST >> ~/.ssh/known_hosts
+            
+            # Deploy the integration
+            scp -P $SSH_PORT dist/middle_atlantic_racklink.zip $SSH_USER@$SSH_HOST:/tmp/
+            ssh -p $SSH_PORT $SSH_USER@$SSH_HOST "mkdir -p $REMOTE_DIR && \
+              cd $REMOTE_DIR && \
+              rm -rf middle_atlantic_racklink && \
+              unzip -o /tmp/middle_atlantic_racklink.zip && \
+              rm /tmp/middle_atlantic_racklink.zip"
+            
+            # Restart Home Assistant (optional)
+            ssh -p $SSH_PORT $SSH_USER@$SSH_HOST "ha core restart || echo 'Could not restart Home Assistant automatically'"
+            
+            echo "Deployment completed successfully!"
+          else
+            echo "SSH key not provided. Skipping deployment."
+            echo "To deploy, set up SSH secrets in your GitHub repository."
+          fi

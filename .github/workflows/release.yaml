@@ -3,7 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+  # Allow manual release trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. v1.0.0)"
+        required: true
 
 jobs:
   release:
@@ -12,12 +18,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          fi
+
+      - name: Zip the integration for HACS
+        run: |
+          mkdir -p dist
+          cd custom_components
+          zip -r ../dist/middle_atlantic_racklink-${{ env.VERSION }}.zip middle_atlantic_racklink
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          name: Release ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
           generate_release_notes: true
           files: |
-            custom_components/middle_atlantic_racklink/*
+            dist/middle_atlantic_racklink-${{ env.VERSION }}.zip
             README.md
             LICENSE
         env:
@@ -25,4 +49,4 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.8.11
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }} 
+          password: ${{ secrets.PYPI_API_TOKEN }}

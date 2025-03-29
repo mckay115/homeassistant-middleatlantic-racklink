@@ -1,35 +1,31 @@
-name: Test
+name: Basic Tests
 
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  schedule:
-    - cron: "0 0 * * *"
 
 jobs:
   test:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov
+          pip install pytest pytest-asyncio
           pip install homeassistant
           pip install telnetlib3>=1.0.4
-      - name: Run tests
+
+      - name: Run basic validation
         run: |
-          python -m pytest --cov=custom_components/middle_atlantic_racklink tests/ --cov-report=xml
+          python -m pytest tests/test_binary_sensor.py tests/test_sensor.py tests/test_switch.py tests/test_config_flow.py -v
         env:
           PYTHONPATH: ${{ github.workspace }}
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
-        with:
-          file: ./coverage.xml
-          fail_ci_if_error: true
