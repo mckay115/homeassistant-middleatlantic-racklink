@@ -39,8 +39,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Start non-blocking connection task
     await controller.start_background_connection()
 
-    # Register platforms - they'll work with an unavailable device until connection completes
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Schedule platform setup as a background task to avoid blocking
+    # This allows Home Assistant web UI to load faster
+    async def setup_platforms():
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Launch platform setup in the background
+    hass.async_create_task(setup_platforms())
 
     async def async_update(now=None) -> None:
         """Update the controller data."""
