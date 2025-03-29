@@ -1,11 +1,14 @@
 """Binary sensor platform for Middle Atlantic Racklink."""
+
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from .const import DOMAIN
+
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the Middle Atlantic Racklink binary sensors."""
     controller = hass.data[DOMAIN][config_entry.entry_id]
     async_add_entities([RacklinkSurgeProtection(controller)])
+
 
 class RacklinkSurgeProtection(BinarySensorEntity):
     """Representation of a Racklink surge protection sensor."""
@@ -31,4 +34,5 @@ class RacklinkSurgeProtection(BinarySensorEntity):
         return "safety"
 
     async def async_update(self):
+        """Update the surge protection status."""
         self._state = await self._controller.get_surge_protection_status()
