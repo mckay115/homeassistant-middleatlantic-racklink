@@ -8,7 +8,8 @@
             "host": "IP Address or Hostname",
             "port": "Port (default: 23)",
             "username": "Username (usually 'admin')",
-            "password": "Password"
+            "password": "Password",
+            "model": "PDU Model (Select Auto-Detect if unsure)"
           }
         }
       },

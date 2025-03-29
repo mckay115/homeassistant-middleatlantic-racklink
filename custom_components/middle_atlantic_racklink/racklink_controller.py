@@ -7,7 +7,7 @@ import telnetlib
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from .const import COMMAND_TIMEOUT
+from .const import COMMAND_TIMEOUT, SUPPORTED_MODELS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -15,12 +15,20 @@ _LOGGER = logging.getLogger(__name__)
 class RacklinkController:
     """Controller for Middle Atlantic RackLink devices."""
 
-    def __init__(self, host: str, port: int, username: str, password: str):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        model: str = "AUTO_DETECT",
+    ):
         """Initialize the controller."""
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.specified_model = model  # Store the user-specified model
         self.telnet: Optional[telnetlib.Telnet] = None
         self.response_cache = ""
         self.last_cmd = ""
@@ -46,7 +54,7 @@ class RacklinkController:
         self._connection_lock = asyncio.Lock()
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 3
-        self._telnet_timeout = 10  # seconds
+        self._telnet_timeout = 5  # Shorter timeout for better responsiveness
         self._connection_task = None
         self._shutdown_requested = False
 
@@ -334,25 +342,51 @@ class RacklinkController:
             except asyncio.TimeoutError:
                 _LOGGER.error("Connection attempt timed out")
                 return ""
+            except Exception as err:
+                _LOGGER.error("Connection attempt failed: %s", err)
+                return ""
+
+            if not self.connected:
+                _LOGGER.error("Still not connected after connection attempt")
+                return ""
 
         try:
             _LOGGER.debug("Sending command: %s", cmd)
+            # Make sure to include CRLF - this is critical for telnet protocol
             await self._telnet_write(f"{cmd}\r\n".encode())
             self.last_cmd = cmd
             self.context = cmd.replace(" ", "")
 
+            # Read until prompt character
+            _LOGGER.debug("Waiting for response to command: %s", cmd)
             response = await asyncio.wait_for(
                 self._telnet_read_until(b"#", self._telnet_timeout),
                 timeout=self._telnet_timeout * 1.5,  # Add margin to outer timeout
             )
 
-            self.response_cache = response.decode()
-            return self.response_cache
+            if response:
+                # Decode and clean up the response
+                self.response_cache = response.decode("utf-8", errors="ignore")
+                _LOGGER.debug(
+                    "Response (first 100 chars): %s",
+                    self.response_cache[:100].replace("\r\n", " "),
+                )
+                return self.response_cache
+            else:
+                _LOGGER.warning("Empty response for command: %s", cmd)
+                return ""
+
         except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Command timed out after %s seconds: %s",
+                self._telnet_timeout * 1.5,
+                cmd,
+            )
             self._handle_error(f"Command timed out: {cmd}")
             # Don't attempt reconnect immediately on timeout, just return empty
             return ""
         except ConnectionError as e:
+            _LOGGER.error("Connection error while sending command: %s", e)
             self._handle_error(f"Connection error while sending command: {e}")
             await self.reconnect()
             # After reconnection, try sending the command again if we're connected
@@ -360,6 +394,7 @@ class RacklinkController:
                 return await self.send_command(cmd)
             return ""
         except Exception as e:
+            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
             self._handle_error(f"Error sending command: {e}")
             await self.reconnect()
             return ""
@@ -368,35 +403,47 @@ class RacklinkController:
         """Login to the device."""
         try:
             # Wait for username prompt with timeout
+            _LOGGER.debug("Waiting for Username prompt")
             response = await asyncio.wait_for(
                 self._telnet_read_until(b"Username:", self._telnet_timeout),
                 timeout=self._telnet_timeout * 1.5,
             )
+            _LOGGER.debug("Got Username prompt, sending username")
 
+            # Send username with CRLF
             await self._telnet_write(f"{self.username}\r\n".encode())
 
             # Wait for password prompt with timeout
+            _LOGGER.debug("Waiting for Password prompt")
             response = await asyncio.wait_for(
                 self._telnet_read_until(b"Password:", self._telnet_timeout),
                 timeout=self._telnet_timeout * 1.5,
             )
+            _LOGGER.debug("Got Password prompt, sending password")
 
+            # Send password with CRLF
             await self._telnet_write(f"{self.password}\r\n".encode())
 
             # Wait for command prompt with timeout
+            _LOGGER.debug("Waiting for command prompt")
             response = await asyncio.wait_for(
                 self._telnet_read_until(b"#", self._telnet_timeout),
                 timeout=self._telnet_timeout * 1.5,
             )
+            _LOGGER.debug("Got command prompt")
 
             if b"#" not in response:
+                _LOGGER.error("Did not get command prompt after login")
                 raise ValueError("Login failed: Invalid credentials")
 
         except asyncio.TimeoutError as exc:
+            _LOGGER.error("Login timed out - no response from device")
             raise ConnectionError("Login timed out") from exc
         except ConnectionError as e:
+            _LOGGER.error("Connection error during login: %s", e)
             raise ConnectionError(f"Login failed: {e}") from e
         except Exception as e:
+            _LOGGER.error("Unexpected error during login: %s", e)
             self._handle_error(f"Login failed: {e}")
             raise ValueError(f"Login failed: {e}") from e
 
@@ -436,43 +483,163 @@ class RacklinkController:
 
     async def get_pdu_details(self):
         """Get PDU details including name, firmware, and serial number."""
+        _LOGGER.debug("Getting PDU details")
         response = await self.send_command("show pdu details")
+        if not response:
+            _LOGGER.error("No response when getting PDU details")
+            return
+
+        _LOGGER.debug("PDU details response: %s", response[:200].replace("\r\n", " "))
+
         try:
-            self.pdu_name = re.search(r"'(.+)'", response).group(1)
-            self.pdu_firmware = (
-                re.search(r"Firmware Version: (.+)", response).group(1).strip()
-            )
-            self.pdu_serial = (
-                re.search(r"Serial Number: (.+)", response).group(1).strip()
-            )
-            self.pdu_model = re.search(r"Model: (.+)", response).group(1).strip()
+            # Try to extract data using regex patterns from the response
+            name_match = re.search(r"'(.+)'", response)
+            if name_match:
+                self.pdu_name = name_match.group(1)
+                _LOGGER.debug("Found PDU name: %s", self.pdu_name)
+
+            fw_match = re.search(r"Firmware Version: (.+)", response)
+            if fw_match:
+                self.pdu_firmware = fw_match.group(1).strip()
+                _LOGGER.debug("Found PDU firmware: %s", self.pdu_firmware)
+
+            sn_match = re.search(r"Serial Number: (.+)", response)
+            if sn_match:
+                self.pdu_serial = sn_match.group(1).strip()
+                _LOGGER.debug("Found PDU serial: %s", self.pdu_serial)
+
+            # Handle model detection or use specified model
+            model_match = re.search(r"Model: (.+)", response)
+            detected_model = ""
+            if model_match:
+                detected_model = model_match.group(1).strip()
+                _LOGGER.debug("Found PDU model: %s", detected_model)
+
+                # If auto-detect, use the detected model
+                if self.specified_model == "AUTO_DETECT":
+                    self.pdu_model = detected_model
+                else:
+                    # User specified a model, check if it matches detected model
+                    if self.specified_model in detected_model:
+                        # Model matches detected, use specific model for better handling
+                        self.pdu_model = self.specified_model
+                        _LOGGER.debug("Using specified model: %s", self.pdu_model)
+                    else:
+                        # Model doesn't match - log warning but use user's preference
+                        _LOGGER.warning(
+                            "Specified model %s doesn't match detected model %s. Using specified model.",
+                            self.specified_model,
+                            detected_model,
+                        )
+                        self.pdu_model = self.specified_model
+            else:
+                # No model detected, use specified model if not auto-detect
+                if self.specified_model != "AUTO_DETECT":
+                    self.pdu_model = self.specified_model
+                    _LOGGER.debug(
+                        "No model detected, using specified model: %s", self.pdu_model
+                    )
+                else:
+                    _LOGGER.warning("Could not detect model and no model specified")
+
         except AttributeError as e:
+            _LOGGER.error("Failed to parse PDU details: %s", e)
+            _LOGGER.debug("Response causing parse failure: %s", response[:200])
             self._handle_error(f"Failed to parse PDU details: {e}")
 
+        # Get MAC address
+        _LOGGER.debug("Getting network interface details")
         response = await self.send_command("show network interface eth1")
+        if not response:
+            _LOGGER.error("No response when getting network interface details")
+            return
+
+        _LOGGER.debug(
+            "Network interface response: %s", response[:200].replace("\r\n", " ")
+        )
+
         try:
-            self.pdu_mac = re.search(r"MAC address: (.+)", response).group(1).strip()
+            mac_match = re.search(r"MAC address: (.+)", response)
+            if mac_match:
+                self.pdu_mac = mac_match.group(1).strip()
+                _LOGGER.debug("Found PDU MAC: %s", self.pdu_mac)
         except AttributeError as e:
+            _LOGGER.error("Failed to parse MAC address: %s", e)
             self._handle_error(f"Failed to parse MAC address: {e}")
 
-    async def get_all_outlet_states(self):
+    async def get_all_outlet_states(self, force_refresh=False):
         """Get all outlet states and details."""
+        _LOGGER.debug(
+            "Getting all outlet states%s", " (forced refresh)" if force_refresh else ""
+        )
         response = await self.send_command("show outlets all details")
-        pattern = r"Outlet (\d+):\r\n(.*?)Power state: (On|Off).*?RMS Current: (.+)A.*?Active Power: (.+)W.*?Active Energy: (.+)Wh.*?Power Factor: (.+)%"
-        for match in re.finditer(pattern, response, re.DOTALL):
-            outlet = int(match.group(1))
-            name = match.group(2).strip()
-            state = match.group(3) == "On"
-            current = float(match.group(4))
-            power = float(match.group(5))
-            energy = float(match.group(6))
-            power_factor = float(match.group(7))
-            self.outlet_states[outlet] = state
-            self.outlet_names[outlet] = name
-            self.outlet_power[outlet] = power
-            self.outlet_current[outlet] = current
-            self.outlet_energy[outlet] = energy
-            self.outlet_power_factor[outlet] = power_factor
+        if not response:
+            _LOGGER.error("No response when getting outlet states")
+            return
+
+        _LOGGER.debug("Outlet states response length: %d", len(response))
+
+        # Using a more flexible pattern that matches what we see in the Lua implementation
+        # pattern = r"Outlet (\d+):\r\n(.*?)Power state: (On|Off).*?RMS Current: (.+)A.*?Active Power: (.+)W.*?Active Energy: (.+)Wh.*?Power Factor: (.+)%"
+        outlet_sections = re.split(r"Outlet \d+:", response)
+
+        # Skip the first section which is the header
+        if len(outlet_sections) > 1:
+            outlet_sections = outlet_sections[1:]
+
+            for i, section in enumerate(outlet_sections):
+                try:
+                    outlet = i + 1  # Outlets are 1-indexed
+
+                    # Extract state
+                    state_match = re.search(r"Power state: (On|Off)", section)
+                    if state_match:
+                        state = state_match.group(1) == "On"
+                        self.outlet_states[outlet] = state
+                        _LOGGER.debug("Outlet %d state: %s", outlet, state)
+
+                    # Extract name
+                    name_match = re.search(r"Outlet \d+ - (.+?)[\r\n]", section)
+                    if name_match:
+                        name = name_match.group(1).strip()
+                        self.outlet_names[outlet] = name
+                        _LOGGER.debug("Outlet %d name: %s", outlet, name)
+
+                    # Extract current
+                    current_match = re.search(r"RMS Current: (.+?)A", section)
+                    if current_match:
+                        current = float(current_match.group(1).strip())
+                        self.outlet_current[outlet] = current
+                        _LOGGER.debug("Outlet %d current: %f", outlet, current)
+
+                    # Extract power
+                    power_match = re.search(r"Active Power: (.+?)W", section)
+                    if power_match:
+                        power = float(power_match.group(1).strip())
+                        self.outlet_power[outlet] = power
+                        _LOGGER.debug("Outlet %d power: %f", outlet, power)
+
+                    # Extract energy
+                    energy_match = re.search(r"Active Energy: (.+?)Wh", section)
+                    if energy_match:
+                        energy = float(energy_match.group(1).strip())
+                        self.outlet_energy[outlet] = energy
+                        _LOGGER.debug("Outlet %d energy: %f", outlet, energy)
+
+                    # Extract power factor
+                    pf_match = re.search(r"Power Factor: (.+?)%", section)
+                    if pf_match:
+                        power_factor = float(pf_match.group(1).strip())
+                        self.outlet_power_factor[outlet] = power_factor
+                        _LOGGER.debug(
+                            "Outlet %d power factor: %f", outlet, power_factor
+                        )
+
+                except Exception as err:
+                    _LOGGER.error("Error parsing outlet %d: %s", i + 1, err)
+                    _LOGGER.debug("Section causing parse error: %s", section[:100])
+        else:
+            _LOGGER.warning("No outlet sections found in response")
 
     async def set_outlet_state(self, outlet: int, state: bool):
         """Set an outlet's power state."""
@@ -525,33 +692,65 @@ class RacklinkController:
             return match.group(1) == "Active"
         return False
 
-    async def get_sensor_values(self):
+    async def get_sensor_values(self, force_refresh=False):
         """Get all sensor values."""
+        _LOGGER.debug(
+            "Getting sensor values%s", " (forced refresh)" if force_refresh else ""
+        )
         response = await self.send_command("show inlets all details")
-        try:
-            self.sensors["voltage"] = float(
-                re.search(r"RMS Voltage: (.+)V", response).group(1)
-            )
-            self.sensors["current"] = float(
-                re.search(r"RMS Current: (.+)A", response).group(1)
-            )
-            self.sensors["power"] = float(
-                re.search(r"Active Power: (.+)W", response).group(1)
-            )
-            self.sensors["frequency"] = float(
-                re.search(r"Frequency: (.+)Hz", response).group(1)
-            )
-            self.sensors["power_factor"] = float(
-                re.search(r"Power Factor: (.+)%", response).group(1)
-            )
+        if not response:
+            _LOGGER.error("No response when getting sensor values")
+            return
 
-            temp_match = re.search(r"Temperature: (.+)°C", response)
+        _LOGGER.debug("Sensor values response: %s", response[:200].replace("\r\n", " "))
+
+        try:
+            # Extract voltage
+            voltage_match = re.search(r"RMS Voltage: (.+?)V", response)
+            if voltage_match:
+                self.sensors["voltage"] = float(voltage_match.group(1).strip())
+                _LOGGER.debug("Found voltage: %f", self.sensors["voltage"])
+
+            # Extract current
+            current_match = re.search(r"RMS Current: (.+?)A", response)
+            if current_match:
+                self.sensors["current"] = float(current_match.group(1).strip())
+                _LOGGER.debug("Found current: %f", self.sensors["current"])
+
+            # Extract power
+            power_match = re.search(r"Active Power: (.+?)W", response)
+            if power_match:
+                self.sensors["power"] = float(power_match.group(1).strip())
+                _LOGGER.debug("Found power: %f", self.sensors["power"])
+
+            # Extract frequency
+            freq_match = re.search(r"Frequency: (.+?)Hz", response)
+            if freq_match:
+                self.sensors["frequency"] = float(freq_match.group(1).strip())
+                _LOGGER.debug("Found frequency: %f", self.sensors["frequency"])
+
+            # Extract power factor
+            pf_match = re.search(r"Power Factor: (.+?)%", response)
+            if pf_match:
+                self.sensors["power_factor"] = float(pf_match.group(1).strip())
+                _LOGGER.debug("Found power factor: %f", self.sensors["power_factor"])
+
+            # Extract temperature
+            temp_match = re.search(r"Temperature: (.+?)°C", response)
             if temp_match:
-                self.sensors["temperature"] = float(temp_match.group(1))
+                self.sensors["temperature"] = float(temp_match.group(1).strip())
+                _LOGGER.debug("Found temperature: %f", self.sensors["temperature"])
             else:
                 self.sensors["temperature"] = None
+                _LOGGER.debug("No temperature found in response")
+
         except AttributeError as e:
+            _LOGGER.error("Failed to parse sensor values: %s", e)
+            _LOGGER.debug("Response causing parse failure: %s", response[:200])
             self._handle_error(f"Failed to parse sensor values: {e}")
+        except ValueError as e:
+            _LOGGER.error("Failed to convert sensor value: %s", e)
+            self._handle_error(f"Failed to convert sensor value: {e}")
 
     async def get_all_outlet_statuses(self) -> Dict[int, bool]:
         """Get status of all outlets."""
@@ -578,3 +777,62 @@ class RacklinkController:
             "last_error_time": self._last_error_time,
             "last_update": datetime.fromtimestamp(self._last_update, timezone.utc),
         }
+
+    def get_model_capabilities(self) -> Dict[str, Any]:
+        """Get capabilities based on model."""
+        # Default capabilities
+        capabilities = {
+            "num_outlets": 8,  # Default to 8 outlets
+            "max_current": 15,  # Default to 15A
+            "has_surge_protection": False,
+            "has_temperature_sensor": True,
+        }
+
+        # Update based on model
+        model = self.pdu_model
+
+        if not model or model == "AUTO_DETECT" or model == "Racklink PDU":
+            # Use controller response to determine outlet count
+            outlet_count = (
+                max(list(self.outlet_states.keys())) if self.outlet_states else 8
+            )
+            capabilities["num_outlets"] = outlet_count
+            _LOGGER.debug(
+                "Auto-detected %d outlets from device responses", outlet_count
+            )
+            return capabilities
+
+        # RLNK-P415: 4 outlets, 15A
+        if "RLNK-P415" in model:
+            capabilities["num_outlets"] = 4
+            capabilities["max_current"] = 15
+
+        # RLNK-P420: 4 outlets, 20A
+        elif "RLNK-P420" in model:
+            capabilities["num_outlets"] = 4
+            capabilities["max_current"] = 20
+
+        # RLNK-P915R: 9 outlets, 15A
+        elif "RLNK-P915R" in model:
+            capabilities["num_outlets"] = 9
+            capabilities["max_current"] = 15
+
+        # RLNK-P915R-SP: 9 outlets, 15A, surge protection
+        elif "RLNK-P915R-SP" in model:
+            capabilities["num_outlets"] = 9
+            capabilities["max_current"] = 15
+            capabilities["has_surge_protection"] = True
+
+        # RLNK-P920R: 9 outlets, 20A
+        elif "RLNK-P920R" in model:
+            capabilities["num_outlets"] = 9
+            capabilities["max_current"] = 20
+
+        # RLNK-P920R-SP: 9 outlets, 20A, surge protection
+        elif "RLNK-P920R-SP" in model:
+            capabilities["num_outlets"] = 9
+            capabilities["max_current"] = 20
+            capabilities["has_surge_protection"] = True
+
+        _LOGGER.debug("Model capabilities for %s: %s", model, capabilities)
+        return capabilities

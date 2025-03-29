@@ -25,9 +25,20 @@ async def async_setup_entry(
     controller = hass.data[DOMAIN][config_entry.entry_id]
     switches = []
 
+    # Get model capabilities to determine number of outlets
+    capabilities = controller.get_model_capabilities()
+    outlet_count = capabilities.get("num_outlets", 8)  # Default to 8 if not determined
+
+    _LOGGER.info(
+        "Setting up %d outlet switches for %s (%s)",
+        outlet_count,
+        controller.pdu_name,
+        controller.pdu_model,
+    )
+
     # Add switches even if device is not yet available
     # They will show as unavailable until connection is established
-    for outlet in range(1, 9):  # Assuming 8 outlets, adjust as needed
+    for outlet in range(1, outlet_count + 1):
         switches.append(RacklinkOutlet(controller, outlet))
     switches.append(RacklinkAllOn(controller))
     switches.append(RacklinkAllOff(controller))

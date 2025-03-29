@@ -10,6 +10,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .racklink_controller import RacklinkController
@@ -31,6 +32,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data["port"],
         entry.data["username"],
         entry.data["password"],
+        entry.data.get("model", "AUTO_DETECT"),  # Get model or default to auto-detect
     )
 
     # Store controller in hass data
@@ -62,9 +64,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Only fetch data if connected
         if controller.connected:
             try:
-                # Add timeouts to prevent blocking
-                await asyncio.wait_for(controller.get_all_outlet_states(), timeout=10)
-                await asyncio.wait_for(controller.get_sensor_values(), timeout=10)
+                # Add timeouts to prevent blocking and request fresh data
+                _LOGGER.debug("Updating outlet states and sensor values")
+                await asyncio.wait_for(
+                    controller.get_all_outlet_states(force_refresh=True), timeout=10
+                )
+                await asyncio.wait_for(
+                    controller.get_sensor_values(force_refresh=True), timeout=10
+                )
+
+                # Update entity states
+                for entity_id in hass.states.async_all(DOMAIN):
+                    _LOGGER.debug("Triggering update for entity: %s", entity_id)
+                    async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
+
             except asyncio.TimeoutError:
                 _LOGGER.error("Update timed out for %s", entry.data["host"])
             except Exception as err:

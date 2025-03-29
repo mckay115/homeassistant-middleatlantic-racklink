@@ -13,7 +13,13 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_validation as cv
 
-from .const import DEFAULT_PORT, DOMAIN
+from .const import (
+    CONF_MODEL,
+    DEFAULT_PORT,
+    DOMAIN,
+    MODEL_DESCRIPTIONS,
+    SUPPORTED_MODELS,
+)
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +59,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "serial": controller.pdu_serial,
                 "mac": controller.pdu_mac,
             }
+
+            # Verify model selection if not on auto-detect
+            if user_input.get(CONF_MODEL) != "AUTO_DETECT":
+                detected_model = controller.pdu_model
+                selected_model = user_input.get(CONF_MODEL)
+
+                if selected_model not in detected_model:
+                    _LOGGER.warning(
+                        "Selected model %s doesn't match detected model %s. User override accepted.",
+                        selected_model,
+                        detected_model,
+                    )
+
             _LOGGER.info(
                 "Successfully validated connection to %s (%s - %s)",
                 user_input[CONF_HOST],
@@ -98,6 +117,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     description=f"Model: {device_info.get('model', 'Unknown')} - SN: {device_info.get('serial', 'Unknown')}",
                 )
 
+        # Create dropdown options from model descriptions
+        model_options = {model: MODEL_DESCRIPTIONS[model] for model in SUPPORTED_MODELS}
+
         data_schema = vol.Schema(
             {
                 vol.Required(
@@ -112,6 +134,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_USERNAME, description={"suggested_value": "admin"}
                 ): cv.string,
                 vol.Required(CONF_PASSWORD): cv.string,
+                vol.Required(CONF_MODEL, default="AUTO_DETECT"): vol.In(model_options),
             }
         )
 
