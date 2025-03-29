@@ -11,6 +11,30 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: semver
+        run: |
+          # Get the latest tag, default to v0.0.0 if none exists
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+
+          # Extract version components
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+
+          # Increment patch version
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT_VERSION="v$MAJOR.$MINOR.$NEXT_PATCH"
+          echo "Next version: $NEXT_VERSION"
+
+          # Set as output
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "version_number=$MAJOR.$MINOR.$NEXT_PATCH" >> $GITHUB_OUTPUT
 
       - name: Zip the integration
         run: |
@@ -61,4 +85,37 @@ jobs:
           else
             echo "SSH key not provided. Skipping deployment."
             echo "To deploy, set up SSH secrets in your GitHub repository."
+          fi
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.semver.outputs.next_version }}
+          name: Release ${{ steps.semver.outputs.next_version }}
+          body: |
+            ## Middle Atlantic Racklink Integration ${{ steps.semver.outputs.next_version }}
+
+            Automatic release created by GitHub Actions.
+
+            ### Installation
+
+            Add this repository to HACS or download the ZIP file from this release.
+          files: dist/middle_atlantic_racklink.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update HACS version
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          # Update version in HACS manifest if it exists
+          if [ -f "hacs.json" ]; then
+            sed -i 's/"version": "[^"]*"/"version": "${{ steps.semver.outputs.version_number }}"/' hacs.json
+            git config --global user.name "GitHub Actions"
+            git config --global user.email "actions@github.com"
+            git add hacs.json
+            git commit -m "Update version to ${{ steps.semver.outputs.version_number }}"
+            git push
           fi
