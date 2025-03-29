@@ -1,5 +1,6 @@
 """Middle Atlantic RackLink integration for Home Assistant."""
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -10,13 +11,12 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DOMAIN
+from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
-UPDATE_INTERVAL = timedelta(seconds=10)  # Update every 10 seconds
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -25,6 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "Setting up Middle Atlantic Racklink integration for %s", entry.data["host"]
     )
 
+    # Create controller but don't connect immediately - this prevents blocking boot
     controller = RacklinkController(
         entry.data["host"],
         entry.data["port"],
@@ -32,46 +33,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data["password"],
     )
 
-    try:
-        await controller.connect()
-        _LOGGER.info(
-            "Connected to Middle Atlantic Racklink at %s (Model: %s, Firmware: %s)",
-            entry.data["host"],
-            controller.pdu_model,
-            controller.pdu_firmware,
-        )
-    except ValueError as err:
-        _LOGGER.error(
-            "Failed to connect to Middle Atlantic Racklink at %s: %s",
-            entry.data["host"],
-            err,
-        )
-        raise ConfigEntryNotReady(f"Failed to connect: {err}") from err
-
+    # Store controller in hass data
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = controller
 
+    # Start non-blocking connection task
+    await controller.start_background_connection()
+
+    # Register platforms - they'll work with an unavailable device until connection completes
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def async_update(now=None) -> None:
         """Update the controller data."""
-        try:
-            await controller.get_all_outlet_states()
-            await controller.get_sensor_values()
-        except Exception as err:
-            _LOGGER.error("Error updating Racklink data: %s", err)
+        # If not yet connected, try connecting
+        if not controller.connected:
+            try:
+                _LOGGER.debug("Attempting to connect during update cycle")
+                # Use timeout to prevent blocking
+                await asyncio.wait_for(controller.connect(), timeout=10)
+            except (asyncio.TimeoutError, Exception) as err:
+                _LOGGER.error("Failed to connect during update: %s", err)
+                return
 
-    # Schedule periodic updates
+        # Only fetch data if connected
+        if controller.connected:
+            try:
+                # Add timeouts to prevent blocking
+                await asyncio.wait_for(controller.get_all_outlet_states(), timeout=10)
+                await asyncio.wait_for(controller.get_sensor_values(), timeout=10)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Update timed out for %s", entry.data["host"])
+            except Exception as err:
+                _LOGGER.error("Error updating Racklink data: %s", err)
+
+    # Schedule periodic updates with a reasonable interval
+    update_interval = DEFAULT_SCAN_INTERVAL
     entry.async_on_unload(
-        async_track_time_interval(hass, async_update, UPDATE_INTERVAL)
+        async_track_time_interval(hass, async_update, update_interval)
     )
 
-    # Initial update
-    await async_update()
+    # Initial update - does not block setup
+    hass.async_create_task(async_update())
 
     async def cycle_all_outlets(call: ServiceCall) -> None:
         """Service to cycle all outlets."""
         _LOGGER.info("Cycling all outlets on %s", controller.pdu_name)
-        await controller.cycle_all_outlets()
+        try:
+            # Add timeout to prevent blocking
+            await asyncio.wait_for(controller.cycle_all_outlets(), timeout=10)
+        except asyncio.TimeoutError:
+            _LOGGER.error("Cycle all outlets timed out")
+        except Exception as err:
+            _LOGGER.error("Error cycling outlets: %s", err)
 
     hass.services.async_register(DOMAIN, "cycle_all_outlets", cycle_all_outlets)
 
@@ -86,7 +98,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         controller = hass.data[DOMAIN].pop(entry.entry_id)
-        await controller.disconnect()
+        # Use the new shutdown method to properly clean up resources
+        await controller.shutdown()
         _LOGGER.info(
             "Disconnected from Middle Atlantic Racklink at %s", entry.data["host"]
         )

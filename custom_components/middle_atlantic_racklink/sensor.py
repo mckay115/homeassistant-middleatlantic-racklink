@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from typing import Any, Callable, Optional
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
     UnitOfElectricCurrent,
@@ -10,13 +14,22 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
 )
-from homeassistant.helpers.entity import Entity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import Entity, DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.config_entries import ConfigEntry
 
-from .const import DOMAIN
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN, COMMAND_TIMEOUT
 from .racklink_controller import RacklinkController
 
+_LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the Middle Atlantic Racklink sensors."""
     controller = hass.data[DOMAIN][config_entry.entry_id]
     sensors = [
@@ -45,7 +58,7 @@ class RacklinkSensor(Entity):
 
     def __init__(
         self,
-        controller,
+        controller: RacklinkController,
         name: str,
         unit: str,
         sensor_type: str,
@@ -54,17 +67,19 @@ class RacklinkSensor(Entity):
     ) -> None:
         """Initialize the sensor."""
         self._controller = controller
-        self._name = name
+        self._attr_name = name
         self._unit = unit
         self._state = None
         self._sensor_type = sensor_type
-        self._device_class = device_class
-        self._state_class = state_class
+        self._attr_device_class = device_class
+        self._attr_state_class = state_class
+        self._attr_unique_id = f"{controller.pdu_serial}_{self._sensor_type}"
+        self._attr_available = False
 
     @property
     def name(self) -> str:
         """Return the name of the sensor."""
-        return self._name
+        return self._attr_name
 
     @property
     def state(self) -> float | None:
@@ -77,36 +92,30 @@ class RacklinkSensor(Entity):
         return self._unit
 
     @property
-    def device_class(self) -> str | None:
-        """Return the device class."""
-        return self._device_class
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self._controller.connected and self._controller.available
 
     @property
-    def state_class(self) -> str | None:
-        """Return the state class."""
-        return self._state_class
-
-    @property
-    def unique_id(self) -> str:
-        """Return the unique ID."""
-        return f"{self._controller.pdu_serial}_{self._sensor_type}"
-
-    @property
-    def device_info(self) -> dict:
+    def device_info(self) -> DeviceInfo:
         """Return device info."""
         return {
             "identifiers": {(DOMAIN, self._controller.pdu_serial)},
             "name": f"Racklink PDU {self._controller.pdu_name}",
-            "manufacturer": "Middle Atlantic",
-            "model": "Racklink PDU",
+            "manufacturer": ATTR_MANUFACTURER,
+            "model": self._controller.pdu_model or ATTR_MODEL,
             "sw_version": self._controller.pdu_firmware,
         }
+
+    async def async_update(self) -> None:
+        """Update method to be implemented by derived classes."""
+        raise NotImplementedError("Subclasses must implement async_update")
 
 
 class RacklinkVoltage(RacklinkSensor):
     """Voltage sensor."""
 
-    def __init__(self, controller) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the voltage sensor."""
         super().__init__(
             controller,
@@ -119,7 +128,18 @@ class RacklinkVoltage(RacklinkSensor):
 
     async def async_update(self) -> None:
         """Update the sensor state."""
-        self._state = self._controller.sensors.get("voltage")
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            self._state = self._controller.sensors.get("voltage")
+            if self._state is None and self._controller.connected:
+                # If we're connected but don't have data, it may be stale
+                _LOGGER.debug("Voltage data is missing, may need refresh")
+        except Exception as err:
+            _LOGGER.error("Error updating voltage sensor: %s", err)
+            self._state = None
 
 
 class RacklinkCurrent(RacklinkSensor):
