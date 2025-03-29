@@ -13,17 +13,4 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@v4
-      - name: Run hassfest
-        uses: home-assistant/actions/hassfest@master
-      - name: Validate manifest
-        run: |
-          hassfest
-      - name: Validate translations
-        run: |
-          hassfest --validate-translations
-      - name: Validate services
-        run: |
-          hassfest --validate-services
-      - name: Validate config flow
-        run: |
-          hassfest --validate-config-flow
+      - uses: home-assistant/actions/hassfest@master
