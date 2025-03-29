@@ -7,6 +7,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
@@ -15,11 +16,10 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity, DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.config_entries import ConfigEntry
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN, COMMAND_TIMEOUT
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, COMMAND_TIMEOUT, DOMAIN
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +95,11 @@ class RacklinkSensor(Entity):
     def available(self) -> bool:
         """Return if entity is available."""
         return self._controller.connected and self._controller.available
+
+    @property
+    def state_class(self) -> str | None:
+        """Return the state class of the sensor."""
+        return self._attr_state_class
 
     @property
     def device_info(self) -> DeviceInfo:

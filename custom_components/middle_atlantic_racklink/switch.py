@@ -5,10 +5,10 @@ import logging
 from typing import Any, Callable, Optional
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.config_entries import ConfigEntry
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
 from .racklink_controller import RacklinkController

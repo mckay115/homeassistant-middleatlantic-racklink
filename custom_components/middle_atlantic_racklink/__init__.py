@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
