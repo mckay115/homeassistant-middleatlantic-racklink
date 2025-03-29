@@ -3,12 +3,12 @@
   "name": "Middle Atlantic Racklink Power Sequencer",
   "codeowners": ["@mckay115"],
   "config_flow": true,
-  "dependencies": ["telnetlib3"],
+  "dependencies": [],
   "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
   "quality_scale": "platinum",
-  "requirements": ["telnetlib3>=1.0.4"],
+  "requirements": [],
   "version": "0.2.2"
 }
