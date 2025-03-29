@@ -11,13 +11,14 @@ from .racklink_controller import RacklinkController
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
 UPDATE_INTERVAL = timedelta(seconds=10)  # Update every 10 seconds
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Middle Atlantic Racklink from a config entry."""
     controller = RacklinkController(
         entry.data["host"],
         entry.data["port"],
         entry.data["username"],
-        entry.data["password"]
+        entry.data["password"],
     )
 
     try:
@@ -52,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "cycle_all_outlets", cycle_all_outlets)
 
     return True
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""

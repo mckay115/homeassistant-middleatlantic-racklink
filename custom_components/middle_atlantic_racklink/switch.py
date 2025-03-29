@@ -2,6 +2,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import ServiceCall
 from .const import DOMAIN
 
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     controller = hass.data[DOMAIN][config_entry.entry_id]
     switches = []
@@ -15,6 +16,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         await controller.cycle_all_outlets()
 
     hass.services.async_register(DOMAIN, "cycle_all_outlets", cycle_all_outlets)
+
 
 class RacklinkOutlet(SwitchEntity):
     def __init__(self, controller, outlet):
@@ -62,7 +64,9 @@ class RacklinkOutlet(SwitchEntity):
         """Fetch new state data for this outlet."""
         await self._controller.get_all_outlet_states()
         self._state = self._controller.outlet_states.get(self._outlet, False)
-        self._name = self._controller.outlet_names.get(self._outlet, f"Outlet {self._outlet}")
+        self._name = self._controller.outlet_names.get(
+            self._outlet, f"Outlet {self._outlet}"
+        )
 
     async def async_cycle(self):
         await self._controller.cycle_outlet(self._outlet)
@@ -72,8 +76,9 @@ class RacklinkOutlet(SwitchEntity):
         return {
             "can_cycle": True,
             "power": self._controller.outlet_power.get(self._outlet),
-            "current": self._controller.outlet_current.get(self._outlet)
+            "current": self._controller.outlet_current.get(self._outlet),
         }
+
 
 class RacklinkAllOn(SwitchEntity):
     def __init__(self, controller):
@@ -110,6 +115,7 @@ class RacklinkAllOn(SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         self._state = False
+
 
 class RacklinkAllOff(SwitchEntity):
     def __init__(self, controller):
