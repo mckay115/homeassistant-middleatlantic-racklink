@@ -19,7 +19,7 @@ jobs:
           zip -r ../dist/middle_atlantic_racklink.zip middle_atlantic_racklink
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: middle-atlantic-racklink
           path: dist/middle_atlantic_racklink.zip
