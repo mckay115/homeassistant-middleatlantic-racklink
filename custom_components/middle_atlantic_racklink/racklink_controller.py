@@ -1,10 +1,13 @@
+"""Controller for Middle Atlantic Racklink PDU devices."""
+
 import asyncio
 import logging
 import re
-import socket
 import telnetlib
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+
+from .const import COMMAND_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,28 +77,16 @@ class RacklinkController:
         self._available = False
         _LOGGER.error("Racklink error: %s", error)
 
-    async def _create_telnet_connection(self) -> Optional[telnetlib.Telnet]:
-        """Create a telnet connection in a non-blocking way."""
+    async def _create_telnet_connection(self):
+        """Create a telnet connection in a separate thread to avoid blocking."""
         try:
-            # First check if host is reachable without blocking
-            future = asyncio.open_connection(self.host, self.port)
-            reader, writer = await asyncio.wait_for(
-                future, timeout=self._telnet_timeout
+            # Create telnet connection in a separate thread
+            result = await asyncio.to_thread(
+                telnetlib.Telnet, self.host, self.port, self._telnet_timeout
             )
-            writer.close()
-            await writer.wait_closed()
-
-            # Now create the actual telnet connection in a thread
-            return await asyncio.to_thread(
-                telnetlib.Telnet, self.host, self.port, timeout=self._telnet_timeout
-            )
-        except (OSError, asyncio.TimeoutError) as err:
-            _LOGGER.error(
-                "Failed to create telnet connection to %s:%s: %s",
-                self.host,
-                self.port,
-                err,
-            )
+            return result
+        except Exception as e:
+            _LOGGER.error("Failed to create telnet connection: %s", e)
             return None
 
     async def _telnet_read_until(self, pattern: bytes, timeout: int = None) -> bytes:
@@ -106,9 +97,9 @@ class RacklinkController:
         timeout = timeout or self._telnet_timeout
         try:
             return await asyncio.to_thread(self.telnet.read_until, pattern, timeout)
-        except EOFError:
+        except EOFError as exc:
             self._connected = False
-            raise ConnectionError("Connection closed by remote host")
+            raise ConnectionError("Connection closed by remote host") from exc
 
     async def _telnet_write(self, data: bytes) -> None:
         """Write to telnet connection in a non-blocking way."""
@@ -117,9 +108,9 @@ class RacklinkController:
 
         try:
             await asyncio.to_thread(self.telnet.write, data)
-        except EOFError:
+        except EOFError as exc:
             self._connected = False
-            raise ConnectionError("Connection closed while writing data")
+            raise ConnectionError("Connection closed while writing data") from exc
 
     async def connect(self) -> None:
         """Connect to the RackLink device."""
@@ -164,14 +155,14 @@ class RacklinkController:
                     self.telnet = None
                 self._connected = False
                 self._handle_error(f"Connection failed: {e}")
-                raise ValueError(f"Connection failed: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
                 if self.telnet:
                     await asyncio.to_thread(self.telnet.close)
                     self.telnet = None
                 self._connected = False
                 self._handle_error(f"Unexpected error during connection: {e}")
-                raise ValueError(f"Connection failed: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
 
     async def reconnect(self) -> None:
         """Reconnect to the device with backoff."""
@@ -277,13 +268,13 @@ class RacklinkController:
             if b"#" not in response:
                 raise ValueError("Login failed: Invalid credentials")
 
-        except asyncio.TimeoutError:
-            raise ConnectionError("Login timed out")
+        except asyncio.TimeoutError as exc:
+            raise ConnectionError("Login timed out") from exc
         except ConnectionError as e:
-            raise ConnectionError(f"Login failed: {e}")
+            raise ConnectionError(f"Login failed: {e}") from e
         except Exception as e:
             self._handle_error(f"Login failed: {e}")
-            raise ValueError(f"Login failed: {e}")
+            raise ValueError(f"Login failed: {e}") from e
 
     async def start_background_connection(self) -> None:
         """Start background connection task that won't block Home Assistant startup."""
@@ -394,11 +385,11 @@ class RacklinkController:
 
     async def set_outlet_name(self, outlet: int, name: str):
         """Set an outlet's name."""
-        cmd = f"config"
+        cmd = "config"
         await self.send_command(cmd)
         cmd = f'outlet {outlet} name "{name}"'
         await self.send_command(cmd)
-        cmd = f"apply"
+        cmd = "apply"
         await self.send_command(cmd)
         self.outlet_names[outlet] = name
 
@@ -416,11 +407,11 @@ class RacklinkController:
 
     async def set_pdu_name(self, name: str):
         """Set the PDU name."""
-        cmd = f"config"
+        cmd = "config"
         await self.send_command(cmd)
         cmd = f'pdu name "{name}"'
         await self.send_command(cmd)
-        cmd = f"apply"
+        cmd = "apply"
         await self.send_command(cmd)
         self.pdu_name = name
 

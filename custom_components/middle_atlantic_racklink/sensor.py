@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Callable, Optional
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -19,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, COMMAND_TIMEOUT, DOMAIN
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)

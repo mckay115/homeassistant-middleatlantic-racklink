@@ -2,13 +2,7 @@
 
 from datetime import timedelta
 
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_USERNAME,
-    Platform,
-)
+from homeassistant.const import Platform
 
 # Integration domain
 DOMAIN = "middle_atlantic_racklink"

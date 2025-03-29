@@ -3,7 +3,6 @@
 from homeassistant.components.binary_sensor import BinarySensorEntity
 
 from .const import DOMAIN
-from .racklink_controller import RacklinkController
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
