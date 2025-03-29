@@ -1,6 +1,7 @@
 """Binary sensor platform for Middle Atlantic Racklink."""
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
+
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
 

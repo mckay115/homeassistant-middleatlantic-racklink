@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from homeassistant.helpers.entity import Entity
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
 from homeassistant.const import (
-    UnitOfPower,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
+    UnitOfPower,
     UnitOfTemperature,
 )
+from homeassistant.helpers.entity import Entity
+
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
 

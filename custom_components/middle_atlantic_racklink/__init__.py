@@ -1,10 +1,13 @@
+"""Middle Atlantic RackLink integration for Home Assistant."""
+
+from datetime import timedelta
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
 
-from datetime import timedelta
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
 

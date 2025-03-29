@@ -1,9 +1,9 @@
 import asyncio
-import telnetlib
-import re
 import logging
-from typing import Dict, Optional, Any
+import re
+import telnetlib
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 _LOGGER = logging.getLogger(__name__)
 

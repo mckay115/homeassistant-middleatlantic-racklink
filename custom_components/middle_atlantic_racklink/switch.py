@@ -1,5 +1,6 @@
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import ServiceCall
+
 from .const import DOMAIN
 from .racklink_controller import RacklinkController
 
