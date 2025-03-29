@@ -1,7 +1,73 @@
 cycle_all_outlets:
   name: Cycle All Outlets
-  description: Cycles power for all outlets on the PDU.
-  target:
-    entity:
-      integration: middle_atlantic_racklink
-      domain: switch
+  description: Cycle power for all outlets on the PDU
+  fields: {}
+
+set_outlet_name:
+  name: Set Outlet Name
+  description: Set the name for a specific outlet
+  fields:
+    outlet:
+      name: Outlet Number
+      description: The outlet number to rename
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+    name:
+      name: New Name
+      description: The new name for the outlet
+      example: "Living Room TV"
+      selector:
+        text: {}
+
+set_pdu_name:
+  name: Set PDU Name
+  description: Set the name for the PDU
+  fields:
+    name:
+      name: New Name
+      description: The new name for the PDU
+      example: "Main PDU"
+      selector:
+        text: {}
+
+cycle_outlet:
+  name: Cycle Outlet
+  description: Cycle power for a specific outlet
+  fields:
+    outlet:
+      name: Outlet Number
+      description: The outlet number to cycle
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+
+get_device_info:
+  name: Get Device Info
+  description: Get detailed information about the PDU device
+  fields: {}
+
+get_outlet_info:
+  name: Get Outlet Info
+  description: Get detailed information about a specific outlet
+  fields:
+    outlet:
+      name: Outlet Number
+      description: The outlet number to get info for
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+
+get_surge_protection_status:
+  name: Get Surge Protection Status
+  description: Get the current surge protection status
+  fields: {}
