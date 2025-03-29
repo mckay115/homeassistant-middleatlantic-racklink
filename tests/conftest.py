@@ -3,6 +3,9 @@
 import os
 import sys
 from pathlib import Path
+import tempfile
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -19,10 +22,14 @@ from custom_components.middle_atlantic_racklink.const import DOMAIN
 
 @pytest.fixture
 def hass():
-    """Return a Home Assistant instance for testing."""
-    hass = HomeAssistant()
-    hass.config.components.add("http")
-    return hass
+    """Return a mocked Home Assistant instance."""
+    hass_mock = MagicMock()
+    hass_mock.config_entries = MagicMock()
+    hass_mock.states = MagicMock()
+    hass_mock.config = MagicMock()
+    hass_mock.config.components = set()
+    hass_mock.data = {DOMAIN: {}}
+    return hass_mock
 
 
 @pytest.fixture

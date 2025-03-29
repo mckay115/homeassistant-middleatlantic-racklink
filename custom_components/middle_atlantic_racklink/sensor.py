@@ -15,6 +15,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from .const import DOMAIN
+from .racklink_controller import RacklinkController
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
