@@ -8,9 +8,13 @@
   "iot_class": "local_push",
   "requirements": ["telnetlib3>=1.0.4"],
   "version": "0.2.2",
-  "zeroconf": ["_middleatlantic._tcp.local."],
+  "zeroconf": [
+    {
+      "type": "_middleatlantic._tcp.local.",
+      "name": "racklink-*"
+    }
+  ],
   "integration_type": "device",
-  "logotype": "icon.png",
   "quality_scale": "platinum",
   "homekit": {
     "models": ["RLNK-P415", "RLNK-P420", "RLNK-P915R", "RLNK-P915R-SP", "RLNK-P920R", "RLNK-P920R-SP"]
@@ -31,9 +35,5 @@
       "service_uuid": "0000180f-0000-1000-8000-00805f9b34fb"
     }
   ],
-  "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
-  "config_flow_discovery_rematch": {
-    "host": "host",
-    "port": "port"
-  }
+  "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues"
 }
