@@ -3,7 +3,7 @@ import logging
 import re
 import telnetlib
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +39,9 @@ class RacklinkController:
         self._last_error: Optional[str] = None
         self._last_error_time: Optional[datetime] = None
         self._available = True
+        self._connection_lock = asyncio.Lock()
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 3
 
     @property
     def connected(self) -> bool:
@@ -65,34 +68,72 @@ class RacklinkController:
         self._last_error = error
         self._last_error_time = datetime.now(timezone.utc)
         self._available = False
-        _LOGGER.error(error)
+        _LOGGER.error("Racklink error: %s", error)
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Connect to the RackLink device."""
-        try:
-            self.telnet = telnetlib.Telnet(self.host, self.port, timeout=10)
-            await self.login()
-            await self.get_initial_status()
-            self._connected = True
-            self._available = True
-            self._last_error = None
-            self._last_error_time = None
-        except Exception as e:
-            self._handle_error(f"Connection failed: {e}")
-            raise ValueError(f"Connection failed: {e}")
+        async with self._connection_lock:
+            if self._connected:
+                _LOGGER.debug("Already connected to %s, skipping connection", self.host)
+                return
 
-    async def reconnect(self):
-        """Reconnect to the device."""
-        _LOGGER.info("Attempting to reconnect...")
+            _LOGGER.info(
+                "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
+            )
+            try:
+                self.telnet = telnetlib.Telnet(self.host, self.port, timeout=10)
+                await self.login()
+                await self.get_initial_status()
+                self._connected = True
+                self._available = True
+                self._last_error = None
+                self._last_error_time = None
+                self._reconnect_attempts = 0
+                _LOGGER.info(
+                    "Successfully connected to Middle Atlantic Racklink at %s",
+                    self.host,
+                )
+            except Exception as e:
+                self._handle_error(f"Connection failed: {e}")
+                raise ValueError(f"Connection failed: {e}")
+
+    async def reconnect(self) -> None:
+        """Reconnect to the device with backoff."""
+        if self._reconnect_attempts >= self._max_reconnect_attempts:
+            _LOGGER.warning(
+                "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
+                self._max_reconnect_attempts,
+                self.host,
+            )
+            return
+
+        self._reconnect_attempts += 1
+        backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
+        _LOGGER.info(
+            "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
+            self.host,
+            self._reconnect_attempts,
+            self._max_reconnect_attempts,
+            backoff,
+        )
+
+        await asyncio.sleep(backoff)
         await self.disconnect()
-        await self.connect()
+
+        try:
+            await self.connect()
+            _LOGGER.info("Successfully reconnected to %s", self.host)
+        except Exception as e:
+            _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
 
     async def send_command(self, cmd: str) -> str:
         """Send a command to the device and return the response."""
         if not self.connected:
+            _LOGGER.debug("Not connected, attempting to connect before sending command")
             await self.connect()
 
         try:
+            _LOGGER.debug("Sending command: %s", cmd)
             self.telnet.write(f"{cmd}\r\n".encode())
             self.last_cmd = cmd
             self.context = cmd.replace(" ", "")
@@ -102,7 +143,10 @@ class RacklinkController:
         except Exception as e:
             self._handle_error(f"Error sending command: {e}")
             await self.reconnect()
-            return await self.send_command(cmd)
+            # After reconnection, try sending the command again
+            if self.connected:
+                return await self.send_command(cmd)
+            return ""
 
     async def login(self):
         """Login to the device."""

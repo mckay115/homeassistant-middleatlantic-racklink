@@ -1,73 +1,82 @@
 cycle_all_outlets:
   name: Cycle All Outlets
-  description: Cycle power for all outlets on the PDU
+  description: >-
+    Power cycles all outlets on the PDU. This will turn off and then on all connected devices. 
+    Use with caution as it may cause data loss or service interruption.
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+      domain: switch
   fields: {}
-
-set_outlet_name:
-  name: Set Outlet Name
-  description: Set the name for a specific outlet
-  fields:
-    outlet:
-      name: Outlet Number
-      description: The outlet number to rename
-      example: 1
-      selector:
-        number:
-          min: 1
-          max: 8
-          step: 1
-    name:
-      name: New Name
-      description: The new name for the outlet
-      example: "Living Room TV"
-      selector:
-        text: {}
-
-set_pdu_name:
-  name: Set PDU Name
-  description: Set the name for the PDU
-  fields:
-    name:
-      name: New Name
-      description: The new name for the PDU
-      example: "Main PDU"
-      selector:
-        text: {}
 
 cycle_outlet:
   name: Cycle Outlet
-  description: Cycle power for a specific outlet
+  description: >-
+    Power cycles a specific outlet on the PDU. This will turn off and then on the connected device.
+    Use with caution as it may cause data loss or service interruption.
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+      domain: switch
   fields:
     outlet:
       name: Outlet Number
-      description: The outlet number to cycle
+      description: The outlet number to cycle (1-8)
       example: 1
+      required: true
       selector:
         number:
           min: 1
           max: 8
           step: 1
+          mode: box
 
-get_device_info:
-  name: Get Device Info
-  description: Get detailed information about the PDU device
-  fields: {}
-
-get_outlet_info:
-  name: Get Outlet Info
-  description: Get detailed information about a specific outlet
+set_outlet_name:
+  name: Set Outlet Name
+  description: >-
+    Sets a custom name for a specific outlet on the PDU. 
+    The name will be displayed in the user interface and device logs.
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+      domain: switch
   fields:
     outlet:
       name: Outlet Number
-      description: The outlet number to get info for
+      description: The outlet number to rename (1-8)
       example: 1
+      required: true
       selector:
         number:
           min: 1
           max: 8
           step: 1
+          mode: box
+    name:
+      name: New Name
+      description: The new name for the outlet (max 32 characters)
+      example: "Server Rack"
+      required: true
+      selector:
+        text:
+          max: 32
+          multiline: false
 
-get_surge_protection_status:
-  name: Get Surge Protection Status
-  description: Get the current surge protection status
-  fields: {}
+set_pdu_name:
+  name: Set PDU Name
+  description: >-
+    Sets a custom name for the entire PDU device.
+    The name will be displayed in the user interface and device logs.
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+  fields:
+    name:
+      name: New Name
+      description: The new name for the PDU (max 32 characters)
+      example: "Server Room PDU"
+      required: true
+      selector:
+        text:
+          max: 32
+          multiline: false

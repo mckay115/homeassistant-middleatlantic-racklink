@@ -3,21 +3,60 @@
       "step": {
         "user": {
           "title": "Connect to Middle Atlantic Racklink Power Sequencer",
+          "description": "Set up your Middle Atlantic Racklink PDU for monitoring and control",
           "data": {
-            "host": "Host",
-            "port": "Port",
-            "username": "Username",
+            "host": "IP Address or Hostname",
+            "port": "Port (default: 23)",
+            "username": "Username (usually 'admin')",
             "password": "Password"
           }
         }
       },
       "error": {
-        "cannot_connect": "Failed to connect",
-        "invalid_auth": "Invalid authentication",
-        "unknown": "Unexpected error"
+        "cannot_connect": "Failed to connect to the device. Please check the IP address and network connection.",
+        "invalid_auth": "Invalid username or password. Please check your credentials.",
+        "timeout": "Connection timed out. Please check the device is powered on and reachable.",
+        "unknown": "Unexpected error occurred. Please check the logs for more details."
       },
       "abort": {
-        "already_configured": "Device is already configured"
+        "already_configured": "This device is already configured. Please remove the existing integration first."
+      }
+    },
+    "entity": {
+      "sensor": {
+        "power": {
+          "name": "Power",
+          "state_attributes": {
+            "total_energy": "Total Energy"
+          }
+        },
+        "current": {
+          "name": "Current"
+        },
+        "temperature": {
+          "name": "Temperature"
+        }
+      },
+      "switch": {
+        "outlet": {
+          "name": "Outlet"
+        }
+      }
+    },
+    "services": {
+      "cycle_all_outlets": {
+        "name": "Cycle All Outlets",
+        "description": "Cycle power to all outlets on the device"
+      }
+    },
+    "options": {
+      "step": {
+        "init": {
+          "title": "Configure Racklink Options",
+          "data": {
+            "update_interval": "Update interval in seconds (10-300)"
+          }
+        }
       }
     }
   }
