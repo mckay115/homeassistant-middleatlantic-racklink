@@ -39,17 +39,19 @@ class SocketConnection:
         self.port = port
         self.username = username
         self.password = password
-        self.timeout = timeout
-        self.retry_delay = retry_delay
-        self.max_retries = max_retries
-        self.keepalive_interval = keepalive_interval
+        self.timeout = timeout or 20  # Ensure timeout is not None
+        self.retry_delay = retry_delay or 5  # Ensure retry_delay is not None
+        self.max_retries = max_retries or 3  # Ensure max_retries is not None
+        self.keepalive_interval = (
+            keepalive_interval or 60
+        )  # Ensure keepalive_interval is not None
         self._reader = None
         self._writer = None
         self._connected = False
         self._prompt_pattern = re.compile(r"[>#:\]](\s|$)")
         self._login_prompt = re.compile(r"(?:login|username|user)[: ]+", re.IGNORECASE)
         self._password_prompt = re.compile(r"password[: ]+", re.IGNORECASE)
-        self._last_activity = 0
+        self._last_activity = time.time()  # Initialize with current time
         self._keepalive_task = None
         self._connection_lock = asyncio.Lock()
 
@@ -165,17 +167,21 @@ class SocketConnection:
                 # Increment retry count and delay
                 retry_count += 1
                 if retry_count < self.max_retries:
-                    # Exponential backoff with jitter
-                    jitter = (
-                        retry_delay
-                        * 0.2
-                        * (0.5 - (asyncio.get_event_loop().time() % 1))
-                    )
-                    delay = retry_delay + jitter
-                    _LOGGER.debug("Retrying connection in %.1f seconds", delay)
-                    await asyncio.sleep(delay)
-                    # Increase delay for next retry (exponential backoff)
-                    retry_delay = min(retry_delay * 1.5, 30)  # Cap at 30 seconds
+                    try:
+                        # Safer calculation with explicit float conversion and error handling
+                        current_time = asyncio.get_event_loop().time()
+                        random_factor = 0.5 - (current_time % 1)
+                        jitter = float(retry_delay) * 0.2 * float(random_factor)
+                        delay = float(retry_delay) + jitter
+                        _LOGGER.debug("Retrying connection in %.1f seconds", delay)
+                        await asyncio.sleep(delay)
+                        # Increase delay for next retry (exponential backoff)
+                        retry_delay = min(retry_delay * 1.5, 30)  # Cap at 30 seconds
+                    except (TypeError, ValueError) as err:
+                        _LOGGER.warning(
+                            "Error calculating retry delay: %s, using default", err
+                        )
+                        await asyncio.sleep(5)  # Use a safe default
 
             _LOGGER.error(
                 "Failed to connect to %s:%d after %d attempts",
@@ -261,7 +267,7 @@ class SocketConnection:
 
     def _start_keepalive(self) -> None:
         """Start the keepalive task if needed."""
-        if self.keepalive_interval <= 0:
+        if not self.keepalive_interval or self.keepalive_interval <= 0:
             return
 
         if self._keepalive_task and not self._keepalive_task.done():
@@ -282,7 +288,10 @@ class SocketConnection:
                 await asyncio.sleep(5)  # Check every 5 seconds
 
                 # If there's been recent activity, don't send keepalive yet
-                if (time.time() - self._last_activity) < self.keepalive_interval:
+                current_time = time.time()
+                elapsed = current_time - self._last_activity
+
+                if elapsed < self.keepalive_interval:
                     continue
 
                 # Send a safe command that won't change device state
@@ -332,7 +341,7 @@ class SocketConnection:
 
                 if not chunk:
                     # No more data, might be EOF
-                    if self._reader.at_eof():
+                    if self._reader and self._reader.at_eof():
                         _LOGGER.debug("Connection closed while reading response")
                         break
                     timeout_counter += 1
@@ -360,20 +369,37 @@ class SocketConnection:
 
     def _clean_response(self, response: str, command: str) -> str:
         """Clean up the command response by removing echoed command and prompt."""
+        if not response:
+            return ""
+
         # Remove the echoed command
         if response.startswith(command):
             response = response[len(command) :]
 
         # Remove any remaining command text (in case of line breaks)
-        response = re.sub(r"^\s*" + re.escape(command) + r"\s*[\r\n]+", "", response)
+        try:
+            response = re.sub(
+                r"^\s*" + re.escape(command) + r"\s*[\r\n]+", "", response
+            )
+        except Exception as e:
+            _LOGGER.debug("Error removing command from response: %s", e)
 
         # Remove trailing prompt
-        response = re.sub(self._prompt_pattern, "", response.rstrip())
+        try:
+            response = re.sub(self._prompt_pattern, "", response.rstrip())
+        except Exception as e:
+            _LOGGER.debug("Error removing prompt from response: %s", e)
 
         # Remove any ANSI escape sequences
-        response = re.sub(r"\x1b\[[0-9;]*[mK]", "", response)
+        try:
+            response = re.sub(r"\x1b\[[0-9;]*[mK]", "", response)
+        except Exception as e:
+            _LOGGER.debug("Error removing ANSI sequences from response: %s", e)
 
         # Clean up any extra line breaks
-        response = re.sub(r"[\r\n]+", "\n", response)
+        try:
+            response = re.sub(r"[\r\n]+", "\n", response)
+        except Exception as e:
+            _LOGGER.debug("Error cleaning line breaks in response: %s", e)
 
         return response.strip()
