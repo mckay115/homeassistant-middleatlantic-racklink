@@ -59,7 +59,6 @@ set_outlet_name:
       required: true
       selector:
         text:
-          max: 32
           multiline: false
 
 set_pdu_name:
@@ -78,5 +77,4 @@ set_pdu_name:
       required: true
       selector:
         text:
-          max: 32
           multiline: false

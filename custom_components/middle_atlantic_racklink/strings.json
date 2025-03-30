@@ -29,7 +29,9 @@
         "power": {
           "name": "Power",
           "state_attributes": {
-            "total_energy": "Total Energy"
+            "total_energy": {
+              "name": "Total Energy"
+            }
           }
         },
         "current": {
