@@ -6,7 +6,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from .const import COMMAND_TIMEOUT, SUPPORTED_MODELS
 
