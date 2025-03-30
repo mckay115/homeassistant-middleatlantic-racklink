@@ -99,16 +99,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Create the coordinator
     coordinator = RacklinkCoordinator(hass, controller, scan_interval)
 
-    # Try to refresh the coordinator data
+    # Try to refresh the coordinator data - be more tolerant of initial failures
     try:
-        await asyncio.wait_for(coordinator.async_refresh(), timeout=15)
-        _LOGGER.info("Initial data refresh completed successfully")
-    except asyncio.TimeoutError:
-        _LOGGER.warning("Initial coordinator refresh timed out")
-        raise ConfigEntryNotReady("Timed out getting initial data from device")
+        # Attempt initial refresh with a timeout, but don't fail setup if it times out
+        refresh_task = asyncio.create_task(coordinator.async_refresh())
+        try:
+            await asyncio.wait_for(refresh_task, timeout=10)
+            _LOGGER.info("Initial data refresh completed successfully")
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "Initial coordinator refresh timed out, continuing setup anyway"
+            )
     except Exception as e:
-        _LOGGER.warning("Error during initial coordinator refresh: %s", e)
-        raise ConfigEntryNotReady(f"Error getting initial data: {e}")
+        _LOGGER.warning(
+            "Error during initial coordinator refresh: %s, continuing setup anyway", e
+        )
 
     # Store the controller and coordinator
     hass.data.setdefault(DOMAIN, {})

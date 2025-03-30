@@ -8,6 +8,7 @@ import socket
 from typing import Any, Dict, Optional
 
 import voluptuous as vol
+
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
@@ -19,13 +20,13 @@ from homeassistant.helpers.selector import TextSelector
 from .const import (
     CONF_MODEL,
     CONF_PDU_NAME,
+    CONF_SCAN_INTERVAL,
     DEFAULT_PORT,
+    DEFAULT_SCAN_INTERVAL,
     DEFAULT_USERNAME,
     DOMAIN,
     MODEL_DESCRIPTIONS,
     SUPPORTED_MODELS,
-    CONF_SCAN_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
 )
 from .controller.racklink_controller import RacklinkController
 
@@ -135,3 +136,7 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+# Add ConfigFlow as an alias for MiddleAtlanticRacklinkConfigFlow for backward compatibility with tests
+ConfigFlow = MiddleAtlanticRacklinkConfigFlow

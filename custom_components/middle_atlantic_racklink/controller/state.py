@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import time
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -22,12 +22,13 @@ from ..const import (
     SENSOR_PDU_VOLTAGE,
 )
 from ..parser import (
+    parse_all_outlet_states,
     parse_available_commands,
     parse_device_info,
-    parse_all_outlet_states,
+    parse_network_info,
+    parse_outlet_names,
     parse_pdu_power_data,
     parse_pdu_temperature,
-    parse_outlet_names,
 )
 from ..socket_connection import SocketConnection
 

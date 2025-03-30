@@ -75,17 +75,33 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             # Check connection status and try to connect if needed
             if not self.controller.connected:
                 _LOGGER.debug("Coordinator: Controller not connected, connecting...")
-                if not await self.controller.connect():
-                    _LOGGER.error("Coordinator: Failed to connect to PDU")
-                    raise UpdateFailed("Failed to connect to PDU")
+                try:
+                    if not await self.controller.connect():
+                        _LOGGER.error("Coordinator: Failed to connect to PDU")
+                        # Return empty data instead of raising an exception for the initial setup
+                        return self._get_empty_data_structure()
+                except Exception as connect_err:
+                    _LOGGER.error(
+                        "Coordinator: Error connecting to PDU: %s", connect_err
+                    )
+                    # Return empty data instead of raising an exception for the initial setup
+                    return self._get_empty_data_structure()
 
             # Update the PDU data
             _LOGGER.debug("Coordinator: Updating PDU data")
-            success = await self.controller.update()
+            try:
+                success = await self.controller.update()
+            except Exception as update_err:
+                _LOGGER.error("Coordinator: Error during update call: %s", update_err)
+                success = False
 
             if not success:
                 _LOGGER.warning("Coordinator: Failed to update PDU data")
-                raise UpdateFailed("Failed to update PDU data")
+                if (
+                    not self.data
+                ):  # If we don't have any data yet, return empty structure instead of failing
+                    return self._get_empty_data_structure()
+                return self.data  # Return existing data if we have it
 
             # Process the data for outlets
             outlets = {}
@@ -117,7 +133,42 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             _LOGGER.error("Coordinator: Error during update: %s", err)
-            raise UpdateFailed(f"Error communicating with PDU: {err}")
+
+            # Instead of raising an exception, return empty data for the initial setup
+            # or existing data if we already have some
+            if not self.data:
+                return self._get_empty_data_structure()
+            return self.data
+
+    def _get_empty_data_structure(self) -> Dict[str, Any]:
+        """Return an empty data structure suitable for initial setup."""
+        empty_data = {
+            "outlets": {},
+            "sensors": {},
+        }
+
+        # Create empty default outlets based on model
+        num_outlets = 8  # Default to 8 outlets
+        if self.controller.pdu_model:
+            model = self.controller.pdu_model.lower()
+            if "415" in model:
+                num_outlets = 4
+            elif "915" in model or "920" in model:
+                num_outlets = 9
+
+        for i in range(1, num_outlets + 1):
+            empty_data["outlets"][i] = {
+                "state": False,
+                "name": f"Outlet {i}",
+                "power": None,
+                "current": None,
+                "voltage": None,
+                "energy": None,
+                "power_factor": None,
+                "frequency": None,
+            }
+
+        return empty_data
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""
