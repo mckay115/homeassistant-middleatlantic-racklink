@@ -808,19 +808,58 @@ class RacklinkController:
             )
 
             # Add more diagnostic logging - if we have serious issues, log the full response
-            if len(response) < 500:  # Only log full response if it's reasonably sized
+            _LOGGER.debug(
+                "Full outlet states response: %s", response.replace("\r\n", " ")
+            )
+
+            # Try direct approach first - look for each outlet individually
+            for outlet_num in range(1, 10):  # Try outlets 1-9
+                outlet_pattern = re.compile(
+                    f"Outlet {outlet_num}.*?Power state:\\s*(\\w+)",
+                    re.DOTALL | re.IGNORECASE,
+                )
+                outlet_match = outlet_pattern.search(response)
+                if outlet_match:
+                    raw_state = outlet_match.group(1)
+                    state = raw_state.lower() in ["on", "1", "true", "yes", "active"]
+                    self.outlet_states[outlet_num] = state
+                    _LOGGER.debug(
+                        "Direct match - Outlet %d state: %s (raw: %s)",
+                        outlet_num,
+                        state,
+                        raw_state,
+                    )
+
+            # If we found any outlets using the direct approach, skip the complex parsing
+            if self.outlet_states:
                 _LOGGER.debug(
-                    "Full outlet states response: %s", response.replace("\r\n", " ")
+                    "Found %d outlets using direct pattern matching",
+                    len(self.outlet_states),
                 )
-            else:
-                # Log each outlet section separately for better diagnosis
-                outlet_sections = re.findall(
-                    r"Outlet \d+:.*?(?=Outlet \d+:|$)", response, re.DOTALL
-                )
-                for section in outlet_sections[
-                    :3
-                ]:  # Log first few outlets only to avoid excessive logs
-                    _LOGGER.debug("Outlet section: %s", section.replace("\r\n", " "))
+                # Now get the names using a simpler approach too
+                for outlet_num in range(1, 10):
+                    if outlet_num in self.outlet_states:
+                        name_pattern = re.compile(
+                            f"Outlet {outlet_num}[^\\n]*\\n(.*?)\\n", re.DOTALL
+                        )
+                        name_match = name_pattern.search(response)
+                        if name_match:
+                            name = name_match.group(1).strip()
+                            # Sometimes the name contains the outlet number like "1 - Name"
+                            if " - " in name:
+                                name = name.split(" - ", 1)[1].strip()
+                            if name:
+                                self.outlet_names[outlet_num] = name
+                                _LOGGER.debug(
+                                    "Found outlet %d name: %s", outlet_num, name
+                                )
+                            else:
+                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                        else:
+                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+
+                # Return early if we got the states using the direct approach
+                return
 
             # Using a pattern inspired by the Q-Sys Lua implementation
             # Looking for patterns like:
@@ -1467,3 +1506,103 @@ class RacklinkController:
 
         _LOGGER.debug("Model capabilities for %s: %s", model, capabilities)
         return capabilities
+
+    async def update(self):
+        """Update all device data."""
+        _LOGGER.debug("Running update for %s", self.host)
+        if not self.connected:
+            _LOGGER.debug("Not connected, attempting to connect before update")
+            try:
+                # Use longer timeout for connection during update
+                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Connection attempt during update timed out")
+                return
+            except Exception as err:
+                _LOGGER.error("Connection attempt during update failed: %s", err)
+                return
+
+        # Get PDU details if we don't have them yet
+        if not self.pdu_serial or self.pdu_serial == f"{self.host}_{self.port}":
+            try:
+                await asyncio.wait_for(
+                    self.get_pdu_details(), timeout=self._command_timeout
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Timeout getting PDU details, continuing with defaults")
+            except Exception as e:
+                _LOGGER.warning(
+                    "Error getting PDU details: %s, continuing with defaults", e
+                )
+
+        # Get outlet states (this will also update outlet metrics)
+        _LOGGER.debug("Updating outlet states for %s", self.host)
+        try:
+            await asyncio.wait_for(
+                self.get_all_outlet_states(force_refresh=True),
+                timeout=self._command_timeout,
+            )
+            _LOGGER.debug(
+                "After update, found %d outlet states", len(self.outlet_states)
+            )
+            for outlet, state in self.outlet_states.items():
+                _LOGGER.debug("  Outlet %d: %s", outlet, "ON" if state else "OFF")
+        except Exception as err:
+            _LOGGER.error("Failed to update outlet states: %s", err)
+
+        # If outlet states are still empty, try the individual approach
+        if not self.outlet_states:
+            _LOGGER.debug("No outlet states found, trying individual outlet queries")
+            for outlet_num in range(1, 10):  # Try outlets 1-9
+                try:
+                    response = await self.send_command(
+                        f"show outlets {outlet_num} details"
+                    )
+                    if response:
+                        state_match = re.search(
+                            r"Power state:\s*(\w+)", response, re.IGNORECASE
+                        )
+                        if state_match:
+                            raw_state = state_match.group(1)
+                            state = raw_state.lower() in [
+                                "on",
+                                "1",
+                                "true",
+                                "yes",
+                                "active",
+                            ]
+                            self.outlet_states[outlet_num] = state
+                            _LOGGER.debug(
+                                "Individual query - Outlet %d state: %s (raw: %s)",
+                                outlet_num,
+                                state,
+                                raw_state,
+                            )
+
+                            # Also extract the name while we're here
+                            name_match = re.search(
+                                r"Outlet \d+ - (.+?)[\r\n]", response
+                            )
+                            if name_match:
+                                name = name_match.group(1).strip()
+                                self.outlet_names[outlet_num] = name
+                                _LOGGER.debug(
+                                    "Found outlet %d name: %s", outlet_num, name
+                                )
+                            else:
+                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                except Exception as err:
+                    _LOGGER.debug("Error querying outlet %d: %s", outlet_num, err)
+
+        # Get sensor values
+        try:
+            await asyncio.wait_for(
+                self.get_sensor_values(force_refresh=True),
+                timeout=self._command_timeout,
+            )
+            _LOGGER.debug("After update, sensors: %s", self.sensors)
+        except Exception as err:
+            _LOGGER.error("Failed to update sensor values: %s", err)
+
+        self._last_update = asyncio.get_event_loop().time()
+        self._available = True  # Mark as available even if some data is missing

@@ -6,13 +6,14 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import Platform, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, DEFAULT_PORT
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,129 +27,141 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Middle Atlantic Racklink from a config entry."""
-    _LOGGER.debug(
-        "Setting up Middle Atlantic Racklink integration for %s", entry.data["host"]
+    """Set up the Middle Atlantic Racklink integration from a config entry."""
+    host = entry.data["host"]
+    port = int(entry.data.get("port", DEFAULT_PORT))
+    username = entry.data["username"]
+    password = entry.data["password"]
+    model = entry.data.get("model", "AUTO_DETECT")
+
+    _LOGGER.info(
+        "Setting up Middle Atlantic Racklink integration for %s:%s (%s)",
+        host,
+        port,
+        model,
     )
 
-    # Create controller but don't connect immediately - this prevents blocking boot
-    controller = RacklinkController(
-        entry.data["host"],
-        entry.data["port"],
-        entry.data["username"],
-        entry.data["password"],
-        entry.data.get("model", "AUTO_DETECT"),  # Get model or default to auto-detect
-    )
+    # Create controller instance
+    controller = RacklinkController(host, port, username, password, model)
 
-    # Store controller in hass data
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = controller
+    # Start background connection with extended timeout
+    try:
+        # Attempt initial connection to device
+        _LOGGER.debug("Starting background connection to %s", host)
+        await controller.start_background_connection()
 
-    # Start non-blocking connection task
-    await controller.start_background_connection()
+        # Ensure update method is implemented and ready
+        # This will allow entity updates to function correctly
+        if not hasattr(controller, "update"):
+            _LOGGER.warning(
+                "Controller missing update method, patching with synchronization method"
+            )
 
-    # Schedule platform setup as a background task to avoid blocking
-    # This allows Home Assistant web UI to load faster
-    async def setup_platforms():
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Launch platform setup in the background
-    hass.async_create_task(setup_platforms())
-
-    async def async_update(now=None) -> None:
-        """Update the controller data."""
-        # If not yet connected, try connecting
-        if not controller.connected:
-            try:
-                _LOGGER.debug("Attempting to connect during update cycle")
-                # Use timeout to prevent blocking
-                await asyncio.wait_for(controller.connect(), timeout=10)
-            except (asyncio.TimeoutError, Exception) as err:
-                _LOGGER.error("Failed to connect during update: %s", err)
-                return
-
-        # Only fetch data if connected
-        if controller.connected:
-            try:
-                # First, ensure we have the basic device info
-                _LOGGER.debug("Updating device details")
-                try:
-                    await asyncio.wait_for(controller.get_pdu_details(), timeout=10)
-                except Exception as err:
-                    _LOGGER.error("Error getting PDU details: %s", err)
-
-                # Then, get outlet details - try multiple times if needed
-                _LOGGER.debug("Updating outlet states")
-                outlet_retry = 2  # Try up to 3 times (initial + 2 retries)
-                outlet_data_success = False
-
-                while outlet_retry > 0 and not outlet_data_success:
-                    try:
-                        await asyncio.wait_for(
-                            controller.get_all_outlet_states(force_refresh=True),
-                            timeout=10,
-                        )
-                        # Check if we got data
-                        if controller.outlet_states:
-                            outlet_data_success = True
-                            _LOGGER.debug(
-                                "Successfully retrieved outlet states: %s",
-                                controller.outlet_states,
-                            )
-                        else:
-                            _LOGGER.warning(
-                                "No outlet states data returned, retrying..."
-                            )
-                            outlet_retry -= 1
-                            await asyncio.sleep(1)  # Short delay before retry
-                    except Exception as err:
-                        _LOGGER.error(
-                            "Error getting outlet states (retry %d): %s",
-                            2 - outlet_retry,
-                            err,
-                        )
-                        outlet_retry -= 1
-                        await asyncio.sleep(1)  # Short delay before retry
-
+            async def update_wrapper():
+                """Handle update requests."""
+                _LOGGER.debug("Update request for %s", host)
+                # Get outlet states
+                await controller.get_all_outlet_states(force_refresh=True)
                 # Get sensor values
-                _LOGGER.debug("Updating sensor values")
-                try:
-                    await asyncio.wait_for(
-                        controller.get_sensor_values(force_refresh=True), timeout=10
-                    )
-                    _LOGGER.debug("Retrieved sensor values: %s", controller.sensors)
-                except Exception as err:
-                    _LOGGER.error("Error getting sensor values: %s", err)
+                await controller.get_sensor_values(force_refresh=True)
 
-                # Update entity states
-                _LOGGER.debug("Triggering entity update")
-                async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
+        # Add update method to controller
+        controller.update = update_wrapper
 
-            except asyncio.TimeoutError:
-                _LOGGER.error("Update timed out for %s", entry.data["host"])
-            except Exception as err:
-                _LOGGER.error("Error updating Racklink data: %s", err)
+        # Wait for background connection to establish
+        await asyncio.sleep(5)
 
-    # Schedule periodic updates with a reasonable interval
-    update_interval = DEFAULT_SCAN_INTERVAL
-    entry.async_on_unload(
-        async_track_time_interval(hass, async_update, update_interval)
+        # Force an initial update to populate data
+        _LOGGER.debug("Triggering initial data refresh for %s", host)
+        await controller.update()
+
+    except Exception as e:
+        _LOGGER.error("Error during initial setup: %s", e)
+        # Continue anyway - Home Assistant will show entities as unavailable
+        # until connection is established
+
+    # Store the controller
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = controller
+
+    # Set up all platforms
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Create update coordinator to refresh the data
+    async def async_update_data():
+        """Fetch data from the controller."""
+        try:
+            # Check if controller is connected, if not, attempt reconnection
+            if not controller.connected:
+                await controller.connect()
+
+            # Update all data from device
+            if controller.connected:
+                await controller.update()
+
+            # Signal entities to update
+            async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
+
+            return True
+        except Exception as e:
+            _LOGGER.error("Error updating from device: %s", e)
+            # Convert exception into update failure for coordinator
+            raise UpdateFailed(f"Error communicating with device: {e}")
+
+    # Create the update coordinator
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"Racklink {host}",
+        update_method=async_update_data,
+        update_interval=DEFAULT_SCAN_INTERVAL,
     )
 
-    # Initial update - does not block setup
-    hass.async_create_task(async_update())
+    # Start the initial refresh
+    await coordinator.async_refresh()
 
-    async def cycle_all_outlets(call: ServiceCall) -> None:
-        """Service to cycle all outlets."""
-        _LOGGER.info("Cycling all outlets on %s", controller.pdu_name)
-        try:
-            # Add timeout to prevent blocking
-            await asyncio.wait_for(controller.cycle_all_outlets(), timeout=10)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Cycle all outlets timed out")
-        except Exception as err:
-            _LOGGER.error("Error cycling outlets: %s", err)
+    # Store coordinator in the data dict
+    hass.data[DOMAIN][entry.entry_id + "_coordinator"] = coordinator
 
-    hass.services.async_register(DOMAIN, "cycle_all_outlets", cycle_all_outlets)
+    # Set up services
+    async def async_cycle_all_outlets(call):
+        """Cycle power for all outlets."""
+        await controller.cycle_all_outlets()
+
+    hass.services.async_register(DOMAIN, "cycle_all_outlets", async_cycle_all_outlets)
+
+    # Register set_outlet_name service
+    async def async_set_outlet_name(call):
+        """Set the name of an outlet."""
+        outlet = call.data.get("outlet")
+        name = call.data.get("name")
+        if outlet is not None and name is not None:
+            await controller.set_outlet_name(outlet, name)
+            # Force refresh of coordinator after name change
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "set_outlet_name", async_set_outlet_name)
+
+    # Register set_pdu_name service
+    async def async_set_pdu_name(call):
+        """Set the name of the PDU."""
+        name = call.data.get("name")
+        if name is not None:
+            await controller.set_pdu_name(name)
+            # Force refresh of coordinator after name change
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "set_pdu_name", async_set_pdu_name)
+
+    # Register handler to cleanly close connection on shutdown
+    async def async_stop_controller(event):
+        """Stop the controller when Home Assistant stops."""
+        _LOGGER.debug("Shutting down Racklink controller for %s", host)
+        await controller.shutdown()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_stop_controller)
+    )
 
     return True
 

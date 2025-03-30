@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Any, Optional
 
 from homeassistant.components.switch import SwitchEntity
@@ -237,36 +238,122 @@ class RacklinkOutlet(SwitchEntity):
             self._pending_update = False
 
     async def async_update(self) -> None:
-        """Fetch new state data for this outlet."""
-        if not self._controller.connected:
-            self._attr_available = False
-            return
+        """Fetch updated state from the device."""
+        try:
+            # Only update if not pending a command confirmation
+            if self._pending_update:
+                return
 
-        # Skip update if we're waiting for a command to complete
-        if self._pending_update:
-            return
+            # Get the current state directly from controller
+            current_state = self._controller.outlet_states.get(self._outlet)
+            current_name = self._controller.outlet_names.get(self._outlet)
 
-        # Update state from controller's cached data
-        self._state = self._controller.outlet_states.get(self._outlet, False)
+            # Check if we have outlet state data
+            if current_state is None:
+                _LOGGER.debug(
+                    "No state data for outlet %d, controller has data for outlets: %s",
+                    self._outlet,
+                    list(sorted(self._controller.outlet_states.keys())),
+                )
 
-        # Update name from controller if available
-        new_outlet_name = self._controller.outlet_names.get(self._outlet)
-        if (
-            new_outlet_name
-            and new_outlet_name.strip()
-            and new_outlet_name != self._outlet_name
-        ):
-            self._outlet_name = new_outlet_name
-            self._attr_name = new_outlet_name
-        elif not self._attr_name:
-            self._attr_name = f"Outlet {self._outlet}"
+                # Try to force an update if we don't have data
+                if self._controller.connected:
+                    _LOGGER.debug(
+                        "Connected but missing outlet %d data - forcing update",
+                        self._outlet,
+                    )
+                    # Force controller to update
+                    await self._controller.update()
 
-        # Determine availability based on connection status and if outlet exists in data
-        self._attr_available = (
-            self._controller.connected
-            and self._controller.available
-            and self._outlet in self._controller.outlet_states
-        )
+                    # Try again
+                    current_state = self._controller.outlet_states.get(self._outlet)
+                    current_name = self._controller.outlet_names.get(self._outlet)
+
+                    if current_state is not None:
+                        _LOGGER.debug(
+                            "After forcing update, got outlet %d state: %s",
+                            self._outlet,
+                            current_state,
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "Still no data for outlet %d after forcing update",
+                            self._outlet,
+                        )
+                        # Try one more direct query as a last resort
+                        try:
+                            response = await self._controller.send_command(
+                                f"show outlets {self._outlet} details"
+                            )
+                            if response:
+                                _LOGGER.debug(
+                                    "Direct outlet %d query response: %s",
+                                    self._outlet,
+                                    response[:100],
+                                )
+                                # Parse outlet state
+                                state_match = re.search(
+                                    r"Power state:\s*(\w+)", response, re.IGNORECASE
+                                )
+                                if state_match:
+                                    raw_state = state_match.group(1)
+                                    current_state = raw_state.lower() in [
+                                        "on",
+                                        "1",
+                                        "true",
+                                        "yes",
+                                        "active",
+                                    ]
+                                    self._controller.outlet_states[self._outlet] = (
+                                        current_state
+                                    )
+                                    _LOGGER.debug(
+                                        "Direct query found outlet %d state: %s",
+                                        self._outlet,
+                                        current_state,
+                                    )
+
+                                    # Also try to get name
+                                    name_match = re.search(
+                                        r"Outlet \d+ - (.+?)[\r\n]", response
+                                    )
+                                    if name_match:
+                                        current_name = name_match.group(1).strip()
+                                        self._controller.outlet_names[self._outlet] = (
+                                            current_name
+                                        )
+                        except Exception as e:
+                            _LOGGER.debug("Error in direct outlet query: %s", e)
+
+            # Update state if available (don't change state during pending update)
+            if current_state is not None:
+                if self._state != current_state:
+                    _LOGGER.debug(
+                        "Outlet %d state changed from %s to %s",
+                        self._outlet,
+                        self._state,
+                        current_state,
+                    )
+                self._state = current_state
+
+            # Update name if it's changed
+            if current_name is not None:
+                outlet_name = current_name
+            else:
+                outlet_name = f"Outlet {self._outlet}"
+
+            if outlet_name != self._outlet_name:
+                _LOGGER.debug(
+                    "Outlet %d name changed from '%s' to '%s'",
+                    self._outlet,
+                    self._outlet_name,
+                    outlet_name,
+                )
+                self._outlet_name = outlet_name
+                self._attr_name = outlet_name
+
+        except Exception as err:
+            _LOGGER.error("Error updating outlet %d: %s", self._outlet, err)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
