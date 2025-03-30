@@ -499,91 +499,58 @@ class RacklinkController:
             self._schedule_reconnect()  # Try again with increased backoff
 
     async def connect(self) -> bool:
-        """Connect to the device and authenticate."""
+        """Connect to the device."""
+        if self._connected:
+            return True
+
         async with self._connection_lock:
-            if self._connected and self._socket:
-                # Verify socket is still valid
-                try:
-                    if self._socket.fileno() == -1:
-                        _LOGGER.debug("Socket appears to be closed, reconnecting")
-                        self._connected = False
-                        self._socket = None
-                    else:
-                        _LOGGER.debug("Already connected to %s", self._host)
-                        return True
-                except (OSError, ValueError):
-                    _LOGGER.debug("Socket error, needs reconnection")
-                    self._connected = False
-                    self._socket = None
-
-            _LOGGER.info("Connecting to %s:%s", self._host, self._port)
-
-            # Reset the retry counter when we start a new connection attempt
-            self._retry_count = 0
-
             try:
-                # Close any existing socket first
-                await self._close_socket()
-
-                # Create socket with a reasonable timeout
-                self._socket = await asyncio.wait_for(
-                    self._create_socket_connection(), timeout=self._socket_timeout
+                _LOGGER.info(
+                    "Connecting to %s:%s as %s", self._host, self._port, self._username
                 )
 
+                # Create socket connection
+                self._socket = await self._create_socket_connection()
                 if not self._socket:
-                    _LOGGER.error(
-                        "Failed to create socket connection to %s:%s",
-                        self._host,
-                        self._port,
-                    )
+                    _LOGGER.error("Failed to create socket connection")
+                    self._handle_error("Failed to create socket connection")
                     return False
 
-                # Try to log in with a timeout
-                login_success = await asyncio.wait_for(
-                    self._login(), timeout=self._login_timeout
-                )
-
-                if login_success:
-                    self._connected = True
-                    self._available = True
-                    _LOGGER.info(
-                        "Successfully connected to %s:%s", self._host, self._port
-                    )
-
-                    # Ensure command processor is running
-                    self._ensure_command_processor_running()
-
-                    # Get device info
-                    try:
-                        await asyncio.wait_for(
-                            self.get_device_info(), timeout=self._command_timeout * 2
-                        )
-                    except asyncio.TimeoutError:
-                        _LOGGER.warning(
-                            "Timeout while getting device info - continuing anyway"
-                        )
-                    except Exception as e:
-                        _LOGGER.warning(
-                            "Error getting device info: %s - continuing anyway", e
-                        )
-
-                    return True
-                else:
-                    _LOGGER.error("Failed to log in to %s:%s", self._host, self._port)
+                # Log in to the device
+                login_success = await self._login()
+                if not login_success:
+                    _LOGGER.error("Login failed")
+                    self._handle_error("Login failed")
                     await self._close_socket()
                     return False
 
-            except asyncio.TimeoutError:
-                _LOGGER.error(
-                    "Connection attempt to %s:%s timed out", self._host, self._port
-                )
-                await self._close_socket()
-                return False
+                # Mark as connected
+                self._connected = True
+                self._available = True
+                _LOGGER.info("Successfully connected to %s:%s", self._host, self._port)
+
+                # Initialize command processor if needed
+                self._ensure_command_processor_running()
+
+                # Discover valid commands on this device to help with command mapping
+                try:
+                    _LOGGER.debug("Initiating command discovery to learn device syntax")
+                    await self.discover_valid_commands()
+                except Exception as e:
+                    _LOGGER.warning("Command discovery failed: %s", e)
+
+                # Load initial data
+                try:
+                    await self._load_initial_data()
+                except Exception as e:
+                    _LOGGER.warning("Could not load initial data: %s", e)
+
+                return True
+
             except Exception as e:
-                _LOGGER.error(
-                    "Error during connection to %s:%s: %s", self._host, self._port, e
-                )
-                await self._close_socket()
+                self._handle_error(f"Error connecting: {e}")
+                if self._socket:
+                    await self._close_socket()
                 return False
 
     async def _load_initial_data(self):
@@ -1134,11 +1101,23 @@ class RacklinkController:
         _LOGGER.info("Controller for %s has been shut down", self._host)
 
     async def send_command(
-        self, command: str, timeout: int = None, wait_time: float = 0.5
+        self,
+        command: str,
+        timeout: int = None,
+        wait_time: float = 0.5,
+        retry_alternative_command: bool = True,
     ) -> str:
         """Send a command to the device and wait for the response."""
         if not command:
             return ""
+
+        # Map standard command to device-specific format if needed
+        mapped_command = self._map_standard_command(command)
+        if mapped_command != command:
+            _LOGGER.debug(
+                "Using mapped command '%s' instead of '%s'", mapped_command, command
+            )
+            command = mapped_command
 
         command_timeout = timeout or self._command_timeout
         command_with_newline = f"{command}\r\n"
@@ -1221,6 +1200,32 @@ class RacklinkController:
                         len(response_text),
                         response_text[:100],
                     )
+
+                # Check if the response contains an error about unrecognized command
+                if (
+                    "unrecognized" in response_text.lower()
+                    or "invalid" in response_text.lower()
+                ) and "argument" in response_text.lower():
+                    _LOGGER.warning(
+                        "Command '%s' not recognized by device: %s",
+                        command,
+                        response_text.split("\n")[0],
+                    )
+
+                    # If this is our first try and we're allowed to try alternative commands
+                    if retry_count == 0 and retry_alternative_command:
+                        # If we haven't discovered commands yet, do it now
+                        if (
+                            not hasattr(self, "_valid_commands")
+                            or not self._valid_commands
+                        ):
+                            _LOGGER.info(
+                                "Initiating command discovery to find valid syntax"
+                            )
+                            await self.discover_valid_commands()
+                            # Try again with discovered commands
+                            retry_count += 1
+                            continue
 
                 # Log more details about pattern matching to help with power state issues
                 if "show outlets" in command and "details" in command:
@@ -1782,6 +1787,17 @@ class RacklinkController:
             command = f"power outlets {outlet_num} on /y"
             response = await self.send_command(command, timeout=10, wait_time=1.0)
 
+            # Check if the command was recognized
+            if (
+                not response
+                or "unrecognized" in response.lower()
+                or "invalid" in response.lower()
+            ):
+                _LOGGER.warning(
+                    "Standard outlet ON command not recognized, trying alternative method"
+                )
+                return await self.direct_turn_outlet_on(outlet_num)
+
             if response:
                 # Update our internal state
                 self._outlet_states[outlet_num] = True
@@ -1804,11 +1820,11 @@ class RacklinkController:
                 return True
             else:
                 _LOGGER.error("No response when turning on outlet %d", outlet_num)
-                return False
+                return await self.direct_turn_outlet_on(outlet_num)
 
         except Exception as e:
             _LOGGER.error("Error turning on outlet %d: %s", outlet_num, e)
-            return False
+            return await self.direct_turn_outlet_on(outlet_num)
 
     async def turn_outlet_off(self, outlet_num: int) -> bool:
         """Turn a specific outlet off."""
@@ -1822,6 +1838,17 @@ class RacklinkController:
             _LOGGER.info("Turning off outlet %d", outlet_num)
             command = f"power outlets {outlet_num} off /y"
             response = await self.send_command(command, timeout=10, wait_time=1.0)
+
+            # Check if the command was recognized
+            if (
+                not response
+                or "unrecognized" in response.lower()
+                or "invalid" in response.lower()
+            ):
+                _LOGGER.warning(
+                    "Standard outlet OFF command not recognized, trying alternative method"
+                )
+                return await self.direct_turn_outlet_off(outlet_num)
 
             if response:
                 # Update our internal state
@@ -1845,11 +1872,11 @@ class RacklinkController:
                 return True
             else:
                 _LOGGER.error("No response when turning off outlet %d", outlet_num)
-                return False
+                return await self.direct_turn_outlet_off(outlet_num)
 
         except Exception as e:
             _LOGGER.error("Error turning off outlet %d: %s", outlet_num, e)
-            return False
+            return await self.direct_turn_outlet_off(outlet_num)
 
     async def get_outlet_state(self, outlet_num: int) -> bool:
         """Get the current state of a specific outlet."""
@@ -1867,7 +1894,12 @@ class RacklinkController:
                 _LOGGER.error(
                     "No response getting outlet state for outlet %d", outlet_num
                 )
-                return False
+                return await self.get_direct_outlet_state(outlet_num)
+
+            # Check if we got an unrecognized argument error
+            if "unrecognized" in response.lower() or "invalid" in response.lower():
+                _LOGGER.warning("Command not recognized, trying alternative approach")
+                return await self.get_direct_outlet_state(outlet_num)
 
             # Log response length for debugging
             _LOGGER.debug(
@@ -1893,21 +1925,15 @@ class RacklinkController:
                 return state
             else:
                 _LOGGER.error(
-                    "Could not parse outlet state from response for outlet %d - check parser logs for details",
+                    "Could not parse outlet state from response for outlet %d - trying direct method",
                     outlet_num,
                 )
-                # Return last known state if available, otherwise default to False
-                last_state = self._outlet_states.get(outlet_num, False)
-                _LOGGER.info(
-                    "Using last known state for outlet %d: %s",
-                    outlet_num,
-                    "ON" if last_state else "OFF",
-                )
-                return last_state
+                # Try alternative approach
+                return await self.get_direct_outlet_state(outlet_num)
 
         except Exception as e:
             _LOGGER.error("Error getting outlet state for outlet %d: %s", outlet_num, e)
-            return False
+            return self._outlet_states.get(outlet_num, False)
 
     async def get_all_outlet_states(self, force_refresh: bool = False) -> dict:
         """Get all outlet states efficiently using a single command."""
@@ -2133,3 +2159,252 @@ class RacklinkController:
         except Exception as e:
             _LOGGER.error("Error getting sensor values: %s", e)
             return self._sensors
+
+    async def discover_valid_commands(self) -> dict:
+        """Discover what commands are valid for this device."""
+        _LOGGER.info("Starting command discovery to learn device syntax")
+
+        command_map = {}
+
+        # Try to get help information
+        help_cmd = "help"
+        help_response = await self.send_command(help_cmd)
+
+        # Log the help response for analysis
+        _LOGGER.info(
+            "Help command response (truncated): %s",
+            help_response[:200] if help_response else "No response",
+        )
+
+        # Try some basic commands with simpler syntax
+        test_commands = [
+            "show",  # Basic show command
+            "list",  # Alternative listing command
+            "get",  # Alternative get command
+            "status",  # Status command
+            "pdu",  # Direct pdu command
+            "outlet",  # Direct outlet command
+            "power",  # Power command
+            "show pdu",  # Show PDU status
+            "show outlet",  # Try singular
+            "pdu status",  # Alternative PDU status
+            "outlet status",  # Alternative outlet status
+            "power status",  # Power status
+        ]
+
+        for cmd in test_commands:
+            response = await self.send_command(cmd)
+
+            # Check if command was accepted (no error message)
+            command_accepted = (
+                response
+                and "unrecognized" not in response.lower()
+                and "invalid" not in response.lower()
+            )
+
+            if command_accepted:
+                _LOGGER.info("Command '%s' appears to be valid", cmd)
+                command_map[cmd] = True
+
+                # If basic command works, try with arguments
+                if cmd in ["show", "list", "get"]:
+                    sub_cmds = ["pdu", "outlet", "outlets", "power", "status"]
+                    for sub in sub_cmds:
+                        sub_response = await self.send_command(f"{cmd} {sub}")
+                        if (
+                            sub_response
+                            and "unrecognized" not in sub_response.lower()
+                            and "invalid" not in sub_response.lower()
+                        ):
+                            _LOGGER.info(
+                                "Command '%s %s' appears to be valid", cmd, sub
+                            )
+                            command_map[f"{cmd} {sub}"] = True
+            else:
+                command_map[cmd] = False
+                _LOGGER.debug("Command '%s' appears to be invalid", cmd)
+
+        _LOGGER.info(
+            "Command discovery complete, found %d valid commands",
+            len([k for k, v in command_map.items() if v]),
+        )
+        self._valid_commands = command_map
+        return command_map
+
+    def _map_standard_command(self, command: str) -> str:
+        """Map standard command to device-specific command format based on discovery."""
+        # Don't attempt to map empty commands
+        if not command:
+            return command
+
+        # Check if we've done command discovery
+        if not hasattr(self, "_valid_commands") or not self._valid_commands:
+            # If no command map yet, return original
+            return command
+
+        # Lower case for matching
+        cmd_lower = command.lower()
+
+        # Check for specific command mappings
+        if "show outlets all" in cmd_lower:
+            # Try alternatives in preference order
+            alternatives = [
+                "show outlet",
+                "list outlet",
+                "outlet status",
+                "show outlets",
+                "outlets",
+                "outlet list",
+                "pdu outlets",
+                "show pdu outlets",
+            ]
+
+            for alt in alternatives:
+                if alt in self._valid_commands and self._valid_commands[alt]:
+                    _LOGGER.debug("Mapped 'show outlets all' to '%s'", alt)
+                    return alt
+
+        elif "show outlets" in cmd_lower and "details" in cmd_lower:
+            # Extract outlet number
+            match = re.search(r"show outlets (\d+) details", cmd_lower)
+            if match:
+                outlet_num = match.group(1)
+
+                # Try alternatives in preference order
+                alternatives = [
+                    f"outlet {outlet_num}",
+                    f"show outlet {outlet_num}",
+                    f"outlet status {outlet_num}",
+                    f"get outlet {outlet_num}",
+                    f"outlet {outlet_num} status",
+                    f"pdu outlet {outlet_num}",
+                ]
+
+                for alt in alternatives:
+                    if (
+                        alt.split()[0] in self._valid_commands
+                        and self._valid_commands[alt.split()[0]]
+                    ):
+                        _LOGGER.debug(
+                            "Mapped 'show outlets %s details' to '%s'", outlet_num, alt
+                        )
+                        return alt
+
+        # Default to original command
+        return command
+
+    async def get_direct_outlet_state(self, outlet_num: int) -> bool:
+        """Try alternative methods to get outlet state."""
+        if not self._connected:
+            _LOGGER.debug("Not connected, cannot get outlet state")
+            return False
+
+        # Try multiple command formats to find one that works
+        commands = [
+            f"outlet {outlet_num}",
+            f"outlet {outlet_num} status",
+            f"pdu outlet {outlet_num}",
+            f"show outlet {outlet_num}",
+            f"get outlet {outlet_num}",
+            f"status outlet {outlet_num}",
+        ]
+
+        for cmd in commands:
+            _LOGGER.debug("Trying alternative command: %s", cmd)
+            response = await self.send_command(cmd, retry_alternative_command=False)
+
+            if (
+                response
+                and "unrecognized" not in response.lower()
+                and "invalid" not in response.lower()
+            ):
+                _LOGGER.info("Found working command for outlet status: %s", cmd)
+
+                # Look for state indicators in response
+                on_indicators = ["on", "active", "enabled", "power on"]
+                off_indicators = ["off", "inactive", "disabled", "power off"]
+
+                response_lower = response.lower()
+
+                # Check for on indicators
+                for indicator in on_indicators:
+                    if indicator in response_lower:
+                        _LOGGER.info("Found ON indicator '%s' in response", indicator)
+                        self._outlet_states[outlet_num] = True
+                        return True
+
+                # Check for off indicators
+                for indicator in off_indicators:
+                    if indicator in response_lower:
+                        _LOGGER.info("Found OFF indicator '%s' in response", indicator)
+                        self._outlet_states[outlet_num] = False
+                        return False
+
+        _LOGGER.warning("Could not determine outlet state using alternative commands")
+        return self._outlet_states.get(outlet_num, False)
+
+    async def direct_turn_outlet_on(self, outlet_num: int) -> bool:
+        """Try alternative methods to turn outlet on."""
+        if not self._connected:
+            _LOGGER.debug("Not connected, cannot turn on outlet")
+            return False
+
+        # Try multiple command formats to find one that works
+        commands = [
+            f"outlet {outlet_num} on",
+            f"outlet {outlet_num} power on",
+            f"pdu outlet {outlet_num} on",
+            f"power outlet {outlet_num} on",
+            f"set outlet {outlet_num} on",
+        ]
+
+        for cmd in commands:
+            _LOGGER.debug("Trying alternative on command: %s", cmd)
+            response = await self.send_command(cmd, retry_alternative_command=False)
+
+            if (
+                response
+                and "unrecognized" not in response.lower()
+                and "invalid" not in response.lower()
+            ):
+                _LOGGER.info("Found working command for turning outlet on: %s", cmd)
+
+                # Update our internal state
+                self._outlet_states[outlet_num] = True
+                return True
+
+        _LOGGER.warning("Could not turn outlet on using alternative commands")
+        return False
+
+    async def direct_turn_outlet_off(self, outlet_num: int) -> bool:
+        """Try alternative methods to turn outlet off."""
+        if not self._connected:
+            _LOGGER.debug("Not connected, cannot turn off outlet")
+            return False
+
+        # Try multiple command formats to find one that works
+        commands = [
+            f"outlet {outlet_num} off",
+            f"outlet {outlet_num} power off",
+            f"pdu outlet {outlet_num} off",
+            f"power outlet {outlet_num} off",
+            f"set outlet {outlet_num} off",
+        ]
+
+        for cmd in commands:
+            _LOGGER.debug("Trying alternative off command: %s", cmd)
+            response = await self.send_command(cmd, retry_alternative_command=False)
+
+            if (
+                response
+                and "unrecognized" not in response.lower()
+                and "invalid" not in response.lower()
+            ):
+                _LOGGER.info("Found working command for turning outlet off: %s", cmd)
+
+                # Update our internal state
+                self._outlet_states[outlet_num] = False
+                return True
+
+        _LOGGER.warning("Could not turn outlet off using alternative commands")
+        return False
