@@ -76,6 +76,11 @@ class RacklinkOutlet(SwitchEntity):
         self._state = None
         self._last_commanded_state = None
         self._pending_update = False
+        # Initialize attribute values
+        self._current = None
+        self._power = None
+        self._energy = None
+        self._power_factor = None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -191,6 +196,12 @@ class RacklinkOutlet(SwitchEntity):
         # Update state from controller's cached data
         self._state = self._controller.outlet_states.get(self._outlet, False)
 
+        # Update power attributes
+        self._current = self._controller.outlet_current.get(self._outlet)
+        self._power = self._controller.outlet_power.get(self._outlet)
+        self._energy = self._controller.outlet_energy.get(self._outlet)
+        self._power_factor = self._controller.outlet_power_factor.get(self._outlet)
+
         # Update name from controller if available
         outlet_name = self._controller.outlet_names.get(self._outlet)
         if outlet_name and outlet_name.strip():
@@ -208,15 +219,15 @@ class RacklinkOutlet(SwitchEntity):
             "can_cycle": True,
         }
 
-        # Only add power and current if they exist
-        if power := self._controller.outlet_power.get(self._outlet):
-            attrs["power"] = power
-        if current := self._controller.outlet_current.get(self._outlet):
-            attrs["current"] = current
-        if energy := self._controller.outlet_energy.get(self._outlet):
-            attrs["energy"] = energy
-        if power_factor := self._controller.outlet_power_factor.get(self._outlet):
-            attrs["power_factor"] = power_factor
+        # Add all power-related attributes that are available
+        if self._power is not None:
+            attrs["power"] = f"{self._power:.2f} W"
+        if self._current is not None:
+            attrs["current"] = f"{self._current:.2f} A"
+        if self._energy is not None:
+            attrs["energy"] = f"{self._energy:.2f} Wh"
+        if self._power_factor is not None:
+            attrs["power_factor"] = f"{self._power_factor:.2f} %"
 
         return attrs
 
