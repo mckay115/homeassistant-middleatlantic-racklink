@@ -102,16 +102,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not controller.connected:
                 _LOGGER.debug("Controller not connected, attempting reconnection")
                 try:
-                    # Start a background connection attempt instead of blocking
-                    controller.start_background_connection()
-                    # Wait briefly but don't block indefinitely
-                    await asyncio.sleep(0.5)
+                    await controller.reconnect()
 
                     # If still not connected, raise exception but let coordinator handle it
                     if not controller.connected:
-                        _LOGGER.warning(
-                            "Connection not immediately available, will retry later"
-                        )
+                        _LOGGER.warning("Connection not available, will retry later")
                         raise UpdateFailed("Device connection unavailable")
                 except Exception as e:
                     _LOGGER.warning("Error during reconnection attempt: %s", e)
@@ -147,16 +142,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "outlet_states": controller.outlet_states.copy(),
                     "outlet_names": controller.outlet_names.copy(),
                     "outlet_power": (
-                        getattr(controller, "outlet_power", {}).copy()
+                        controller.outlet_power.copy()
                         if hasattr(controller, "outlet_power")
                         else {}
                     ),
                     "outlet_current": (
-                        getattr(controller, "outlet_current", {}).copy()
+                        controller.outlet_current.copy()
                         if hasattr(controller, "outlet_current")
                         else {}
                     ),
-                    "last_update": controller._last_update,
+                    "outlet_energy": (
+                        controller.outlet_energy.copy()
+                        if hasattr(controller, "outlet_energy")
+                        else {}
+                    ),
+                    "outlet_voltage": (
+                        controller.outlet_voltage.copy()
+                        if hasattr(controller, "outlet_voltage")
+                        else {}
+                    ),
+                    "outlet_power_factor": (
+                        controller.outlet_power_factor.copy()
+                        if hasattr(controller, "outlet_power_factor")
+                        else {}
+                    ),
+                    "sensors": (
+                        controller.sensors.copy()
+                        if hasattr(controller, "sensors")
+                        else {}
+                    ),
+                    "last_update": getattr(controller, "_last_update", 0),
                     "pdu_info": (
                         controller.pdu_info.copy()
                         if hasattr(controller, "pdu_info")

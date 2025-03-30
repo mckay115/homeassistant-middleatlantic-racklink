@@ -1,0 +1,35 @@
+COMMAND: show outlets all
+TIMESTAMP: 2025-03-29T23:57:40.122565
+RAW RESPONSE:
+--------------------------------------------------
+show outlets all
+Outlet 1 - Firewall:
+Power state: On
+
+Outlet 2 - HP Switch:
+Power state: On
+
+Outlet 3 - Hades Canyon:
+Power state: On
+
+Outlet 4 - Automation NUC:
+Power state: On
+
+Outlet 5 - HomeCore:
+Power state: On
+
+Outlet 6 - MarsMedia??:
+Power state: On
+
+Outlet 7 - NAS:
+Power state: On
+
+Outlet 8 - Internal Rack Power:
+Power state: On
+
+[LiskoLabs Rack] # 
+--------------------------------------------------
+
+PARSING GUIDE FOR ALL OUTLETS:
+- Use regex r"Outlet (\d+):[^\n]*\n\s+([\w\s]+)" to get outlet number and state
+- This is useful for polling all outlet states in one command

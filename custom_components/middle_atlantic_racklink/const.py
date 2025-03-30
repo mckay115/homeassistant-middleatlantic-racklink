@@ -71,3 +71,40 @@ ATTR_TEMPERATURE = "temperature"
 ATTR_POWER_FACTOR = "power_factor"
 ATTR_FREQUENCY = "frequency"
 ATTR_VOLTAGE = "voltage"
+
+# Sensor value dict keys
+SENSOR_PDU_TEMPERATURE = "temperature"
+SENSOR_PDU_CURRENT = "current"
+SENSOR_PDU_VOLTAGE = "voltage"
+SENSOR_PDU_POWER = "power"
+SENSOR_PDU_ENERGY = "energy"
+SENSOR_PDU_POWER_FACTOR = "power_factor"
+SENSOR_PDU_FREQUENCY = "frequency"
+
+# Outlet power metrics
+OUTLET_METRIC_CURRENT = "current"
+OUTLET_METRIC_VOLTAGE = "voltage"
+OUTLET_METRIC_POWER = "power"
+OUTLET_METRIC_ENERGY = "energy"
+OUTLET_METRIC_POWER_FACTOR = "power_factor"
+OUTLET_METRIC_FREQUENCY = "frequency"
+OUTLET_METRIC_APPARENT_POWER = "apparent_power"
+
+# Units of measurement
+UNIT_AMPERE = "A"
+UNIT_VOLT = "V"
+UNIT_WATT = "W"
+UNIT_VA = "VA"
+UNIT_WATTHOUR = "Wh"
+UNIT_HERTZ = "Hz"
+UNIT_CELSIUS = "°C"
+UNIT_FAHRENHEIT = "°F"
+
+# Command collection settings
+MAX_OUTLETS_TO_UPDATE_PER_CYCLE = (
+    3  # Number of outlets to collect detailed power data at once
+)
+UPDATE_CYCLE_DELAY = 0.5  # Seconds to delay between commands
+
+# Optional settings
+CONF_COLLECT_POWER_DATA = "collect_power_data"

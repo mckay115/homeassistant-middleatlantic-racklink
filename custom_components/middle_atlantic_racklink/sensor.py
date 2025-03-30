@@ -12,12 +12,31 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfFrequency,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
+from .const import (
+    ATTR_MANUFACTURER,
+    ATTR_MODEL,
+    DOMAIN,
+    SENSOR_PDU_TEMPERATURE,
+    SENSOR_PDU_CURRENT,
+    SENSOR_PDU_VOLTAGE,
+    SENSOR_PDU_POWER,
+    SENSOR_PDU_ENERGY,
+    SENSOR_PDU_POWER_FACTOR,
+    SENSOR_PDU_FREQUENCY,
+    OUTLET_METRIC_CURRENT,
+    OUTLET_METRIC_VOLTAGE,
+    OUTLET_METRIC_POWER,
+    OUTLET_METRIC_ENERGY,
+    OUTLET_METRIC_POWER_FACTOR,
+    OUTLET_METRIC_FREQUENCY,
+    OUTLET_METRIC_APPARENT_POWER,
+)
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
@@ -154,7 +173,7 @@ class RacklinkVoltage(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("voltage")
+            self._state = self._controller.sensors.get(SENSOR_PDU_VOLTAGE)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -189,7 +208,7 @@ class RacklinkCurrent(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("current")
+            self._state = self._controller.sensors.get(SENSOR_PDU_CURRENT)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -220,7 +239,7 @@ class RacklinkPower(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("power")
+            self._state = self._controller.sensors.get(SENSOR_PDU_POWER)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -252,7 +271,7 @@ class RacklinkEnergy(RacklinkSensor):
 
         try:
             # Get energy value and convert from Wh to kWh if needed
-            energy_wh = self._controller.sensors.get("energy")
+            energy_wh = self._controller.sensors.get(SENSOR_PDU_ENERGY)
             if energy_wh is not None:
                 self._state = energy_wh / 1000.0  # Convert Wh to kWh
                 self._attr_available = (
@@ -293,7 +312,7 @@ class RacklinkTemperature(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("temperature")
+            self._state = self._controller.sensors.get(SENSOR_PDU_TEMPERATURE)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -324,7 +343,7 @@ class RacklinkFrequency(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("frequency")
+            self._state = self._controller.sensors.get(SENSOR_PDU_FREQUENCY)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -355,7 +374,7 @@ class RacklinkPowerFactor(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("power_factor")
+            self._state = self._controller.sensors.get(SENSOR_PDU_POWER_FACTOR)
             self._attr_available = (
                 self._controller.connected and self._controller.available
             )
@@ -399,13 +418,18 @@ class RacklinkOutletPower(RacklinkSensor):
                 self._outlet_name = new_outlet_name
                 self._attr_name = f"{new_outlet_name} Power"
 
-            self._state = self._controller.outlet_power.get(self._outlet)
+            if hasattr(self._controller, "outlet_power"):
+                self._state = self._controller.outlet_power.get(self._outlet)
 
-            # Verify outlet exists in data
-            if self._outlet in self._controller.outlet_states:
-                self._attr_available = (
-                    self._controller.connected and self._controller.available
-                )
+                # Verify outlet exists in data
+                if self._outlet in self._controller.outlet_states:
+                    self._attr_available = (
+                        self._controller.connected
+                        and self._controller.available
+                        and self._state is not None
+                    )
+                else:
+                    self._attr_available = False
             else:
                 self._attr_available = False
 
@@ -451,13 +475,18 @@ class RacklinkOutletCurrent(RacklinkSensor):
                 self._outlet_name = new_outlet_name
                 self._attr_name = f"{new_outlet_name} Current"
 
-            self._state = self._controller.outlet_current.get(self._outlet)
+            if hasattr(self._controller, "outlet_current"):
+                self._state = self._controller.outlet_current.get(self._outlet)
 
-            # Verify outlet exists in data
-            if self._outlet in self._controller.outlet_states:
-                self._attr_available = (
-                    self._controller.connected and self._controller.available
-                )
+                # Verify outlet exists in data
+                if self._outlet in self._controller.outlet_states:
+                    self._attr_available = (
+                        self._controller.connected
+                        and self._controller.available
+                        and self._state is not None
+                    )
+                else:
+                    self._attr_available = False
             else:
                 self._attr_available = False
 
@@ -504,17 +533,22 @@ class RacklinkOutletEnergy(RacklinkSensor):
                 self._attr_name = f"{new_outlet_name} Energy"
 
             # Convert from Wh to kWh if needed
-            energy_wh = self._controller.outlet_energy.get(self._outlet)
-            if energy_wh is not None:
-                self._state = energy_wh / 1000.0  # Convert Wh to kWh
-            else:
-                self._state = None
+            if hasattr(self._controller, "outlet_energy"):
+                energy_wh = self._controller.outlet_energy.get(self._outlet)
+                if energy_wh is not None:
+                    self._state = energy_wh / 1000.0  # Convert Wh to kWh
+                else:
+                    self._state = None
 
-            # Verify outlet exists in data
-            if self._outlet in self._controller.outlet_states:
-                self._attr_available = (
-                    self._controller.connected and self._controller.available
-                )
+                # Verify outlet exists in data
+                if self._outlet in self._controller.outlet_states:
+                    self._attr_available = (
+                        self._controller.connected
+                        and self._controller.available
+                        and self._state is not None
+                    )
+                else:
+                    self._attr_available = False
             else:
                 self._attr_available = False
 
@@ -566,13 +600,18 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
                 self._attr_name = f"{new_outlet_name} Power Factor"
 
             # Get the power factor value
-            self._state = self._controller.outlet_power_factor.get(self._outlet)
+            if hasattr(self._controller, "outlet_power_factor"):
+                self._state = self._controller.outlet_power_factor.get(self._outlet)
 
-            # Verify outlet exists in data
-            if self._outlet in self._controller.outlet_states:
-                self._attr_available = (
-                    self._controller.connected and self._controller.available
-                )
+                # Verify outlet exists in data
+                if self._outlet in self._controller.outlet_states:
+                    self._attr_available = (
+                        self._controller.connected
+                        and self._controller.available
+                        and self._state is not None
+                    )
+                else:
+                    self._attr_available = False
             else:
                 self._attr_available = False
 
@@ -589,10 +628,14 @@ class RacklinkOutletApparentPower(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the apparent power sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         self._outlet = outlet
+        self._outlet_name = outlet_name
         super().__init__(
             controller,
-            f"Outlet {outlet} Apparent Power",
+            f"{outlet_name} Apparent Power",
             "VA",
             f"outlet_{outlet}_apparent_power",
             SensorDeviceClass.APPARENT_POWER,
@@ -606,20 +649,31 @@ class RacklinkOutletApparentPower(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_apparent_power.get(self._outlet)
-            # Only consider available if we have a value and controller is connected
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Apparent Power"
 
-            # Add diagnostic log for missing data
-            if self._state is None and self._controller.connected:
-                _LOGGER.debug(
-                    "Outlet %d apparent power data is missing, may need refresh",
-                    self._outlet,
+            if hasattr(self._controller, "outlet_apparent_power"):
+                self._state = self._controller.outlet_apparent_power.get(self._outlet)
+                # Only consider available if we have a value and controller is connected
+                self._attr_available = (
+                    self._controller.connected
+                    and self._controller.available
+                    and self._state is not None
                 )
+
+                # Add diagnostic log for missing data
+                if self._state is None and self._controller.connected:
+                    _LOGGER.debug(
+                        "Outlet %d apparent power data is missing, may need refresh",
+                        self._outlet,
+                    )
+            else:
+                self._attr_available = False
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet %d apparent power sensor: %s", self._outlet, err
@@ -633,10 +687,14 @@ class RacklinkOutletVoltage(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the voltage sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         self._outlet = outlet
+        self._outlet_name = outlet_name
         super().__init__(
             controller,
-            f"Outlet {outlet} Voltage",
+            f"{outlet_name} Voltage",
             UnitOfElectricPotential.VOLT,
             f"outlet_{outlet}_voltage",
             SensorDeviceClass.VOLTAGE,
@@ -650,20 +708,31 @@ class RacklinkOutletVoltage(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_voltage.get(self._outlet)
-            # Only consider available if we have a value and controller is connected
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Voltage"
 
-            # Add diagnostic log for missing data
-            if self._state is None and self._controller.connected:
-                _LOGGER.debug(
-                    "Outlet %d voltage data is missing, may need refresh",
-                    self._outlet,
+            if hasattr(self._controller, "outlet_voltage"):
+                self._state = self._controller.outlet_voltage.get(self._outlet)
+                # Only consider available if we have a value and controller is connected
+                self._attr_available = (
+                    self._controller.connected
+                    and self._controller.available
+                    and self._state is not None
                 )
+
+                # Add diagnostic log for missing data
+                if self._state is None and self._controller.connected:
+                    _LOGGER.debug(
+                        "Outlet %d voltage data is missing, may need refresh",
+                        self._outlet,
+                    )
+            else:
+                self._attr_available = False
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet %d voltage sensor: %s", self._outlet, err
@@ -677,11 +746,15 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the line frequency sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         self._outlet = outlet
+        self._outlet_name = outlet_name
         super().__init__(
             controller,
-            f"Outlet {outlet} Line Frequency",
-            "Hz",
+            f"{outlet_name} Line Frequency",
+            UnitOfFrequency.HERTZ,
             f"outlet_{outlet}_frequency",
             SensorDeviceClass.FREQUENCY,
             SensorStateClass.MEASUREMENT,
@@ -694,20 +767,31 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_line_frequency.get(self._outlet)
-            # Only consider available if we have a value and controller is connected
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Line Frequency"
 
-            # Add diagnostic log for missing data
-            if self._state is None and self._controller.connected:
-                _LOGGER.debug(
-                    "Outlet %d frequency data is missing, may need refresh",
-                    self._outlet,
+            if hasattr(self._controller, "outlet_line_frequency"):
+                self._state = self._controller.outlet_line_frequency.get(self._outlet)
+                # Only consider available if we have a value and controller is connected
+                self._attr_available = (
+                    self._controller.connected
+                    and self._controller.available
+                    and self._state is not None
                 )
+
+                # Add diagnostic log for missing data
+                if self._state is None and self._controller.connected:
+                    _LOGGER.debug(
+                        "Outlet %d frequency data is missing, may need refresh",
+                        self._outlet,
+                    )
+            else:
+                self._attr_available = False
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet %d frequency sensor: %s", self._outlet, err
