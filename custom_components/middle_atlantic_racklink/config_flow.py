@@ -20,6 +20,7 @@ from .const import (
     CONF_MODEL,
     CONF_PDU_NAME,
     DEFAULT_PORT,
+    DEFAULT_USERNAME,
     DOMAIN,
     MODEL_DESCRIPTIONS,
     SUPPORTED_MODELS,
@@ -35,7 +36,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-        vol.Optional(CONF_USERNAME): str,
+        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
         vol.Optional(CONF_PASSWORD): str,
         vol.Optional(CONF_PDU_NAME): str,
     }

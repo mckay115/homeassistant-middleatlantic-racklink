@@ -315,12 +315,13 @@ class BaseController:
     async def _get_device_info(self) -> None:
         """Get device information by trying multiple commands."""
         # Commands to try for getting device info, in order of preference
+        # Prioritize the commands used in the lua file first
         device_info_commands = [
+            "show pdu details",  # Primary command used in lua file
+            "show pdu detail",  # Possible variation
+            "show pdu",
             "show device",
             "show system",
-            "show pdu",
-            "show pdu detail",
-            "show pdu details",
             "info",
             "status",
         ]
@@ -365,8 +366,15 @@ class BaseController:
         if device_info_found:
             try:
                 await asyncio.sleep(delay)  # Add delay before network command
-                response = await self.queue_command("show network")
-                network_info = parse_network_info(response)
+
+                # First try "show network interface eth1" as per lua file
+                try:
+                    response = await self.queue_command("show network interface eth1")
+                    network_info = parse_network_info(response)
+                except Exception:
+                    # Then try simpler command
+                    response = await self.queue_command("show network")
+                    network_info = parse_network_info(response)
 
                 if network_info and "mac_address" in network_info:
                     self.mac_address = network_info["mac_address"]
@@ -375,6 +383,12 @@ class BaseController:
 
         if not device_info_found:
             _LOGGER.warning("Could not get device information with any command")
+
+            # Set default values if discovery failed
+            if not self.pdu_model:
+                self.pdu_model = "RLNK-P920R"  # Default model from lua file
+            if not self.pdu_serial:
+                self.pdu_serial = f"unknown_{self.host}"  # Create a unique ID
 
     async def _discover_available_commands(self) -> None:
         """Discover available commands on the device."""

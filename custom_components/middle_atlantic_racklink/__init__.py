@@ -58,23 +58,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             _LOGGER.debug("Waiting for initial connection (20 second timeout)")
             # Wait a bit for connection to establish
-            await asyncio.sleep(5)
+            for _ in range(4):  # Try multiple small waits to check connection
+                await asyncio.sleep(2)
+                if controller.connected:
+                    _LOGGER.info("Initial connection established successfully")
+                    break
 
             if not controller.connected:
                 _LOGGER.warning(
-                    "Initial connection not established after 5 seconds, continuing with setup"
+                    "Initial connection not established after 8 seconds, continuing with setup"
                 )
-            else:
-                _LOGGER.info("Initial connection established successfully")
+                # Set default properties if we couldn't get them
+                if not controller.pdu_model:
+                    controller.pdu_model = "RLNK-P920R"  # Default model from lua file
+                if not controller.pdu_serial:
+                    controller.pdu_serial = f"unknown_{host}"
+                if not controller.pdu_name:
+                    controller.pdu_name = f"RackLink PDU ({host})"
 
         except Exception as e:
             _LOGGER.warning("Error during initial connection to %s: %s", host, e)
-            # Continue anyway - entities will show as unavailable until connected
+            # Set default properties
+            if not controller.pdu_model:
+                controller.pdu_model = "RLNK-P920R"
+            if not controller.pdu_serial:
+                controller.pdu_serial = f"unknown_{host}"
+            if not controller.pdu_name:
+                controller.pdu_name = f"RackLink PDU ({host})"
 
     except Exception as e:
         _LOGGER.error("Error during initial setup: %s", e)
-        # Continue anyway - Home Assistant will show entities as unavailable
-        # until connection is established
+        # Set default properties
+        if not controller.pdu_model:
+            controller.pdu_model = "RLNK-P920R"
+        if not controller.pdu_serial:
+            controller.pdu_serial = f"unknown_{host}"
+        if not controller.pdu_name:
+            controller.pdu_name = f"RackLink PDU ({host})"
 
     # Create the coordinator
     coordinator = RacklinkCoordinator(hass, controller, scan_interval)

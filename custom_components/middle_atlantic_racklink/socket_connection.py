@@ -48,9 +48,9 @@ class SocketConnection:
         self._reader = None
         self._writer = None
         self._connected = False
-        self._prompt_pattern = re.compile(r"[>#:\]](\s|$)")
-        self._login_prompt = re.compile(r"(?:login|username|user)[: ]+", re.IGNORECASE)
-        self._password_prompt = re.compile(r"password[: ]+", re.IGNORECASE)
+        self._prompt_pattern = re.compile(r"(\[.*\]\s*#|\s*[>#:\]](\s|$))")
+        self._login_prompt = re.compile(r"(?:login|username|user)[:> ]+", re.IGNORECASE)
+        self._password_prompt = re.compile(r"password[:> ]+", re.IGNORECASE)
         self._last_activity = time.time()  # Initialize with current time
         self._keepalive_task = None
         self._connection_lock = asyncio.Lock()
