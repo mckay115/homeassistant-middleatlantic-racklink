@@ -297,3 +297,47 @@ The `test_racklink_socket.py` script is included in the repository for testing c
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Code Structure
+
+The integration follows a modular design approach to improve maintainability and follows Home Assistant development standards:
+
+- **api.py**: Contains the `RacklinkApi` class that handles the low-level socket communication with the RackLink device. This includes creating and managing socket connections, sending commands, and parsing raw responses.
+
+- **device.py**: Contains the `RacklinkDevice` class that represents the PDU device and implements device-specific logic, using the API. This class manages device capabilities, state tracking, and high-level device operations.
+
+- **coordinator.py**: Contains the `RacklinkDataUpdateCoordinator` class that handles data coordination between Home Assistant and the device, implementing the Home Assistant `DataUpdateCoordinator` pattern for efficient updates.
+
+- **__init__.py**: Main integration entry point that sets up the device, coordinator, and platform entities.
+
+- **const.py**: Contains constants used throughout the integration.
+
+- **Platform files**: 
+  - `switch.py`: Implements the switch platform for controlling outlets
+  - `sensor.py`: Implements sensors for device metrics
+  - `binary_sensor.py`: Implements binary sensors for device status
+  - `button.py`: Implements buttons for device actions
+
+This modular approach makes the code easier to maintain, test, and extend. Each module has a clear responsibility, making it easier to troubleshoot issues and add new features.
+
+### Module Interaction
+
+The modules interact in the following manner:
+
+1. **Home Assistant ↔ Coordinator**: Home Assistant interacts primarily with the DataUpdateCoordinator to efficiently manage data updates and entity state refreshes.
+
+2. **Coordinator ↔ Device**: The coordinator requests updates from the device, which maintains the state of the physical device.
+
+3. **Device ↔ API**: The device uses the API to send commands and receive data from the physical device.
+
+4. **Platform Entities ↔ Coordinator & Device**: Platform entities (switches, sensors, etc.) use both the coordinator for data updates and the device for executing commands.
+
+```
+Home Assistant ←→ Coordinator ←→ Device ←→ API ←→ Physical PDU
+                      ↑             ↑
+                      |             |
+                      ↓             ↓
+                   Platform Entities
+```
+
+This separation of concerns ensures that changes to one component (like improving the socket communication) don't require changes to other components (like the entity representation).

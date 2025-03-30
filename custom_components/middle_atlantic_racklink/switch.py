@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import re
 from typing import Any, Optional
 
 from homeassistant.components.switch import SwitchEntity
@@ -11,13 +10,11 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .racklink_controller import RacklinkController
+from .device import RacklinkDevice
+from .coordinator import RacklinkDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,44 +25,27 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Middle Atlantic Racklink switches from config entry."""
-    controller = hass.data[DOMAIN][config_entry.entry_id]
+    device = hass.data[DOMAIN][config_entry.entry_id]
     coordinator = hass.data[DOMAIN][config_entry.entry_id + "_coordinator"]
     switches = []
 
     # Get model capabilities to determine number of outlets
-    capabilities = controller.get_model_capabilities()
+    capabilities = device.get_model_capabilities()
     outlet_count = capabilities.get("num_outlets", 8)  # Default to 8 if not determined
 
     _LOGGER.info(
         "Setting up %d outlet switches for %s (%s)",
         outlet_count,
-        controller.pdu_name,
-        controller.pdu_model,
+        device.pdu_name,
+        device.pdu_model,
     )
 
     # Add switches even if device is not yet available
     # They will show as unavailable until connection is established
     for outlet in range(1, outlet_count + 1):
-        switches.append(RacklinkOutlet(controller, coordinator, outlet))
+        switches.append(RacklinkOutlet(device, coordinator, outlet))
 
     async_add_entities(switches)
-
-    async def cycle_outlet(call: ServiceCall) -> None:
-        """Cycle power for a specific outlet."""
-        outlet = call.data.get("outlet")
-        if not outlet:
-            _LOGGER.error("Outlet number is required for cycle_outlet service")
-            return
-
-        _LOGGER.info("Cycling outlet %s on %s", outlet, controller.pdu_name)
-        try:
-            await asyncio.wait_for(controller.cycle_outlet(outlet), timeout=10)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Outlet cycle operation timed out")
-        except Exception as err:
-            _LOGGER.error("Error cycling outlet %s: %s", outlet, err)
-
-    hass.services.async_register(DOMAIN, "cycle_outlet", cycle_outlet)
 
 
 class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
@@ -73,32 +53,32 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
 
     def __init__(
         self,
-        controller: RacklinkController,
-        coordinator: DataUpdateCoordinator,
+        device: RacklinkDevice,
+        coordinator: RacklinkDataUpdateCoordinator,
         outlet: int,
     ) -> None:
         """Initialize the outlet switch."""
         super().__init__(coordinator)
-        self._controller = controller
+        self._device = device
         self._outlet = outlet
         self._last_commanded_state = None
         self._pending_update = False
 
-        # Get the outlet name from the controller if available
+        # Get the outlet name from the device if available
         # We'll update this in the coordinator data
-        self._outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
-        self._attr_unique_id = f"{controller.pdu_serial}_outlet_{outlet}"
+        self._outlet_name = device.outlet_names.get(outlet, f"Outlet {outlet}")
+        self._attr_unique_id = f"{device.pdu_serial}_outlet_{outlet}"
         self._attr_name = self._outlet_name
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information about this entity."""
         return {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
+            "identifiers": {(DOMAIN, self._device.pdu_serial)},
+            "name": f"Racklink PDU {self._device.pdu_name}",
             "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
+            "model": self._device.pdu_model or ATTR_MODEL,
+            "sw_version": self._device.pdu_firmware,
         }
 
     @property
@@ -108,23 +88,23 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
             # Get state from coordinator data
             outlet_states = self.coordinator.data.get("outlet_states", {})
             return outlet_states.get(self._outlet, None)
-        # Fall back to controller state if coordinator data is not available
-        return self._controller.outlet_states.get(self._outlet, None)
+        # Fall back to device state if coordinator data is not available
+        return self._device.outlet_states.get(self._outlet, None)
 
     @property
     def available(self) -> bool:
         """Return if switch is available."""
-        # Use controller connection status to determine availability
+        # Use device connection status to determine availability
         coordinator_has_data = (
             self.coordinator.data
             and self._outlet in self.coordinator.data.get("outlet_states", {})
         )
-        controller_has_data = self._outlet in self._controller.outlet_states
+        device_has_data = self._outlet in self._device.outlet_states
 
         return (
-            self._controller.connected
-            and self._controller.available
-            and (coordinator_has_data or controller_has_data)
+            self._device.connected
+            and self._device.available
+            and (coordinator_has_data or device_has_data)
         )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -135,20 +115,20 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
 
             _LOGGER.debug("Turning on outlet %d (%s)", self._outlet, self._outlet_name)
             success = await asyncio.wait_for(
-                self._controller.set_outlet_state(self._outlet, True), timeout=10
+                self._device.set_outlet_state(self._outlet, True), timeout=10
             )
 
             # Optimistically update state if we got a success response
             if success:
                 _LOGGER.debug("Command to turn on outlet %d succeeded", self._outlet)
-                self._controller.outlet_states[self._outlet] = True
+                self._device.outlet_states[self._outlet] = True
                 self.async_write_ha_state()
             else:
                 _LOGGER.warning(
                     "Command to turn on outlet %d may have failed", self._outlet
                 )
                 # Still set state optimistically, but we'll verify
-                self._controller.outlet_states[self._outlet] = True
+                self._device.outlet_states[self._outlet] = True
                 self.async_write_ha_state()
 
             # Schedule a refresh to confirm state after a short delay
@@ -169,20 +149,20 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
 
             _LOGGER.debug("Turning off outlet %d (%s)", self._outlet, self._outlet_name)
             success = await asyncio.wait_for(
-                self._controller.set_outlet_state(self._outlet, False), timeout=10
+                self._device.set_outlet_state(self._outlet, False), timeout=10
             )
 
             # Optimistically update state if we got a success response
             if success:
                 _LOGGER.debug("Command to turn off outlet %d succeeded", self._outlet)
-                self._controller.outlet_states[self._outlet] = False
+                self._device.outlet_states[self._outlet] = False
                 self.async_write_ha_state()
             else:
                 _LOGGER.warning(
                     "Command to turn off outlet %d may have failed", self._outlet
                 )
                 # Still set state optimistically, but we'll verify
-                self._controller.outlet_states[self._outlet] = False
+                self._device.outlet_states[self._outlet] = False
                 self.async_write_ha_state()
 
             # Schedule a refresh to confirm state after a short delay
@@ -200,169 +180,115 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
         if not self._pending_update:
             return
 
-        _LOGGER.debug("Refreshing outlet %d state to verify command", self._outlet)
         try:
-            # Force refresh of outlet states through the coordinator
+            # Wait a little longer if needed for some devices that respond more slowly
             await self.coordinator.async_request_refresh()
 
-            # Update our state based on the refreshed data
+            # Check if we have data after refresh
             if self.coordinator.data and "outlet_states" in self.coordinator.data:
-                actual_state = self.coordinator.data["outlet_states"].get(self._outlet)
-            else:
-                # Force refresh directly from the controller as fallback
-                await self._controller.get_all_outlet_states(force_refresh=True)
-                actual_state = self._controller.outlet_states.get(self._outlet)
+                outlet_states = self.coordinator.data.get("outlet_states", {})
 
-            if actual_state is None:
-                _LOGGER.warning(
-                    "Refresh could not determine outlet %d state - device did not return data",
-                    self._outlet,
-                )
-                return
+                # Check that the state actually changed as expected
+                current_state = outlet_states.get(self._outlet)
 
-            # Compare with what we expect
-            if actual_state != self._last_commanded_state:
-                _LOGGER.warning(
-                    "Outlet %d (%s) state mismatch! Commanded: %s, Actual: %s - applying actual state",
-                    self._outlet,
-                    self._outlet_name,
-                    self._last_commanded_state,
-                    actual_state,
-                )
-
-                # The actual device state is the source of truth
-                self._controller.outlet_states[self._outlet] = actual_state
-
-                # Extra attempt to sync if there's a mismatch to ensure UI matches device
-                if actual_state != self._last_commanded_state:
-                    # Schedule another command to sync with actual device state
-                    _LOGGER.debug(
-                        "Scheduling state correction for outlet %d to match device state: %s",
+                if (
+                    current_state is not None
+                    and current_state != self._last_commanded_state
+                ):
+                    _LOGGER.warning(
+                        "Outlet %d state didn't match expected state after command: expected=%s, actual=%s",
                         self._outlet,
-                        actual_state,
+                        self._last_commanded_state,
+                        current_state,
                     )
-                    # We don't await this - just queue it to run after this method completes
-                    asyncio.create_task(
-                        self._controller.set_outlet_state(self._outlet, actual_state)
+                else:
+                    _LOGGER.debug(
+                        "Confirmed outlet %d state is now %s",
+                        self._outlet,
+                        "ON" if current_state else "OFF",
                     )
-            else:
-                _LOGGER.debug(
-                    "Outlet %d state verified: %s",
-                    self._outlet,
-                    "ON" if actual_state else "OFF",
-                )
-
-            # Always update to trigger a state refresh
-            self.async_write_ha_state()
-
         except Exception as err:
-            _LOGGER.error("Error refreshing outlet %d state: %s", self._outlet, err)
+            _LOGGER.error("Error refreshing outlet %s state: %s", self._outlet, err)
         finally:
             self._pending_update = False
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional outlet information."""
-        attrs = {
-            "outlet_number": self._outlet,
-            "can_cycle": True,
-        }
+        """Return the state attributes of the outlet."""
+        attrs = {"outlet_number": self._outlet, "pdu_name": self._device.pdu_name}
 
-        # Try to get data from coordinator first
+        # Add power metrics if available
         if self.coordinator.data:
-            # Add all available power and metrics data from coordinator
-            if (
-                "outlet_power" in self.coordinator.data
-                and self._outlet in self.coordinator.data["outlet_power"]
-            ):
-                power = self.coordinator.data["outlet_power"].get(self._outlet)
-                if power is not None:
-                    attrs["power"] = f"{power:.1f} W"
-
+            # Current (A)
             if (
                 "outlet_current" in self.coordinator.data
                 and self._outlet in self.coordinator.data["outlet_current"]
             ):
-                current = self.coordinator.data["outlet_current"].get(self._outlet)
-                if current is not None:
-                    attrs["current"] = f"{current:.2f} A"
+                attrs["current"] = self.coordinator.data["outlet_current"][self._outlet]
 
-            if (
-                "outlet_energy" in self.coordinator.data
-                and self._outlet in self.coordinator.data["outlet_energy"]
-            ):
-                energy = self.coordinator.data["outlet_energy"].get(self._outlet)
-                if energy is not None:
-                    attrs["energy"] = f"{energy:.1f} Wh"
-
-            if (
-                "outlet_power_factor" in self.coordinator.data
-                and self._outlet in self.coordinator.data["outlet_power_factor"]
-            ):
-                power_factor = self.coordinator.data["outlet_power_factor"].get(
-                    self._outlet
-                )
-                if power_factor is not None:
-                    attrs["power_factor"] = f"{power_factor:.2f}"
-
+            # Voltage (V)
             if (
                 "outlet_voltage" in self.coordinator.data
                 and self._outlet in self.coordinator.data["outlet_voltage"]
             ):
-                voltage = self.coordinator.data["outlet_voltage"].get(self._outlet)
-                if voltage is not None:
-                    attrs["voltage"] = f"{voltage:.1f} V"
+                attrs["voltage"] = self.coordinator.data["outlet_voltage"][self._outlet]
 
+            # Power (W)
             if (
-                "outlet_apparent_power" in self.coordinator.data
-                and self._outlet in self.coordinator.data["outlet_apparent_power"]
+                "outlet_power" in self.coordinator.data
+                and self._outlet in self.coordinator.data["outlet_power"]
             ):
-                apparent_power = self.coordinator.data["outlet_apparent_power"].get(
-                    self._outlet
-                )
-                if apparent_power is not None:
-                    attrs["apparent_power"] = f"{apparent_power:.1f} VA"
+                attrs["power"] = self.coordinator.data["outlet_power"][self._outlet]
 
+            # Energy (kWh)
             if (
-                "outlet_line_frequency" in self.coordinator.data
-                and self._outlet in self.coordinator.data["outlet_line_frequency"]
+                "outlet_energy" in self.coordinator.data
+                and self._outlet in self.coordinator.data["outlet_energy"]
             ):
-                frequency = self.coordinator.data["outlet_line_frequency"].get(
+                attrs["energy"] = self.coordinator.data["outlet_energy"][self._outlet]
+
+            # Power Factor
+            if (
+                "outlet_power_factor" in self.coordinator.data
+                and self._outlet in self.coordinator.data["outlet_power_factor"]
+            ):
+                attrs["power_factor"] = self.coordinator.data["outlet_power_factor"][
                     self._outlet
-                )
-                if frequency is not None:
-                    attrs["frequency"] = f"{frequency:.1f} Hz"
-        else:
-            # Fall back to controller data if coordinator data is not available
-            if power := self._controller.outlet_power.get(self._outlet):
-                attrs["power"] = f"{power:.1f} W"
-            if current := self._controller.outlet_current.get(self._outlet):
-                attrs["current"] = f"{current:.2f} A"
-            if energy := self._controller.outlet_energy.get(self._outlet):
-                attrs["energy"] = f"{energy:.1f} Wh"
-            if power_factor := self._controller.outlet_power_factor.get(self._outlet):
-                attrs["power_factor"] = f"{power_factor:.2f}"
-            if voltage := self._controller.outlet_voltage.get(self._outlet):
-                attrs["voltage"] = f"{voltage:.1f} V"
-            if apparent_power := self._controller.outlet_apparent_power.get(
-                self._outlet
-            ):
-                attrs["apparent_power"] = f"{apparent_power:.1f} VA"
-            if frequency := self._controller.outlet_line_frequency.get(self._outlet):
-                attrs["frequency"] = f"{frequency:.1f} Hz"
+                ]
 
         return attrs
 
     async def async_cycle(self) -> None:
-        """Cycle the outlet power."""
+        """Cycle the outlet (turn off, then back on after a delay)."""
         try:
-            _LOGGER.debug("Cycling outlet %d", self._outlet)
-            await asyncio.wait_for(
-                self._controller.cycle_outlet(self._outlet), timeout=10
+            # Indicate pending update
+            self._pending_update = True
+
+            # Use the device's cycle_outlet method
+            _LOGGER.debug("Cycling outlet %d (%s)", self._outlet, self._outlet_name)
+            success = await asyncio.wait_for(
+                self._device.cycle_outlet(self._outlet), timeout=15
             )
-            # Refresh coordinator data after cycling
-            await self.coordinator.async_request_refresh()
+
+            if success:
+                _LOGGER.debug(
+                    "Successfully initiated cycle for outlet %d", self._outlet
+                )
+                # Immediate state update to show outlet is now off
+                # (cycle turns off then on after a delay)
+                self._device.outlet_states[self._outlet] = False
+                self.async_write_ha_state()
+
+                # Schedule a refresh to update state after cycling should complete
+                # Most devices take 5-10 seconds to complete a cycle
+                async_call_later(self.hass, 12, self._async_refresh_state)
+            else:
+                _LOGGER.warning("Failed to cycle outlet %d", self._outlet)
+                self._pending_update = False
+
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout cycling outlet %s", self._outlet)
+            self._pending_update = False
         except Exception as err:
             _LOGGER.error("Error cycling outlet %s: %s", self._outlet, err)
+            self._pending_update = False
