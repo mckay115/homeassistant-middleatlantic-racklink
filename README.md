@@ -23,8 +23,11 @@ This integration supports the following Middle Atlantic RackLink PDU models:
 - RLNK-P920R-SP
 
 Model number guide:
+- The "P" prefix indicates Premium+ models (advanced features and controls)
 - Numbers "15" and "20" indicate amperage rating (15A or 20A service)
+- "R" suffix indicates rackmount/sequencer models
 - "SP" indicates models with surge protection
+- Models with part numbers ending in "20" (such as RLNK-P420) provide additional power monitoring features
 
 ## Installation
 
