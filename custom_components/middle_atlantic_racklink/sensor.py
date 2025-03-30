@@ -69,6 +69,7 @@ async def async_setup_entry(
         RacklinkTemperature(controller),
         RacklinkFrequency(controller),
         RacklinkPowerFactor(controller),
+        RacklinkMACAddress(controller),
     ]
 
     # Create sensors for each outlet
@@ -139,13 +140,19 @@ class RacklinkSensor(Entity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info."""
-        return {
+        device_info = {
             "identifiers": {(DOMAIN, self._controller.pdu_serial)},
             "name": f"Racklink PDU {self._controller.pdu_name}",
             "manufacturer": ATTR_MANUFACTURER,
             "model": self._controller.pdu_model or ATTR_MODEL,
             "sw_version": self._controller.pdu_firmware,
         }
+
+        # Add MAC address as a connection info if available
+        if self._controller.mac_address:
+            device_info["connections"] = {("mac", self._controller.mac_address)}
+
+        return device_info
 
     async def async_update(self) -> None:
         """Update method to be implemented by derived classes."""
@@ -880,5 +887,38 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
             _LOGGER.error(
                 "Error updating outlet %d frequency sensor: %s", self._outlet, err
             )
+            self._state = None
+            self._attr_available = False
+
+
+class RacklinkMACAddress(RacklinkSensor):
+    """MAC Address sensor."""
+
+    def __init__(self, controller) -> None:
+        """Initialize the MAC address sensor."""
+        super().__init__(
+            controller,
+            "Racklink MAC Address",
+            "",  # No unit for MAC address
+            "mac_address",
+            None,  # No device class for MAC address
+            None,  # No state class for MAC address
+        )
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            self._state = self._controller.mac_address
+            self._attr_available = (
+                self._controller.connected
+                and self._controller.available
+                and self._state is not None
+            )
+        except Exception as err:
+            _LOGGER.error("Error updating MAC address sensor: %s", err)
             self._state = None
             self._attr_available = False
