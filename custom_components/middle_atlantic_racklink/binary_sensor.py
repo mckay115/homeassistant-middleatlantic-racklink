@@ -122,12 +122,23 @@ class RacklinkOutletNonCritical(RacklinkBinarySensor):
     def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet non-critical sensor."""
         self._outlet = outlet
+
+        # Get outlet name if available or create a default
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Non-Critical"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Non-Critical"
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Non-Critical",
+            sensor_name,
             BinarySensorDeviceClass.PROBLEM,
             f"outlet_{outlet}_non_critical",
         )
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -136,6 +147,20 @@ class RacklinkOutletNonCritical(RacklinkBinarySensor):
             return
 
         try:
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
+            )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Non-Critical"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Non-Critical"
+                    )
+
             self._state = self._controller.outlet_non_critical.get(self._outlet, False)
             self._attr_available = (
                 self._controller.connected

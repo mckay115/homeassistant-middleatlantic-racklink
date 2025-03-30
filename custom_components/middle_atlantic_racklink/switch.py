@@ -92,8 +92,11 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
         self._pdu_serial = getattr(self._controller, "pdu_serial", f"Unknown_{outlet}")
         self._pdu_firmware = getattr(self._controller, "pdu_firmware", "Unknown")
 
-        # Set entity attributes
-        self._attr_name = self._outlet_name
+        # Set entity attributes - always include outlet number in name
+        if self._outlet_name.startswith(f"Outlet {outlet}"):
+            self._attr_name = self._outlet_name
+        else:
+            self._attr_name = f"Outlet {outlet} - {self._outlet_name}"
         self._attr_unique_id = f"{self._pdu_serial}_outlet_{outlet}"
 
         _LOGGER.debug(

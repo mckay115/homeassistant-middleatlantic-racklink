@@ -720,47 +720,25 @@ class RacklinkController:
         return self._pdu_info
 
     def get_model_capabilities(self) -> Dict[str, Any]:
-        """Get the capabilities for the current model."""
-        model = self._model or "DEFAULT"
-        # Use the model-specific capabilities or fallback to default
-        base_capabilities = MODEL_CAPABILITIES.get(model, None)
+        """Get capabilities based on model number."""
+        # Default capabilities
+        capabilities = {
+            "num_outlets": 8,  # Default to 8 outlets
+            "supports_power_monitoring": True,
+            "supports_outlet_switching": True,
+            "supports_energy_monitoring": True,
+            "supports_outlet_scheduling": False,  # Most models don't support this
+            "max_current": 15,  # Default to 15A
+            "has_surge_protection": False,
+            "has_temperature_sensor": True,
+        }
 
-        # Try variations of the model name if exact match not found
-        if base_capabilities is None:
-            # Try without the "R" suffix (RLNK-P920R -> RLNK-P920)
-            if model.endswith("R"):
-                base_capabilities = MODEL_CAPABILITIES.get(model[:-1], None)
+        # Update based on model
+        model = self._model
 
-            # Try without the "SP" suffix (RLNK-P920R-SP -> RLNK-P920R)
-            if model.endswith("-SP") and base_capabilities is None:
-                base_capabilities = MODEL_CAPABILITIES.get(model[:-3], None)
-
-            # Try with just the base model family
-            if base_capabilities is None:
-                for pattern in ["P9", "P4", "RLM"]:
-                    if pattern in model:
-                        # Find the closest match in MODEL_CAPABILITIES
-                        for cap_model in MODEL_CAPABILITIES:
-                            if pattern in cap_model:
-                                base_capabilities = MODEL_CAPABILITIES[cap_model]
-                                _LOGGER.debug(
-                                    "Using capabilities from similar model %s for %s",
-                                    cap_model,
-                                    model,
-                                )
-                                break
-                        if base_capabilities:
-                            break
-
-            # If still no match, use default
-            if base_capabilities is None:
-                _LOGGER.warning(
-                    "No capabilities found for model %s, using default", model
-                )
-                base_capabilities = MODEL_CAPABILITIES["DEFAULT"]
-
-        # Start with base capabilities for this model
-        capabilities = base_capabilities.copy()
+        # Override with 8 outlets regardless of model detection
+        # This ensures we don't create entities for non-existent outlets
+        capabilities["num_outlets"] = 8
 
         # For P series (newer models) we can infer some capabilities
         if "P9" in model or "P4" in model:
@@ -778,74 +756,6 @@ class RacklinkController:
                 }
             )
 
-        # For RLNK-P920R model specifically
-        if model in ["RLNK-P920R", "RLNK-P920", "RLNK-P920R-SP"]:
-            capabilities.update(
-                {
-                    "num_outlets": 9,
-                    "supports_power_monitoring": True,
-                    "supports_outlet_switching": True,
-                    "supports_energy_monitoring": True,
-                    "supports_outlet_scheduling": False,
-                    "max_current": 20,
-                    "has_surge_protection": "-SP" in model,
-                    "has_temperature_sensor": True,
-                }
-            )
-        elif model in ["RLNK-P915R", "RLNK-P915", "RLNK-P915R-SP"]:
-            capabilities.update(
-                {
-                    "num_outlets": 9,
-                    "supports_power_monitoring": True,
-                    "supports_outlet_switching": True,
-                    "supports_energy_monitoring": True,
-                    "supports_outlet_scheduling": False,
-                    "max_current": 15,
-                    "has_surge_protection": "-SP" in model,
-                    "has_temperature_sensor": True,
-                }
-            )
-        elif model in ["RLNK-P415R", "RLNK-P415", "RLNK-P415R-SP"]:
-            capabilities.update(
-                {
-                    "num_outlets": 4,
-                    "supports_power_monitoring": True,
-                    "supports_outlet_switching": True,
-                    "supports_energy_monitoring": True,
-                    "supports_outlet_scheduling": False,
-                    "max_current": 15,
-                    "has_surge_protection": "-SP" in model,
-                    "has_temperature_sensor": True,
-                }
-            )
-        elif model in ["RLNK-P420R", "RLNK-P420", "RLNK-P420R-SP"]:
-            capabilities.update(
-                {
-                    "num_outlets": 4,
-                    "supports_power_monitoring": True,
-                    "supports_outlet_switching": True,
-                    "supports_energy_monitoring": True,
-                    "supports_outlet_scheduling": False,
-                    "max_current": 20,
-                    "has_surge_protection": "-SP" in model,
-                    "has_temperature_sensor": True,
-                }
-            )
-
-        # Extract additional capabilities from model name if not already set
-        if "num_outlets" not in capabilities and isinstance(model, str):
-            # Extract outlet count from model name (e.g., RLNK-920 -> 9 outlets)
-            match = re.search(r"[P-](\d+)", model)
-            if match:
-                num_str = match.group(1)
-                # First digit often indicates number of outlets
-                if num_str and len(num_str) >= 1:
-                    try:
-                        capabilities["num_outlets"] = int(num_str[0])
-                    except ValueError:
-                        pass
-
-        _LOGGER.debug("Model capabilities for %s: %s", model, capabilities)
         return capabilities
 
     async def update(self) -> bool:

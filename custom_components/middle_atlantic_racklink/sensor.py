@@ -392,9 +392,15 @@ class RacklinkOutletPower(RacklinkSensor):
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Power"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Power"
+
         super().__init__(
             controller,
-            f"{outlet_name} Power",
+            sensor_name,
             UnitOfPower.WATT,
             f"outlet_{outlet}_power",
             SensorDeviceClass.POWER,
@@ -416,7 +422,13 @@ class RacklinkOutletPower(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Power"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Power"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Power"
+                    )
 
             if hasattr(self._controller, "outlet_power"):
                 self._state = self._controller.outlet_power.get(self._outlet)
@@ -449,9 +461,15 @@ class RacklinkOutletCurrent(RacklinkSensor):
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Current"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Current"
+
         super().__init__(
             controller,
-            f"{outlet_name} Current",
+            sensor_name,
             UnitOfElectricCurrent.AMPERE,
             f"outlet_{outlet}_current",
             SensorDeviceClass.CURRENT,
@@ -473,7 +491,13 @@ class RacklinkOutletCurrent(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Current"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Current"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Current"
+                    )
 
             if hasattr(self._controller, "outlet_current"):
                 self._state = self._controller.outlet_current.get(self._outlet)
@@ -506,9 +530,15 @@ class RacklinkOutletEnergy(RacklinkSensor):
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Energy"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Energy"
+
         super().__init__(
             controller,
-            f"{outlet_name} Energy",
+            sensor_name,
             UnitOfEnergy.KILO_WATT_HOUR,
             f"outlet_{outlet}_energy",
             SensorDeviceClass.ENERGY,
@@ -530,7 +560,13 @@ class RacklinkOutletEnergy(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Energy"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Energy"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Energy"
+                    )
 
             # Convert from Wh to kWh if needed
             if hasattr(self._controller, "outlet_energy"):
@@ -573,9 +609,15 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Power Factor"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Power Factor"
+
         super().__init__(
             controller,
-            f"{outlet_name} Power Factor",
+            sensor_name,
             "%",
             f"outlet_{outlet}_power_factor",
             SensorDeviceClass.POWER_FACTOR,
@@ -597,7 +639,13 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Power Factor"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Power Factor"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Power Factor"
+                    )
 
             # Get the power factor value
             if hasattr(self._controller, "outlet_power_factor"):
@@ -627,20 +675,26 @@ class RacklinkOutletApparentPower(RacklinkSensor):
     """Outlet apparent power sensor."""
 
     def __init__(self, controller, outlet: int) -> None:
-        """Initialize the apparent power sensor."""
+        """Initialize the outlet apparent power sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
-        self._outlet = outlet
-        self._outlet_name = outlet_name
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Apparent Power"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Apparent Power"
+
         super().__init__(
             controller,
-            f"{outlet_name} Apparent Power",
+            sensor_name,
             "VA",
             f"outlet_{outlet}_apparent_power",
             SensorDeviceClass.APPARENT_POWER,
             SensorStateClass.MEASUREMENT,
         )
+        self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -655,7 +709,13 @@ class RacklinkOutletApparentPower(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Apparent Power"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Apparent Power"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Apparent Power"
+                    )
 
             if hasattr(self._controller, "outlet_apparent_power"):
                 self._state = self._controller.outlet_apparent_power.get(self._outlet)
@@ -686,20 +746,26 @@ class RacklinkOutletVoltage(RacklinkSensor):
     """Outlet voltage sensor."""
 
     def __init__(self, controller, outlet: int) -> None:
-        """Initialize the voltage sensor."""
+        """Initialize the outlet voltage sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
-        self._outlet = outlet
-        self._outlet_name = outlet_name
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Voltage"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Voltage"
+
         super().__init__(
             controller,
-            f"{outlet_name} Voltage",
+            sensor_name,
             UnitOfElectricPotential.VOLT,
             f"outlet_{outlet}_voltage",
             SensorDeviceClass.VOLTAGE,
             SensorStateClass.MEASUREMENT,
         )
+        self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -714,7 +780,13 @@ class RacklinkOutletVoltage(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Voltage"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Voltage"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Voltage"
+                    )
 
             if hasattr(self._controller, "outlet_voltage"):
                 self._state = self._controller.outlet_voltage.get(self._outlet)
@@ -745,20 +817,26 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
     """Outlet line frequency sensor."""
 
     def __init__(self, controller, outlet: int) -> None:
-        """Initialize the line frequency sensor."""
+        """Initialize the outlet line frequency sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
-        self._outlet = outlet
-        self._outlet_name = outlet_name
+        # Always include outlet number in sensor name
+        if outlet_name.startswith(f"Outlet {outlet}"):
+            sensor_name = f"{outlet_name} Frequency"
+        else:
+            sensor_name = f"Outlet {outlet} - {outlet_name} Frequency"
+
         super().__init__(
             controller,
-            f"{outlet_name} Line Frequency",
+            sensor_name,
             UnitOfFrequency.HERTZ,
             f"outlet_{outlet}_frequency",
             SensorDeviceClass.FREQUENCY,
             SensorStateClass.MEASUREMENT,
         )
+        self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -773,7 +851,13 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
             )
             if new_outlet_name != self._outlet_name:
                 self._outlet_name = new_outlet_name
-                self._attr_name = f"{new_outlet_name} Line Frequency"
+                # Always include outlet number in sensor name
+                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
+                    self._attr_name = f"{self._outlet_name} Frequency"
+                else:
+                    self._attr_name = (
+                        f"Outlet {self._outlet} - {self._outlet_name} Frequency"
+                    )
 
             if hasattr(self._controller, "outlet_line_frequency"):
                 self._state = self._controller.outlet_line_frequency.get(self._outlet)
