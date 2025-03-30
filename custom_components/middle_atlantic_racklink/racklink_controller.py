@@ -304,22 +304,18 @@ class RacklinkController:
     async def _background_connect(self):
         """Connect to the PDU in the background."""
         # If we're already connected, no need to reconnect
-        if self._connected and self._reader and self._writer:
+        if self._connected and self._socket is not None:
             return
 
         try:
             _LOGGER.debug("Attempting background connection to %s", self._host)
-            await self._connect()
+            await self.connect()
 
-            if self._socket:
-                self._connected = True
-                self._available = True
+            if self._connected:
                 _LOGGER.info("Connected to %s", self._host)
-                self._reconnect_tries = 0
 
-                # Start command processing if we have queued commands
-                if not self._command_queue.empty() or self._simple_command_queue:
-                    asyncio.create_task(self._send_queued_commands())
+                # Make sure the command processor is running
+                self._ensure_command_processor_running()
 
                 # Load initial data in a separate task to not block
                 asyncio.create_task(self._load_initial_data())
@@ -339,10 +335,13 @@ class RacklinkController:
 
     def _schedule_reconnect(self):
         """Schedule a reconnection with exponential backoff."""
-        self._reconnect_tries += 1
+        if not hasattr(self, "_reconnect_attempts"):
+            self._reconnect_attempts = 0
+
+        self._reconnect_attempts += 1
 
         # Calculate backoff delay with max of 5 minutes (300 seconds)
-        delay = min(300, 2 ** min(self._reconnect_tries, 8))
+        delay = min(300, 2 ** min(self._reconnect_attempts, 8))
 
         _LOGGER.info("Will attempt to reconnect to %s in %s seconds", self._host, delay)
 
@@ -380,166 +379,116 @@ class RacklinkController:
             _LOGGER.error("Error in delayed reconnection: %s", e)
             self._schedule_reconnect()  # Try again with increased backoff
 
-    async def _connect(self):
-        """Connect to the PDU."""
-        if self._socket and not self._socket.closed:
-            _LOGGER.debug("Already connected to %s", self._host)
-            return
-
-        _LOGGER.debug("Connecting to %s:%s", self._host, self._port)
+    async def _connect(self) -> bool:
+        """Connect to the PDU - used by config_flow for validation."""
         try:
-            # Clear the existing socket if any
-            if self._socket and not self._socket.closed:
-                self._socket.close()
-                self._socket = None
+            if self._connected and self._socket:
+                _LOGGER.debug("Already connected to %s", self._host)
+                return True
 
-            # Create a new socket connection
-            self._socket = asyncio.open_connection(
-                self._host,
-                self._port,
-                limit=65536,  # Increase buffer size for large responses
-            )
-            self._reader, self._writer = await asyncio.wait_for(
-                self._socket, timeout=self._socket_timeout
-            )
-            self._connected = True
+            # Create socket connection
+            self._socket = await self._create_socket_connection()
 
-            # Read the welcome message
-            welcome = await asyncio.wait_for(
-                self._reader.read(4096), timeout=self._command_timeout
-            )
-            welcome_text = welcome.decode(errors="ignore")
+            if not self._socket:
+                _LOGGER.error("Failed to create socket connection")
+                return False
 
-            # Check if login prompt is present
-            if "Username:" in welcome_text:
-                _LOGGER.debug("Logging in with username: %s", self._username)
-                self._writer.write(f"{self._username}\r\n".encode())
-                await self._writer.drain()
+            # Login if needed
+            if await self._login():
+                self._connected = True
+                self._available = True
 
-                # Wait for password prompt
-                auth1 = await asyncio.wait_for(
-                    self._reader.read(1024), timeout=self._command_timeout
-                )
-                auth1_text = auth1.decode(errors="ignore")
+                # Try to get device info
+                await self.get_device_info()
 
-                if "Password:" in auth1_text:
-                    _LOGGER.debug("Sending password")
-                    self._writer.write(f"{self._password}\r\n".encode())
-                    await self._writer.drain()
-
-                    # Wait for login confirmation
-                    auth2 = await asyncio.wait_for(
-                        self._reader.read(1024), timeout=self._command_timeout
-                    )
-                    auth2_text = auth2.decode(errors="ignore")
-
-                    if "Login failed" in auth2_text:
-                        raise ConnectionError("Login failed - incorrect credentials")
-
-            # Set terminal width to avoid paging
-            _LOGGER.debug("Setting terminal width to avoid paging")
-            self._writer.write("term width 511\r\n".encode())
-            await self._writer.drain()
-
-            # Clear any pending output
-            term_response = await asyncio.wait_for(
-                self._reader.read(1024), timeout=self._command_timeout
-            )
-
-            _LOGGER.debug("Successfully connected to %s", self._host)
-            self._available = True
-            return True
-
-        except asyncio.TimeoutError:
-            _LOGGER.error("Connection to %s timed out", self._host)
-            self._connected = False
-            self._available = False
-            if self._writer:
-                self._writer.close()
-                try:
-                    await self._writer.wait_closed()
-                except Exception:
-                    pass
-            self._reader = None
-            self._writer = None
-            raise
+                return True
+            else:
+                _LOGGER.error("Failed to login")
+                await self._close_socket()
+                return False
 
         except Exception as e:
-            _LOGGER.error("Failed to connect to %s: %s", self._host, e)
-            self._connected = False
-            self._available = False
-            if self._writer:
-                self._writer.close()
-                try:
-                    await self._writer.wait_closed()
-                except Exception:
-                    pass
-            self._reader = None
-            self._writer = None
-            raise
+            _LOGGER.error("Error connecting: %s", e)
+            await self._close_socket()
+            return False
 
     async def _load_initial_data(self):
         """Load initial data from the PDU."""
         _LOGGER.debug("Loading initial PDU data")
         try:
             # Get PDU model information
-            await self._get_pdu_info()
+            await self.get_device_info()
 
             # Initialize outlet states
             await self.get_all_outlet_states()
         except Exception as e:
             _LOGGER.error("Error loading initial PDU data: %s", e)
 
-    async def _get_pdu_info(self):
-        """Get PDU model and system information."""
-        _LOGGER.debug("Getting PDU model information")
-        self.pdu_info = {
-            "model": None,
-            "firmware": None,
-            "serial": None,
-            "num_outlets": None,
-            "mac": None,
-        }
+    async def get_device_info(self) -> dict:
+        """Get device information (model, firmware, etc)."""
+        if not self.connected:
+            _LOGGER.debug("Not connected, can't get device info")
+            return self.pdu_info
 
-        # Get system information
-        system_info = await self.send_command("show system")
-        if system_info:
-            # Extract model
-            model_match = re.search(r"Model Name:\s*([^\r\n]+)", system_info)
-            if model_match:
-                self.pdu_info["model"] = model_match.group(1).strip()
-                _LOGGER.info("PDU Model: %s", self.pdu_info["model"])
+        try:
+            # Check if we need to get info (first run)
+            if not self.pdu_model:
+                _LOGGER.info("Getting PDU information")
 
-            # Extract firmware
-            firmware_match = re.search(r"Firmware Version:\s*([^\r\n]+)", system_info)
-            if firmware_match:
-                self.pdu_info["firmware"] = firmware_match.group(1).strip()
-                _LOGGER.info("PDU Firmware: %s", self.pdu_info["firmware"])
+                # Get system information
+                system_info = await self.send_command("show system info")
+                if system_info:
+                    # Extract model information
+                    model_match = re.search(r"Model Name:\s*([^\r\n]+)", system_info)
+                    if model_match:
+                        self.pdu_model = model_match.group(1).strip()
+                        _LOGGER.debug("Found PDU model: %s", self.pdu_model)
 
-            # Extract serial number
-            serial_match = re.search(r"Serial Number:\s*([^\r\n]+)", system_info)
-            if serial_match:
-                self.pdu_info["serial"] = serial_match.group(1).strip()
-                _LOGGER.debug("PDU Serial: %s", self.pdu_info["serial"])
+                    # Extract firmware
+                    firmware_match = re.search(
+                        r"Firmware Version:\s*([^\r\n]+)", system_info
+                    )
+                    if firmware_match:
+                        self.pdu_firmware = firmware_match.group(1).strip()
+                        _LOGGER.debug("Found PDU firmware: %s", self.pdu_firmware)
 
-        # Get MAC address
-        network_info = await self.send_command("show network interface eth1")
-        if network_info:
-            mac_match = re.search(r"MAC address:\s*([^\r\n]+)", network_info)
-            if mac_match:
-                self.pdu_info["mac"] = mac_match.group(1).strip()
-                _LOGGER.debug("PDU MAC: %s", self.pdu_info["mac"])
+                    # Extract serial number
+                    serial_match = re.search(
+                        r"Serial Number:\s*([^\r\n]+)", system_info
+                    )
+                    if serial_match:
+                        self.pdu_serial = serial_match.group(1).strip()
+                        _LOGGER.debug("Found PDU serial: %s", self.pdu_serial)
 
-        # Get outlet count
-        outlets_info = await self.send_command("show outlets")
-        if outlets_info:
-            # Count the number of outlets by counting the outlet rows
-            outlet_rows = re.findall(r"^\s*\d+\s+\|", outlets_info, re.MULTILINE)
-            if outlet_rows:
-                self.pdu_info["num_outlets"] = len(outlet_rows)
-                _LOGGER.info("PDU Outlets: %s", self.pdu_info["num_outlets"])
+                    # If we don't have a serial number, generate one based on hostname
+                    if not self.pdu_serial:
+                        self.pdu_serial = f"RLNK_{self._host.replace('.', '_')}"
+                        _LOGGER.debug("Generated PDU serial: %s", self.pdu_serial)
 
-        return self.pdu_info
+                    # Get outlet count
+                    outlets_info = await self.send_command("show outlets")
+                    if outlets_info:
+                        # Count the number of outlets by counting the outlet rows
+                        outlet_rows = re.findall(
+                            r"^\s*\d+\s+\|", outlets_info, re.MULTILINE
+                        )
+                        if outlet_rows:
+                            num_outlets = len(outlet_rows)
+                            _LOGGER.info("Found %s outlets", num_outlets)
+
+                # Update the pdu_info dictionary
+                self.pdu_info = {
+                    "model": self.pdu_model,
+                    "firmware": self.pdu_firmware,
+                    "serial": self.pdu_serial,
+                    "name": self.pdu_name,
+                }
+
+            return self.pdu_info
+
+        except Exception as e:
+            _LOGGER.error("Error getting device info: %s", e)
+            return self.pdu_info
 
     def get_model_capabilities(self) -> Dict[str, Any]:
         """Get capabilities based on model number."""
@@ -627,7 +576,7 @@ class RacklinkController:
         _LOGGER.debug("Updating all data from PDU")
         try:
             # Get basic device info if needed
-            if not self.pdu_info["model"]:
+            if not self.pdu_model:
                 await self.get_device_info()
 
             # Update outlet states efficiently first (this is lightweight)
@@ -939,3 +888,46 @@ class RacklinkController:
         except Exception as e:
             _LOGGER.error("Unexpected error during login: %s", e)
             return False
+
+    async def disconnect(self) -> bool:
+        """Disconnect from the PDU - used by config_flow for validation."""
+        try:
+            await self._close_socket()
+            return True
+        except Exception as e:
+            _LOGGER.error("Error disconnecting: %s", e)
+            return False
+
+    async def shutdown(self) -> None:
+        """Gracefully shut down the controller and release resources."""
+        _LOGGER.debug("Shutting down controller for %s", self._host)
+
+        # Flag that we're shutting down so other tasks can exit cleanly
+        self._shutdown_requested = True
+
+        # Cancel the command processor task
+        if self._command_process_task and not self._command_process_task.done():
+            _LOGGER.debug("Cancelling command processor task")
+            self._command_process_task.cancel()
+            try:
+                # Wait briefly for cancellation
+                await asyncio.wait_for(
+                    asyncio.shield(self._command_process_task), timeout=1
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+        # Cancel any connection task
+        if self._connection_task and not self._connection_task.done():
+            _LOGGER.debug("Cancelling connection task")
+            self._connection_task.cancel()
+            try:
+                # Wait briefly for cancellation
+                await asyncio.wait_for(asyncio.shield(self._connection_task), timeout=1)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+        # Close socket connection
+        await self._close_socket()
+
+        _LOGGER.info("Controller for %s has been shut down", self._host)
