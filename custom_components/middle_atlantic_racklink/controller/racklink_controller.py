@@ -119,8 +119,19 @@ class RacklinkController:
         """Update PDU details."""
         try:
             _LOGGER.debug("Fetching PDU details")
-            # Use the correct command format based on the device's help output
-            response = await self.socket.send_command("show pdu")
+            # Based on logs, the device is expecting a different command format
+            # Try different command variations
+            response = await self.socket.send_command("show pdu details")
+            if "^" in response or "label" in response:
+                # If first command fails, try alternative
+                _LOGGER.debug("First PDU command failed, trying alternative")
+                response = await self.socket.send_command("pdu info")
+
+                # If still failing, try even simpler command
+                if "^" in response or "label" in response:
+                    _LOGGER.debug("Second PDU command failed, trying simpler version")
+                    response = await self.socket.send_command("info")
+
             _LOGGER.debug("PDU details response received (full): %r", response)
 
             # Parse PDU name - updated regex to match "PDU 'Name'"
@@ -174,8 +185,19 @@ class RacklinkController:
 
             # Get MAC address
             _LOGGER.debug("Fetching network interface details")
-            # Use correct command format based on the device's help output
+            # Try different network commands
             network_response = await self.socket.send_command("show network")
+            if "^" in network_response or "label" in network_response:
+                _LOGGER.debug("First network command failed, trying alternative")
+                network_response = await self.socket.send_command("network info")
+
+                # If still failing, try even simpler command
+                if "^" in network_response or "label" in network_response:
+                    _LOGGER.debug(
+                        "Second network command failed, trying simpler version"
+                    )
+                    network_response = await self.socket.send_command("net")
+
             _LOGGER.debug("Network interface response: %r", network_response)
 
             mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n|,)", network_response)
@@ -203,8 +225,40 @@ class RacklinkController:
         """Update outlet states."""
         try:
             _LOGGER.debug("Fetching outlet states")
-            # Use the correct command format based on the device's help output
+            # Try different command variations for outlets
             response = await self.socket.send_command("show outlets")
+            if "^" in response or "label" in response:
+                _LOGGER.debug("First outlets command failed, trying alternative")
+                response = await self.socket.send_command("outlet status")
+
+                # If still failing, try more variations
+                if "^" in response or "label" in response:
+                    _LOGGER.debug(
+                        "Second outlets command failed, trying another alternative"
+                    )
+                    response = await self.socket.send_command("outlet all")
+
+                    if "^" in response or "label" in response:
+                        _LOGGER.debug(
+                            "Third outlets command failed, trying direct outlet numbers"
+                        )
+                        # Try individual outlets
+                        outlets_data = []
+                        for outlet_num in range(1, 9):  # Try outlets 1-8
+                            outlet_response = await self.socket.send_command(
+                                f"outlet {outlet_num}"
+                            )
+                            if not (
+                                "^" in outlet_response or "label" in outlet_response
+                            ):
+                                outlets_data.append(
+                                    f"Outlet {outlet_num}: {outlet_response}"
+                                )
+
+                        # Combine individual outlet responses
+                        if outlets_data:
+                            response = "\n".join(outlets_data)
+
             _LOGGER.debug("Outlet states response (full): %r", response)
 
             # Updated regex to match the actual format from the sample response
@@ -229,6 +283,10 @@ class RacklinkController:
                     r"Outlet\s+(\d+)(?:\s*[:-]\s*([^:]*))?\s*:\s*\n\s*(?:Power\s*)?state:\s*(\w+)",
                     # Very simple fallback pattern
                     r"Outlet\s+(\d+).*?\n.*?state.*?(\w+)",
+                    # Try to match any mention of outlet with number
+                    r"[Oo]utlet\s*(\d+)[^\n]*?(?:on|off|ON|OFF)",
+                    # Generic outlet state matcher
+                    r"(\d+)[^\n]*?(ON|OFF|On|Off)",
                 ]
 
                 for alt_pattern in alt_patterns:
@@ -239,39 +297,28 @@ class RacklinkController:
                         )
                         break
 
-                if not matches:
-                    _LOGGER.error("Could not find any outlets with any pattern")
+            if not matches:
+                # If all patterns failed, try an alternative command
+                _LOGGER.debug("Trying alternative outlet status command")
+                alt_response = await self.socket.send_command("show outlets status")
 
-                    # If we still have no matches, try a different command
-                    try:
-                        _LOGGER.debug("Trying alternative outlet status command")
-                        alt_response = await self.socket.send_command(
-                            "show outlets status"
-                        )
+                if "^" in alt_response or "label" in alt_response:
+                    _LOGGER.debug(
+                        "Alternative outlet status command failed, trying direct status"
+                    )
+                    alt_response = await self.socket.send_command("status")
+
+                _LOGGER.debug("Alternative outlet status response: %r", alt_response)
+
+                # Try all patterns on the alternative response
+                for alt_pattern in alt_patterns:
+                    matches = re.findall(alt_pattern, alt_response)
+                    if matches:
                         _LOGGER.debug(
-                            "Alternative outlet status response: %r", alt_response
+                            "Found outlets using alternative pattern on alternative response: %r",
+                            matches,
                         )
-
-                        # Look for outlet status in the alternative response
-                        for alt_pattern in alt_patterns + [
-                            r"Outlet\s*(\d+)[^:]*:\s*(\w+)"
-                        ]:
-                            matches = re.findall(alt_pattern, alt_response)
-                            if matches:
-                                _LOGGER.debug(
-                                    "Found outlets using alternative command: %r",
-                                    matches,
-                                )
-                                break
-
-                        if not matches:
-                            _LOGGER.error(
-                                "Could not find any outlets with alternative command"
-                            )
-                    except Exception as alt_err:
-                        _LOGGER.error(
-                            "Error with alternative outlet command: %s", alt_err
-                        )
+                        break
 
             # Update outlets dictionary
             for match in matches:
@@ -285,7 +332,7 @@ class RacklinkController:
                         match[2].lower() if len(match) > 2 else match[1].lower()
                     )
 
-                    state = state_text == "on"
+                    state = state_text in ("on", "true", "1", "yes")
 
                     # Store the previous state for logging
                     prev_state = self.outlet_states.get(outlet_num, None)
@@ -364,9 +411,19 @@ class RacklinkController:
     async def _update_system_status(self) -> None:
         """Update system status including power data."""
         try:
-            # Get inlet details - using a valid command format
+            # Get inlet details - trying different command formats
             _LOGGER.debug("Fetching inlet details")
             response = await self.socket.send_command("show inlets")
+
+            if "^" in response or "label" in response:
+                _LOGGER.debug("First inlet command failed, trying alternative")
+                response = await self.socket.send_command("inlet status")
+
+                # If still failing, try simpler version
+                if "^" in response or "label" in response:
+                    _LOGGER.debug("Second inlet command failed, trying simpler version")
+                    response = await self.socket.send_command("status")
+
             _LOGGER.debug("Inlet details response: %r", response)
 
             # Parse voltage - updated regex pattern
@@ -399,15 +456,17 @@ class RacklinkController:
                 _LOGGER.warning(
                     "Could not parse power from response, calculating from V*A"
                 )
-                # Calculate power from voltage and current if not found
+                # Calculate power as V * A
                 self.active_power = self.rms_voltage * self.rms_current
                 _LOGGER.debug("Calculated power: %s W", self.active_power)
 
             # Parse energy
-            energy_match = re.search(r"Active Energy:\s*([\d.]+)\s*Wh", response)
+            energy_match = re.search(
+                r"Active Energy:\s*([\d.]+)\s*(?:kWh|Wh)", response
+            )
             if energy_match:
                 self.active_energy = float(energy_match.group(1))
-                _LOGGER.debug("Parsed energy: %s Wh", self.active_energy)
+                _LOGGER.debug("Parsed energy: %s kWh", self.active_energy)
             else:
                 _LOGGER.warning("Could not parse energy from response")
                 # Keep previous energy value if not found
@@ -419,14 +478,23 @@ class RacklinkController:
                 _LOGGER.debug("Parsed frequency: %s Hz", self.line_frequency)
             else:
                 _LOGGER.warning("Could not parse frequency from response")
-                # Set default frequency if not found
+                # Default to 60 Hz if not found
                 self.line_frequency = 60.0
                 _LOGGER.debug("Using default frequency: %s Hz", self.line_frequency)
 
-            # Check load shedding status - using valid command format
+            # Check for load shedding
             _LOGGER.debug("Checking load shedding status")
             try:
                 load_shed_response = await self.socket.send_command("show loadshedding")
+
+                if "^" in load_shed_response or "label" in load_shed_response:
+                    _LOGGER.debug(
+                        "First load shedding command failed, trying alternative"
+                    )
+                    load_shed_response = await self.socket.send_command(
+                        "loadshed status"
+                    )
+
                 _LOGGER.debug("Load shedding response: %r", load_shed_response)
                 self.load_shedding_active = (
                     "enabled" in load_shed_response.lower()
@@ -447,7 +515,7 @@ class RacklinkController:
                 _LOGGER.debug("Sequence status response: %r", sequence_response)
 
                 # Check if there was a command syntax error
-                if "^" in sequence_response or "Unknown command" in sequence_response:
+                if "^" in sequence_response or "label" in sequence_response:
                     _LOGGER.debug(
                         "Sequence command syntax error, trying simplified version"
                     )
@@ -455,6 +523,13 @@ class RacklinkController:
                     sequence_response = await self.socket.send_command(
                         "outlet sequence status"
                     )
+
+                    if "^" in sequence_response or "label" in sequence_response:
+                        _LOGGER.debug(
+                            "Second sequence command failed, trying simpler version"
+                        )
+                        sequence_response = await self.socket.send_command("sequence")
+
                     _LOGGER.debug(
                         "Alternative sequence status response: %r", sequence_response
                     )
@@ -477,20 +552,36 @@ class RacklinkController:
         """Turn an outlet on."""
         try:
             _LOGGER.info("Turning outlet %d ON", outlet)
-            # Use the correct command format based on the device's help output
+
+            # Try different command variations
             cmd = f"power outlet {outlet} on"
             response = await self.socket.send_command(cmd)
+
+            # If command syntax error, try alternatives
+            if "^" in response or "label" in response:
+                _LOGGER.debug("First power on command failed, trying alternative")
+                cmd = f"outlet {outlet} on"
+                response = await self.socket.send_command(cmd)
+
+                if "^" in response or "label" in response:
+                    _LOGGER.debug(
+                        "Second power on command failed, trying simple version"
+                    )
+                    cmd = f"on {outlet}"
+                    response = await self.socket.send_command(cmd)
+
             _LOGGER.debug("Turn outlet ON response: %r", response)
 
             # Check if command was successful - expanded success patterns
             success = (
                 "success" in response.lower()
                 or "powered on" in response.lower()
+                or "turned on" in response.lower()
                 or "on" in response.lower()
                 or f"outlet {outlet}" in response.lower()
                 or "unknown command"
                 not in response.lower()  # If no error message, consider success
-            )
+            ) and not ("ERROR:" in response)
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d ON", outlet)
@@ -524,20 +615,36 @@ class RacklinkController:
         """Turn an outlet off."""
         try:
             _LOGGER.info("Turning outlet %d OFF", outlet)
-            # Use the correct command format based on the device's help output
+
+            # Try different command variations
             cmd = f"power outlet {outlet} off"
             response = await self.socket.send_command(cmd)
+
+            # If command syntax error, try alternatives
+            if "^" in response or "label" in response:
+                _LOGGER.debug("First power off command failed, trying alternative")
+                cmd = f"outlet {outlet} off"
+                response = await self.socket.send_command(cmd)
+
+                if "^" in response or "label" in response:
+                    _LOGGER.debug(
+                        "Second power off command failed, trying simple version"
+                    )
+                    cmd = f"off {outlet}"
+                    response = await self.socket.send_command(cmd)
+
             _LOGGER.debug("Turn outlet OFF response: %r", response)
 
-            # Check if command was successful - expanded success patterns
+            # Check if command was successful
             success = (
                 "success" in response.lower()
                 or "powered off" in response.lower()
+                or "turned off" in response.lower()
                 or "off" in response.lower()
                 or f"outlet {outlet}" in response.lower()
                 or "unknown command"
                 not in response.lower()  # If no error message, consider success
-            )
+            ) and not ("ERROR:" in response)
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d OFF", outlet)

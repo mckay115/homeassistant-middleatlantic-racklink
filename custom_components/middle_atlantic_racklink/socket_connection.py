@@ -355,6 +355,7 @@ class SocketConnection:
         cleaned_lines = []
         command_found = False
         prompt_found = False
+        syntax_error_found = False
 
         # Look for lines that we want to keep
         for line in response_lines:
@@ -386,6 +387,16 @@ class SocketConnection:
                 _LOGGER.debug("Skipping command help menu")
                 break
 
+            # Skip command error response lines - pattern seen in the logs
+            if (
+                line.strip().startswith("^")
+                or "label  Outlet label" in line
+                or "Outlet label (or 'all')" in line
+            ):
+                _LOGGER.debug("Detected syntax error response: %r", line)
+                syntax_error_found = True
+                continue
+
             # Skip command syntax lines (often start with carets)
             if line.startswith("^"):
                 _LOGGER.debug("Skipping command syntax line: %r", line)
@@ -396,6 +407,13 @@ class SocketConnection:
 
         # Join all the cleaned lines
         cleaned_response = "\n".join(cleaned_lines)
+
+        # If we found a syntax error and have no content, make it explicit
+        if syntax_error_found and not cleaned_lines:
+            _LOGGER.debug(
+                "Command had syntax error, returning empty response with marker"
+            )
+            return "ERROR: Command syntax error"
 
         # If we didn't find any useful content, but we got "unknown command"
         if not cleaned_lines and (
