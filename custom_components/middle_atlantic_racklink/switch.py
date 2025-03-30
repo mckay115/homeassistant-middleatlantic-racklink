@@ -142,142 +142,56 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the outlet on."""
-        command = f"power outlets {self._outlet} on /y"
         _LOGGER.debug("Turning outlet %s ON", self._outlet)
 
-        # Send power on command
-        await self._controller.send_command(command)
+        try:
+            # Use the controller's built-in method which includes verification
+            success = await self._controller.turn_outlet_on(self._outlet)
 
-        # Wait briefly for device to process the command
-        await asyncio.sleep(2)
-
-        # Verify the state change
-        verification_command = f"show outlets {self._outlet} details"
-        response = await self._controller.send_command(verification_command)
-
-        # Parse the response to check if the outlet is actually on
-        state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
-        if state_match:
-            actual_state = state_match.group(1).lower()
-            if actual_state == "on":
-                _LOGGER.debug("Successfully verified outlet %s is ON", self._outlet)
+            if success:
+                _LOGGER.debug("Successfully turned outlet %s ON", self._outlet)
                 # Update internal state
                 self._controller.outlet_states[self._outlet] = True
-            else:
-                _LOGGER.warning(
-                    "Failed to turn outlet %s ON (state is %s)",
-                    self._outlet,
-                    actual_state,
-                )
-        else:
-            _LOGGER.warning(
-                "Could not verify outlet %s state after turn ON", self._outlet
-            )
+                # Trigger state update
+                self.async_write_ha_state()
 
-        # Trigger state update
-        self.async_write_ha_state()
+                # Request a refresh through the coordinator to update all entities
+                async_call_later(self.hass, 2, self._async_refresh_state)
+            else:
+                _LOGGER.warning("Failed to turn outlet %s ON", self._outlet)
+        except Exception as e:
+            _LOGGER.error("Error turning outlet %s ON: %s", self._outlet, e)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the outlet off."""
-        command = f"power outlets {self._outlet} off /y"
         _LOGGER.debug("Turning outlet %s OFF", self._outlet)
 
-        # Send power off command
-        await self._controller.send_command(command)
+        try:
+            # Use the controller's built-in method which includes verification
+            success = await self._controller.turn_outlet_off(self._outlet)
 
-        # Wait briefly for device to process the command
-        await asyncio.sleep(2)
-
-        # Verify the state change
-        verification_command = f"show outlets {self._outlet} details"
-        response = await self._controller.send_command(verification_command)
-
-        # Parse the response to check if the outlet is actually off
-        state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
-        if state_match:
-            actual_state = state_match.group(1).lower()
-            if actual_state == "off":
-                _LOGGER.debug("Successfully verified outlet %s is OFF", self._outlet)
+            if success:
+                _LOGGER.debug("Successfully turned outlet %s OFF", self._outlet)
                 # Update internal state
                 self._controller.outlet_states[self._outlet] = False
-            else:
-                _LOGGER.warning(
-                    "Failed to turn outlet %s OFF (state is %s)",
-                    self._outlet,
-                    actual_state,
-                )
-        else:
-            _LOGGER.warning(
-                "Could not verify outlet %s state after turn OFF", self._outlet
-            )
+                # Trigger state update
+                self.async_write_ha_state()
 
-        # Trigger state update
-        self.async_write_ha_state()
+                # Request a refresh through the coordinator to update all entities
+                async_call_later(self.hass, 2, self._async_refresh_state)
+            else:
+                _LOGGER.warning("Failed to turn outlet %s OFF", self._outlet)
+        except Exception as e:
+            _LOGGER.error("Error turning outlet %s OFF: %s", self._outlet, e)
 
     async def _async_refresh_state(self, _now=None):
-        """Refresh the outlet state to verify the command took effect."""
-        if not self._pending_update:
-            return
-
-        _LOGGER.debug("Refreshing outlet %d state to verify command", self._outlet)
+        """Refresh all states after a control operation."""
+        _LOGGER.debug("Requesting data refresh for outlet %s", self._outlet)
         try:
             # Force refresh of outlet states through the coordinator
             await self.coordinator.async_request_refresh()
-
-            # Update our state based on the refreshed data
-            if self.coordinator.data and "outlet_states" in self.coordinator.data:
-                actual_state = self.coordinator.data["outlet_states"].get(self._outlet)
-            else:
-                # Force refresh directly from the controller as fallback
-                await self._controller.get_all_outlet_states(force_refresh=True)
-                actual_state = self._controller.outlet_states.get(self._outlet)
-
-            if actual_state is None:
-                _LOGGER.warning(
-                    "Refresh could not determine outlet %d state - device did not return data",
-                    self._outlet,
-                )
-                return
-
-            # Compare with what we expect
-            if actual_state != self._last_commanded_state:
-                _LOGGER.warning(
-                    "Outlet %d (%s) state mismatch! Commanded: %s, Actual: %s - applying actual state",
-                    self._outlet,
-                    self._outlet_name,
-                    self._last_commanded_state,
-                    actual_state,
-                )
-
-                # The actual device state is the source of truth
-                self._controller.outlet_states[self._outlet] = actual_state
-
-                # Extra attempt to sync if there's a mismatch to ensure UI matches device
-                if actual_state != self._last_commanded_state:
-                    # Schedule another command to sync with actual device state
-                    _LOGGER.debug(
-                        "Scheduling state correction for outlet %d to match device state: %s",
-                        self._outlet,
-                        actual_state,
-                    )
-                    # We don't await this - just queue it to run after this method completes
-                    asyncio.create_task(
-                        self._controller.set_outlet_state(self._outlet, actual_state)
-                    )
-            else:
-                _LOGGER.debug(
-                    "Outlet %d state verified: %s",
-                    self._outlet,
-                    "ON" if actual_state else "OFF",
-                )
-
-            # Always update to trigger a state refresh
-            self.async_write_ha_state()
-
-        except Exception as err:
-            _LOGGER.error("Error refreshing outlet %d state: %s", self._outlet, err)
-        finally:
-            self._pending_update = False
+        except Exception as e:
+            _LOGGER.error("Error refreshing states: %s", e)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
