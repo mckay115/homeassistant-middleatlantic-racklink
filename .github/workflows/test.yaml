@@ -22,7 +22,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio
           pip install homeassistant
-          pip install telnetlib3>=1.0.4
 
       - name: Run basic validation
         run: |

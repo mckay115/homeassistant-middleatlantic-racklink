@@ -1,14 +1,14 @@
 {
   "domain": "middle_atlantic_racklink",
-  "name": "Middle Atlantic Racklink Power Sequencer",
-  "codeowners": ["@mckay115"],
+  "name": "Middle Atlantic RackLink",
+  "codeowners": ["@yodazach"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
-  "integration_type": "device",
-  "iot_class": "local_push",
-  "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
-  "quality_scale": "platinum",
+  "documentation": "https://github.com/yodazach/homeassistant-middleatlantic-racklink",
+  "homekit": {},
+  "iot_class": "local_polling",
   "requirements": [],
-  "version": "0.2.2"
+  "ssdp": [],
+  "version": "1.0.0",
+  "zeroconf": []
 }
