@@ -66,3 +66,7 @@ set_pdu_name:
       example: "Rack Power"
       selector:
         text:
+
+test_direct_commands:
+  name: Test Direct Commands
+  description: Test different command syntaxes with the RackLink device. This is a debug service to help determine the correct command formats.

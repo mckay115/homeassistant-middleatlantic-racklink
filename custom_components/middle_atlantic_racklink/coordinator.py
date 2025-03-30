@@ -379,3 +379,11 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Coordinator: Failed to stop outlet sequence")
             _LOGGER.debug("Scheduling a full data refresh after failed sequence stop")
             await self.async_request_refresh()
+
+    async def test_direct_commands(self) -> str:
+        """Test direct commands with the RackLink device.
+
+        This is a debug method to attempt various command syntaxes.
+        """
+        _LOGGER.info("Coordinator: Running direct command tests")
+        return await self.controller.test_direct_commands()

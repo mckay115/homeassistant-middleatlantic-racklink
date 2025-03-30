@@ -80,6 +80,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register update listener for config entry changes
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
+    # Register service for testing direct commands
+    async def test_direct_commands_service(call):
+        """Service to test direct commands."""
+        _LOGGER.info("Service call: test_direct_commands")
+        results = await coordinator.test_direct_commands()
+        _LOGGER.info("Direct command test results:\n%s", results)
+
+    hass.services.async_register(
+        DOMAIN, "test_direct_commands", test_direct_commands_service
+    )
+
     return True
 
 

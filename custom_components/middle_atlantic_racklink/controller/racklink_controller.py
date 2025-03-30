@@ -225,6 +225,32 @@ class RacklinkController:
         """Update outlet states."""
         try:
             _LOGGER.debug("Fetching outlet states")
+
+            # Try a new direct approach first - most basic command with outlet number
+            outlet_data = {}
+            for outlet_num in range(1, 9):  # Try outlets 1-8
+                direct_cmd = f"outlet {outlet_num}"
+                _LOGGER.info("Trying direct outlet command: %s", direct_cmd)
+                response = await self.socket.send_command(direct_cmd)
+
+                if not ("ERROR:" in response):
+                    outlet_data[outlet_num] = {
+                        "state": "on" in response.lower() or "true" in response.lower(),
+                        "name": f"Outlet {outlet_num}",
+                    }
+                    _LOGGER.info(
+                        "Got outlet %d data: %s", outlet_num, outlet_data[outlet_num]
+                    )
+
+            # If direct commands worked, use that data
+            if outlet_data:
+                _LOGGER.info("Using direct outlet commands data: %s", outlet_data)
+                for outlet_num, data in outlet_data.items():
+                    self.outlet_states[outlet_num] = data["state"]
+                    self.outlet_names[outlet_num] = data["name"]
+                return
+
+            # Otherwise try standard approaches
             # Try different command variations for outlets
             response = await self.socket.send_command("show outlets")
             if "^" in response or "label" in response:
@@ -896,3 +922,42 @@ class RacklinkController:
         except Exception as err:
             _LOGGER.error("Error stopping sequence: %s", err)
             return False
+
+    async def test_direct_commands(self) -> str:
+        """Test direct commands based on the syntax hints from error messages.
+
+        This is a debug method to help determine the correct command syntax.
+        """
+        results = []
+
+        # Try commands based on the syntax hint "label Outlet label (or 'all') (1/2/3/4/5/6/7/8/all)"
+        commands_to_try = [
+            "label 1",
+            "label 2",
+            "label 3",
+            "label 4",
+            "label 5",
+            "label 6",
+            "label 7",
+            "label 8",
+            "label all",
+            "outlet 1",
+            "outlet 2",
+            "1",
+            "2",
+            "status 1",
+            "status 2",
+            "on 1",
+            "on 2",
+            "off 1",
+            "off 2",
+        ]
+
+        _LOGGER.info("Beginning direct command tests...")
+
+        for cmd in commands_to_try:
+            _LOGGER.info("Testing direct command: %s", cmd)
+            response = await self.socket.send_command(cmd)
+            results.append(f"Command '{cmd}' response: {response}")
+
+        return "\n".join(results)

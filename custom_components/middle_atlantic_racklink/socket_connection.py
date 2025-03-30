@@ -251,6 +251,11 @@ class SocketConnection:
                     response = buffer.decode("utf-8", errors="ignore")
                     _LOGGER.debug("RAW RESPONSE <<: %r", response)
 
+                    # Log the ULTRA RAW response without any processing
+                    _LOGGER.info(
+                        "COMPLETE RAW DEVICE RESPONSE FOR %r:\n%s", command, response
+                    )
+
                     # Clean up the response
                     cleaned_response = self._clean_response(response, command)
                     _LOGGER.debug("CLEANED RESPONSE: %r", cleaned_response)
@@ -269,41 +274,51 @@ class SocketConnection:
 
                     return cleaned_response
 
-                except asyncio.TimeoutError:
-                    _LOGGER.warning(
-                        "Timeout waiting for response to command: %r", command
-                    )
-                    retry_count += 1
-                    await self._cleanup_connection()
-                    if retry_count < max_retries:
-                        _LOGGER.debug(
-                            "Retrying command after timeout (attempt %d/%d)",
-                            retry_count + 1,
-                            max_retries,
-                        )
-                        await asyncio.sleep(1)  # Brief delay before retry
-                    else:
-                        raise TimeoutError(
-                            f"Command timed out after {self.timeout}s: {command}"
-                        )
-                except Exception as err:
-                    _LOGGER.error("Error sending command '%r': %s", command, err)
-                    await self._cleanup_connection()
+                except asyncio.TimeoutError as err:
+                    _LOGGER.error("Command timed out: %s", err)
                     retry_count += 1
                     if retry_count < max_retries:
                         _LOGGER.debug(
-                            "Retrying command after error (attempt %d/%d)",
-                            retry_count + 1,
+                            "Retrying command after timeout (%d/%d)",
+                            retry_count,
                             max_retries,
                         )
-                        await asyncio.sleep(1)  # Brief delay before retry
+                        await asyncio.sleep(1)
+                        continue
                     else:
-                        raise
+                        _LOGGER.error("Max retry attempts reached, giving up")
+                        return "ERROR: Command timed out"
 
-            # This should not be reached due to the exception in the last iteration
-            raise ConnectionError(
-                f"Failed to send command after {max_retries} attempts"
-            )
+                except ConnectionError as err:
+                    _LOGGER.error("Connection error during command: %s", err)
+                    self._connected = False
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        _LOGGER.debug(
+                            "Attempting to reconnect and retry (%d/%d)",
+                            retry_count,
+                            max_retries,
+                        )
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        _LOGGER.error("Max retry attempts reached, giving up")
+                        return "ERROR: Connection error"
+
+                except Exception as err:
+                    _LOGGER.error("Unexpected error during command: %s", err)
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        _LOGGER.debug(
+                            "Retrying after error (%d/%d)", retry_count, max_retries
+                        )
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        _LOGGER.error("Max retry attempts reached, giving up")
+                        return f"ERROR: {err}"
+
+            return "ERROR: Max retries exceeded"
 
     async def _send_data(self, data: str) -> None:
         """Send data to the device."""
