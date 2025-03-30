@@ -27,6 +27,7 @@ from ..parser import (
     parse_all_outlet_states,
     parse_pdu_power_data,
     parse_pdu_temperature,
+    parse_outlet_names,
 )
 from ..socket_connection import SocketConnection
 
@@ -188,34 +189,83 @@ class BaseController:
         """Process commands from the queue to prevent overwhelming the device."""
         try:
             while not self._stopping:
-                # Get the next command from the queue
-                command, future = await self._command_queue.get()
-
                 try:
-                    # Execute the command
-                    result = await self._send_command(command)
+                    # Get the next command from the queue
+                    command, future = await self._command_queue.get()
 
-                    # Set the result
-                    if not future.done():
-                        future.set_result(result)
+                    _LOGGER.debug("Processing queued command: %s", command)
 
-                except Exception as e:
-                    # Set the exception
-                    if not future.done():
-                        future.set_exception(e)
+                    # Track number of attempts
+                    attempts = 0
+                    max_attempts = 3
+                    success = False
 
-                finally:
+                    while attempts < max_attempts and not success:
+                        try:
+                            # Execute the command
+                            result = await self._send_command(command)
+
+                            # Check if result is meaningful
+                            if not result or len(result.strip()) < 3:
+                                # Empty or very short result, likely a timeout
+                                _LOGGER.warning(
+                                    "Empty or short result for command '%s', attempt %d/%d",
+                                    command,
+                                    attempts + 1,
+                                    max_attempts,
+                                )
+                                raise ConnectionError("Empty response received")
+
+                            # Set the result
+                            if not future.done():
+                                future.set_result(result)
+                                success = True
+
+                        except (ConnectionError, TimeoutError) as err:
+                            attempts += 1
+                            _LOGGER.warning(
+                                "Error executing command '%s': %s (attempt %d/%d)",
+                                command,
+                                err,
+                                attempts,
+                                max_attempts,
+                            )
+
+                            if attempts >= max_attempts:
+                                # Final attempt failed
+                                if not future.done():
+                                    future.set_exception(err)
+                            else:
+                                # Wait before retry
+                                await asyncio.sleep(2.0)
+
+                        except Exception as e:
+                            # Unexpected error, don't retry
+                            _LOGGER.error(
+                                "Unexpected error executing command '%s': %s",
+                                command,
+                                e,
+                            )
+                            if not future.done():
+                                future.set_exception(e)
+                            break
+
                     # Mark the command as done
                     self._command_queue.task_done()
 
                     # Add a delay between commands to not overwhelm the device
-                    # Increased from default to be more gentle
-                    await asyncio.sleep(1.0)  # Increased from 0.5 to 1.0 second
+                    await asyncio.sleep(2.0)
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    _LOGGER.error("Error in command queue processor: %s", e)
+                    # Continue processing the queue despite errors
 
         except asyncio.CancelledError:
             _LOGGER.debug("Command processor task cancelled")
         except Exception as e:
-            _LOGGER.error("Error in command processor: %s", e)
+            _LOGGER.error("Fatal error in command processor: %s", e)
 
     async def queue_command(self, command: str) -> str:
         """Queue a command for execution by the command processor."""
@@ -448,21 +498,34 @@ class BaseController:
         try:
             # First try 'show outlets'
             response = await self.queue_command("show outlets")
-            outlet_data = parse_all_outlet_states(response)
+            outlet_states = parse_all_outlet_states(response)
 
-            if not outlet_data:
+            if not outlet_states:
                 # Try alternative command 'show outlet'
                 response = await self.queue_command("show outlet")
-                outlet_data = parse_all_outlet_states(response)
+                outlet_states = parse_all_outlet_states(response)
 
-            if outlet_data:
-                self.outlet_states = outlet_data.get("states", {})
-                self.outlet_names = outlet_data.get("names", {})
+                # If still no data, try 'show outlets all'
+                if not outlet_states:
+                    response = await self.queue_command("show outlets all")
+                    outlet_states = parse_all_outlet_states(response)
+
+            if outlet_states:
+                # Update outlet states directly (it's already a dict of int:bool)
+                self.outlet_states = outlet_states
+
+                # Get outlet names separately
+                names_response = await self.queue_command("show outlets all")
+                outlet_names = parse_outlet_names(names_response)
+                if outlet_names:
+                    self.outlet_names = outlet_names
 
                 _LOGGER.debug(
                     "Updated outlet states: %s",
                     {f"Outlet {k}": v for k, v in self.outlet_states.items()},
                 )
+            else:
+                _LOGGER.warning("No outlet states found in any response")
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)

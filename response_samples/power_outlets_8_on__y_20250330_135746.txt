@@ -1,0 +1,7 @@
+COMMAND: power outlets 8 on /y
+TIMESTAMP: 2025-03-30T13:57:46.906193
+RAW RESPONSE:
+--------------------------------------------------
+power outlets 8 on /y
+[LiskoLabs Rack] # 
+--------------------------------------------------

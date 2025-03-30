@@ -228,10 +228,12 @@ class SocketConnection:
         """
         max_retries = 2  # Maximum retries for a single command
         retry_count = 0
+        retry_delay = 2.0  # Seconds to wait between retries
 
         while retry_count < max_retries:
             if not self._connected or not self._writer or not self._reader:
                 # Try to reconnect
+                _LOGGER.debug("Not connected, attempting to reconnect")
                 if not await self.connect():
                     raise ConnectionError(
                         "Not connected to device and reconnection failed"
@@ -241,6 +243,7 @@ class SocketConnection:
                 # Check if connection is still valid
                 if self._writer.is_closing():
                     # Try to reconnect
+                    _LOGGER.debug("Writer is closing, attempting to reconnect")
                     if not await self.connect():
                         raise ConnectionError(
                             "Connection closed by remote device and reconnection failed"
@@ -250,20 +253,31 @@ class SocketConnection:
                 _LOGGER.debug("Sending command: %s", command)
                 await self._send_data(f"{command}\r\n")
 
+                # Wait a short time for device to process command
+                await asyncio.sleep(0.5)
+
+                # Read the response with increased timeout
+                response = await asyncio.wait_for(
+                    self._read_chunk(), timeout=self.timeout
+                )
+
+                # If the response is empty or just contains the command echoed back, try again
+                command_echo = f"{command}"
+                if not response or response.strip() == command_echo.strip():
+                    _LOGGER.debug("Got empty or echo response, reading more data")
+                    # Try to read more data
+                    additional_response = await asyncio.wait_for(
+                        self._read_chunk(), timeout=self.timeout
+                    )
+                    response += additional_response
+
                 # Update last activity time
                 self._last_activity = time.time()
 
-                # Wait for and collect the response
-                response = await self._read_until_prompt()
-
-                # Clean up the response
-                # Remove the command echo and trailing prompt
-                cleaned_response = self._clean_response(response, command)
-
-                _LOGGER.debug("Command response: %s", cleaned_response)
-                return cleaned_response
+                return response
 
             except asyncio.TimeoutError:
+                # If we timeout, try to recover the connection
                 _LOGGER.warning(
                     "Timeout sending command: %s (attempt %d/%d)",
                     command,
@@ -272,20 +286,23 @@ class SocketConnection:
                 )
                 retry_count += 1
 
-                # Try to clean up and reconnect
-                await self._cleanup_connection()
                 if retry_count < max_retries:
-                    await asyncio.sleep(2)  # Wait before retry
-                    continue
+                    # Try to reconnect before retrying
+                    try:
+                        await self._cleanup_connection()
+                        await asyncio.sleep(retry_delay)
+                        await self.connect()
+                    except Exception as err:
+                        _LOGGER.warning("Error reconnecting: %s", err)
                 else:
-                    _LOGGER.error(
-                        "Command timed out after %d attempts: %s", max_retries, command
+                    raise TimeoutError(
+                        f"Command timed out after {self.timeout} seconds: {command}"
                     )
-                    raise TimeoutError(f"Command timed out: {command}")
 
             except (ConnectionError, OSError) as err:
+                # For connection errors, try to reconnect and retry
                 _LOGGER.warning(
-                    "Connection error sending command '%s': %s (attempt %d/%d)",
+                    "Connection error sending command: %s - %s (attempt %d/%d)",
                     command,
                     err,
                     retry_count + 1,
@@ -293,17 +310,24 @@ class SocketConnection:
                 )
                 retry_count += 1
 
-                # Try to clean up and reconnect
-                await self._cleanup_connection()
                 if retry_count < max_retries:
-                    await asyncio.sleep(2)  # Wait before retry
-                    continue
+                    # Try to reconnect before retrying
+                    try:
+                        await self._cleanup_connection()
+                        await asyncio.sleep(retry_delay)
+                        await self.connect()
+                    except Exception as reconnect_err:
+                        _LOGGER.warning("Error reconnecting: %s", reconnect_err)
                 else:
-                    raise
+                    raise ConnectionError(f"Connection failed: {err}")
 
             except Exception as err:
                 _LOGGER.error("Error sending command '%s': %s", command, err)
                 raise
+
+        raise ConnectionError(
+            f"Failed to send command after {max_retries} attempts: {command}"
+        )
 
     def _start_keepalive(self) -> None:
         """Start the keepalive task if needed."""
@@ -356,37 +380,71 @@ class SocketConnection:
         self._writer.write(data.encode("utf-8", errors="replace"))
         await self._writer.drain()
 
-    async def _read_chunk(self, size: int = 4096) -> str:
-        """Read a chunk of data from the device."""
+    async def _read_chunk(
+        self, timeout: Optional[int] = None, max_size: int = 4096
+    ) -> str:
+        """Read a chunk of data from the socket with automatic retries.
+
+        Args:
+            timeout: Timeout in seconds (default: self.timeout)
+            max_size: Maximum size of data to read in bytes
+
+        Returns:
+            Decoded string of received data
+
+        Raises:
+            TimeoutError: If read times out
+            ConnectionError: If connection is lost
+        """
         if not self._reader:
-            raise ConnectionError("Not connected to device")
+            raise ConnectionError("Not connected to the device")
+
+        timeout = timeout or self.timeout
+        start_time = time.time()
+        buffer = b""
 
         try:
-            chunk = await self._reader.read(size)
-            # If the chunk is empty and we're at EOF, the connection is closed
-            if not chunk and self._reader.at_eof():
-                raise ConnectionError("Connection closed by remote")
+            # Loop until timeout or we get a command prompt
+            while time.time() - start_time < timeout:
+                try:
+                    # Use a short timeout for each read attempt to avoid blocking
+                    # but allow for slow or high-latency devices
+                    short_timeout = min(2.0, timeout - (time.time() - start_time))
+                    chunk = await asyncio.wait_for(
+                        self._reader.read(max_size), timeout=short_timeout
+                    )
 
-            return chunk.decode("utf-8", errors="replace")
+                    if not chunk:
+                        # Connection closed by remote host
+                        self._connected = False
+                        raise ConnectionError("Connection closed by remote host")
 
-        except ConnectionError:
-            # Re-raise connection errors directly
+                    buffer += chunk
+
+                    # Check if we've received a prompt
+                    decoded = buffer.decode("utf-8", errors="ignore")
+                    if self._prompt_pattern.search(decoded.rstrip()):
+                        break
+
+                except asyncio.TimeoutError:
+                    # This is expected in the short timeout case
+                    # Just retry until overall timeout is reached
+                    continue
+
+            if not buffer:
+                raise TimeoutError(f"Read operation timed out after {timeout} seconds")
+
+            # Update last activity timestamp
+            self._last_activity = time.time()
+
+            # Return the decoded data
+            return buffer.decode("utf-8", errors="ignore")
+
+        except asyncio.CancelledError:
             raise
-
-        except UnicodeDecodeError as err:
-            # Handle decode errors gracefully
-            _LOGGER.warning(
-                "Unicode decode error: %s, using replacement character", err
-            )
-            return chunk.decode("utf-8", errors="replace")
-
-        except (OSError, asyncio.IncompleteReadError) as err:
-            # Convert socket/stream errors to ConnectionError
-            _LOGGER.error("Socket/stream error reading data: %s", err)
-            raise ConnectionError(f"Connection error: {err}")
-
         except Exception as err:
-            _LOGGER.error("Error reading data: %s", err)
+            self._connected = False
+            _LOGGER.error("Error reading from socket: %s", err)
             raise
 
     async def _read_until_prompt(self) -> str:
@@ -505,3 +563,36 @@ class SocketConnection:
             _LOGGER.debug("Error cleaning line breaks in response: %s", e)
 
         return response.strip()
+
+    async def _process_command_queue(self) -> None:
+        """Process commands from the queue to prevent overwhelming the device."""
+        try:
+            while not self._stopping:
+                # Get the next command from the queue
+                command, future = await self._command_queue.get()
+
+                try:
+                    # Execute the command
+                    result = await self._send_command(command)
+
+                    # Set the result
+                    if not future.done():
+                        future.set_result(result)
+
+                except Exception as e:
+                    # Set the exception
+                    if not future.done():
+                        future.set_exception(e)
+
+                finally:
+                    # Mark the command as done
+                    self._command_queue.task_done()
+
+                    # Add a delay between commands to not overwhelm the device
+                    # Increased from default to be more gentle
+                    await asyncio.sleep(2.0)  # Increased from 1.0 to 2.0 seconds
+
+        except asyncio.CancelledError:
+            _LOGGER.debug("Command processor task cancelled")
+        except Exception as e:
+            _LOGGER.error("Error in command processor: %s", e)

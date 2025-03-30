@@ -99,45 +99,59 @@ def parse_all_outlet_states(response: str) -> Dict[int, bool]:
 
     outlet_states = {}
 
-    # More robust regex that handles formatting variations
+    # Attempt different patterns for extracting outlet states
+    # Pattern 1: Standard format with "Power state:"
     outlet_blocks = re.findall(
         r"Outlet (\d+)[^\n]*\n\s*Power state:\s*(\w+)",
         response,
         re.MULTILINE,
     )
 
-    # If standard pattern fails, try alternative patterns
+    # Pattern 2: Using "Status:" instead of "Power state:"
     if not outlet_blocks:
-        _LOGGER.debug("Standard outlet pattern failed, trying alternative patterns")
-
-        # Try alternative pattern with "Status" instead of "Power state"
         outlet_blocks = re.findall(
             r"Outlet (\d+)[^\n]*\n\s*Status:\s*(\w+)",
             response,
             re.MULTILINE,
         )
 
-        # Try another pattern for different format
-        if not outlet_blocks:
-            outlet_blocks = re.findall(
-                r"Outlet\s+(\d+).*?state[^:]*:\s*(\w+)",
-                response,
-                re.IGNORECASE | re.DOTALL,
-            )
+    # Pattern 3: More generic pattern looking for state/status
+    if not outlet_blocks:
+        outlet_blocks = re.findall(
+            r"Outlet\s+(\d+).*?(?:state|status)[^:]*:\s*(\w+)",
+            response,
+            re.IGNORECASE | re.DOTALL,
+        )
 
-            # Last resort pattern - try to find ON/OFF within proximity
-            if not outlet_blocks:
-                # Look for any outlet number followed by ON or OFF within a few lines
-                raw_blocks = re.findall(
-                    r"Outlet\s+(\d+).*?(?:\n.*?){0,3}(ON|OFF|On|Off)",
-                    response,
-                    re.IGNORECASE | re.DOTALL,
-                )
-                if raw_blocks:
-                    _LOGGER.debug(
-                        "Found %d outlets using proximity pattern", len(raw_blocks)
-                    )
-                    outlet_blocks = [(m[0], m[1]) for m in raw_blocks]
+    # Pattern 4: Looking for direct "Outlet X is ON/OFF" format
+    if not outlet_blocks:
+        outlet_blocks = re.findall(
+            r"Outlet\s+(\d+)\s+is\s+(ON|OFF|On|Off)",
+            response,
+            re.IGNORECASE,
+        )
+
+    # Pattern 5: Looking for "Outlet X ... ON/OFF" within proximity
+    if not outlet_blocks:
+        raw_blocks = re.findall(
+            r"Outlet\s+(\d+).*?(?:\n.*?){0,5}(ON|OFF|On|Off)",
+            response,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if raw_blocks:
+            _LOGGER.debug("Found %d outlets using proximity pattern", len(raw_blocks))
+            outlet_blocks = [(m[0], m[1]) for m in raw_blocks]
+
+    # Pattern 6: Extreme fallback - just look for numbers followed by on/off
+    if not outlet_blocks:
+        raw_blocks = re.findall(
+            r"(\d+)(?:[^a-zA-Z0-9]{1,20})(on|off)",
+            response.lower(),
+            re.DOTALL,
+        )
+        if raw_blocks:
+            _LOGGER.debug("Found %d outlets using fallback pattern", len(raw_blocks))
+            outlet_blocks = [(m[0], m[1]) for m in raw_blocks]
 
     # Log if we found any outlet blocks
     if outlet_blocks:
@@ -157,7 +171,8 @@ def parse_all_outlet_states(response: str) -> Dict[int, bool]:
         try:
             outlet_num = int(match[0])
             state_text = match[1].lower()
-            state = state_text == "on"
+            # Consider "on", "active", "enabled" as ON states
+            state = state_text in ("on", "active", "enabled", "true", "1")
 
             # Store the state
             outlet_states[outlet_num] = state

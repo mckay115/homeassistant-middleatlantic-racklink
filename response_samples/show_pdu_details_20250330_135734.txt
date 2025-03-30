@@ -1,0 +1,40 @@
+COMMAND: show pdu details
+TIMESTAMP: 2025-03-30T13:57:34.869491
+RAW RESPONSE:
+--------------------------------------------------
+show pdu details
+PDU 'LiskoLabs Rack'
+Model:            RLNK-P920R
+Firmware Version: 2.2.0.1-51126
+Serial Number:    RLNKP-920_050a82
+Board Revision:   0x10
+
+Relay behavior on power loss:     Latching
+Trip cause outlet handling:       Keep unchanged
+Power cycle delay:                5 seconds
+
+Outlet power sequence:        1-2, 4, 3, 8, 5-7
+Outlet sequence delays:       1: 1 s
+                              2: 30 s
+                              3: 5 s
+                              4-8: 0.5 s
+Inrush guard delay:           200 ms
+
+Voltage rating:   100-150V
+Current rating:   16A
+Frequency rating: 60Hz
+Power rating:     1.6-1.9kVA
+
+Power Supply Status: OK
+
+Sensor data retrieval:      Enabled
+Sensor data backup:         Disabled
+Measurements per log entry: 60
+Log capacity:               120 records
+[LiskoLabs Rack] # 
+--------------------------------------------------
+
+PARSING GUIDE FOR PDU DETAILS:
+- Model: Use regex r"Model:\s*(.+?)(?:\r|\n)"
+- Serial Number: Use regex r"Serial Number:\s*(.+?)(?:\r|\n)"
+- Firmware: Use regex r"Firmware Version:\s*(.+?)(?:\r|\n)"
