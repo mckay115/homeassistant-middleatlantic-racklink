@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller import RacklinkController
+from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)

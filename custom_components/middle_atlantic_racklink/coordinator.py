@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .controller import RacklinkController
+from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 

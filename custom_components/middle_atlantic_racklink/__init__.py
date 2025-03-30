@@ -13,7 +13,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DEFAULT_PORT, DEFAULT_SCAN_INTERVAL, DOMAIN
-from .controller import RacklinkController
+from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)

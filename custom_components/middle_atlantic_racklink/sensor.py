@@ -41,6 +41,7 @@ from .const import (
     SENSOR_PDU_TEMPERATURE,
     SENSOR_PDU_VOLTAGE,
 )
+from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)

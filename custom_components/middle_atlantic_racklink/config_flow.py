@@ -26,7 +26,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
 )
-from .controller import RacklinkController
+from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 15  # Timeout in seconds for connection validation
