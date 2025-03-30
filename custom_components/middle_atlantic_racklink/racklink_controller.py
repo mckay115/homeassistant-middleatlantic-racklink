@@ -77,7 +77,8 @@ class RacklinkController:
         self._outlet_voltage = {}
         self._outlet_power_factor = {}
         self._outlet_non_critical = {}
-        self._outlet_apparent_power = {}  # Add this line to initialize the dictionary
+        self._outlet_apparent_power = {}
+        self._outlet_line_frequency = {}
 
         # Sensor data
         self._sensors = {}
@@ -201,6 +202,11 @@ class RacklinkController:
     def outlet_apparent_power(self) -> dict:
         """Return the apparent power usage of each outlet."""
         return self._outlet_apparent_power
+
+    @property
+    def outlet_line_frequency(self) -> dict:
+        """Return the line frequency of each outlet."""
+        return self._outlet_line_frequency
 
     def _handle_error(self, error: str) -> None:
         """Handle an error by logging it and updating state."""
@@ -948,28 +954,51 @@ class RacklinkController:
         return parse_outlet_details(response, outlet_num)
 
     async def get_outlet_power_data(self, outlet_num: int) -> dict:
-        """Get detailed power metrics for a specific outlet."""
+        """Get power data for a specific outlet."""
         if not self._connected:
-            _LOGGER.debug(
-                "Not connected, skipping outlet power data refresh for outlet %d",
-                outlet_num,
-            )
+            _LOGGER.warning("Not connected, cannot get outlet power data")
             return {}
 
         try:
-            _LOGGER.debug("Getting detailed power metrics for outlet %d", outlet_num)
-            response = await self.send_command(f"show outlets {outlet_num} details")
+            _LOGGER.debug("Getting power data for outlet %d", outlet_num)
 
-            if not response:
-                _LOGGER.error("Failed to get outlet details - empty response")
+            # Try standard command format
+            cmd = f"power outlets status {outlet_num}"
+            response = await self.send_command(cmd)
+
+            if not response or "Unknown command" in response.lower():
+                _LOGGER.warning(
+                    "Could not get power data for outlet %d: %s", outlet_num, response
+                )
                 return {}
 
-            # Parse the response to extract power metrics
-            data = self._parse_outlet_details(response, outlet_num)
-            return data
+            # Import parser here to avoid circular imports
+            from .parser import parse_outlet_details
 
+            # Parse the data
+            outlet_data = parse_outlet_details(response, outlet_num)
+
+            # Update the internal data structures
+            if "current" in outlet_data:
+                self._outlet_current[outlet_num] = outlet_data["current"]
+            if "voltage" in outlet_data:
+                self._outlet_voltage[outlet_num] = outlet_data["voltage"]
+            if "power" in outlet_data:
+                self._outlet_power[outlet_num] = outlet_data["power"]
+            if "energy" in outlet_data:
+                self._outlet_energy[outlet_num] = outlet_data["energy"]
+            if "power_factor" in outlet_data:
+                self._outlet_power_factor[outlet_num] = outlet_data["power_factor"]
+            if "apparent_power" in outlet_data:
+                self._outlet_apparent_power[outlet_num] = outlet_data["apparent_power"]
+            if "line_frequency" in outlet_data:
+                self._outlet_line_frequency[outlet_num] = outlet_data["line_frequency"]
+            if "non_critical" in outlet_data:
+                self._outlet_non_critical[outlet_num] = outlet_data["non_critical"]
+
+            return outlet_data
         except Exception as e:
-            _LOGGER.error("Error getting power data for outlet %d: %s", outlet_num, e)
+            _LOGGER.error("Error getting outlet power data: %s", e)
             return {}
 
     async def _close_socket(self) -> None:
@@ -1138,12 +1167,12 @@ class RacklinkController:
         """Map a standard command to one that works with this device."""
         # First, check exact matches for standard commands
         if command == "show outlets all":
-            return "show outlets"
+            return "power outlets status"
 
         # Handle show outlet details command for specific outlet
         if re.match(r"show outlets? (\d+) details?", command):
             outlet_num = re.match(r"show outlets? (\d+) details?", command).group(1)
-            return f"show outlet {outlet_num}"
+            return f"power outlets status {outlet_num}"
 
         # Handle power commands with different syntax
         power_off_match = re.match(r"power outlets? (\d+) off", command)
@@ -2026,173 +2055,109 @@ class RacklinkController:
             return self._outlet_states.get(outlet_num, False)
 
     async def get_all_outlet_states(self, force_refresh: bool = False) -> dict:
-        """Get all outlet states efficiently using a single command."""
-        if not self._connected and not force_refresh:
-            _LOGGER.debug("Not connected, cannot get outlet states")
+        """Get states of all outlets."""
+        if not self._connected:
+            _LOGGER.warning("Not connected, cannot get outlet states")
             return self._outlet_states
 
+        if not force_refresh and self._outlet_states:
+            # Return cached states if available
+            return self._outlet_states
+
+        _LOGGER.debug("Getting all outlet states")
+
         try:
-            _LOGGER.info("Getting all outlet states")
+            # Use the power outlets status command to get states of all outlets at once
+            cmd = "power outlets status"
+            response = await self.send_command(cmd)
 
-            # First try standard command
-            command = "show outlets all"
-            _LOGGER.debug("Sending command: %s", command)
-            response = await self.send_command(command)
-
-            # Check if command was recognized
-            if not response or "unknown command" in response.lower():
+            if not response or "Unknown command" in response:
                 _LOGGER.warning(
-                    "Standard 'show outlets all' command not recognized, trying alternatives"
+                    "Standard '%s' command not recognized, trying alternatives", cmd
                 )
+                # Try fallback approach - get states individually
+                await self._get_outlet_states_individually()
+                return self._outlet_states
 
-                # Try alternative commands to get outlet information
-                alternative_commands = [
-                    "show outlets",
-                    "show outlet",
-                    "power outlets all",
-                    "power outlets status",
-                    "show power outlets",
-                    "power status",
-                    "show power",
-                    "help power",  # This might give us command syntax
-                ]
+            # Find all "Outlet X is On/Off" patterns in the response
+            outlet_states = {}
+            matches = re.findall(
+                r"Outlet\s+(\d+)\s+is\s+(On|Off)", response, re.IGNORECASE
+            )
 
-                for alt_cmd in alternative_commands:
-                    _LOGGER.debug("Trying alternative command: %s", alt_cmd)
-                    alt_response = await self.send_command(alt_cmd)
-
-                    if alt_response and "unknown command" not in alt_response.lower():
-                        _LOGGER.info(
-                            "Alternative command '%s' was accepted, response: %s",
-                            alt_cmd,
-                            alt_response[:100],
-                        )
-                        response = alt_response
-                        break
-
-                # If we still don't have a valid response, get states individually
-                if not response or "unknown command" in response.lower():
-                    _LOGGER.warning(
-                        "No bulk outlet command worked, getting states individually"
-                    )
-                    capabilities = self.get_model_capabilities()
-                    num_outlets = capabilities.get("num_outlets", 8)
-
-                    # Get states for each outlet
-                    for outlet_num in range(1, num_outlets + 1):
-                        _LOGGER.debug(
-                            "Getting state for outlet %d individually", outlet_num
-                        )
-                        try:
-                            state = await self.get_direct_outlet_state(outlet_num)
-                            self._outlet_states[outlet_num] = state
-                            _LOGGER.info(
-                                "Outlet %d state: %s",
-                                outlet_num,
-                                "ON" if state else "OFF",
-                            )
-                        except Exception as e:
-                            _LOGGER.error(
-                                "Error getting state for outlet %d: %s", outlet_num, e
-                            )
-
-                    return self._outlet_states
-
-            # Import parser here to avoid circular imports
-            from .parser import parse_all_outlet_states, parse_outlet_names
-
-            # Parse states and names
-            outlet_states = parse_all_outlet_states(response)
-            outlet_names = parse_outlet_names(response)
-
-            # If outlet states couldn't be parsed from the response
-            if not outlet_states:
-                _LOGGER.warning("No outlet states could be parsed from the response")
-                _LOGGER.debug("Response (first 200 chars): %s", response[:200])
-
-                # Try a manual parsing approach based on text patterns
-                try:
-                    # Look for patterns like "Outlet 1: ON" or "Outlet 1 [ON]"
-                    outlet_patterns = [
-                        r"outlet\s+(\d+)[\s:]+(\w+)",  # Outlet 1: ON
-                        r"outlet\s+(\d+)\s+\[(\w+)\]",  # Outlet 1 [ON]
-                        r"(\d+)[\s:]+(\w+)",  # 1: ON
-                    ]
-
-                    for pattern in outlet_patterns:
-                        matches = re.finditer(pattern, response.lower())
-                        for match in matches:
-                            try:
-                                outlet_num = int(match.group(1))
-                                state_text = match.group(2).lower()
-
-                                # Determine state based on text
-                                is_on = any(
-                                    indicator in state_text
-                                    for indicator in ["on", "active", "enabled", "1"]
-                                )
-
-                                # Store the state
-                                outlet_states[outlet_num] = is_on
-                                _LOGGER.info(
-                                    "Manually parsed outlet %d state: %s",
-                                    outlet_num,
-                                    "ON" if is_on else "OFF",
-                                )
-                            except (ValueError, IndexError) as e:
-                                _LOGGER.error("Error parsing outlet match: %s", e)
-                except Exception as e:
-                    _LOGGER.error("Error in manual outlet state parsing: %s", e)
-
-            # If we still couldn't parse any states, get them individually
-            if not outlet_states:
-                _LOGGER.warning("Falling back to individual outlet state queries")
-                capabilities = self.get_model_capabilities()
-                num_outlets = capabilities.get("num_outlets", 8)
-
-                # Get states for each outlet
-                for outlet_num in range(1, num_outlets + 1):
+            if matches:
+                for match in matches:
                     try:
-                        # Use our direct method to handle this device type
-                        state = await self.get_direct_outlet_state(outlet_num)
-                        self._outlet_states[outlet_num] = state
-                        _LOGGER.info(
-                            "Outlet %d state (direct): %s",
+                        outlet_num = int(match[0])
+                        state = match[1].lower() == "on"
+                        outlet_states[outlet_num] = state
+                        _LOGGER.debug(
+                            "Found outlet %d state: %s",
                             outlet_num,
                             "ON" if state else "OFF",
                         )
-                    except Exception as e:
-                        _LOGGER.error(
-                            "Error getting direct state for outlet %d: %s",
-                            outlet_num,
-                            e,
-                        )
-            else:
-                # If we successfully parsed states, update our internal state
-                states_str = ", ".join(
-                    [
-                        f"{outlet}: {'ON' if state else 'OFF'}"
-                        for outlet, state in outlet_states.items()
-                    ]
-                )
-                _LOGGER.info("Parsed outlet states: %s", states_str)
-                self._outlet_states.update(outlet_states)
-                _LOGGER.debug("Updated %d outlet states", len(outlet_states))
+                    except (ValueError, IndexError) as e:
+                        _LOGGER.error("Error parsing outlet state: %s - %s", match, e)
 
-            # Update names if we parsed them
-            if outlet_names:
-                names_str = ", ".join(
-                    [f"{outlet}: {name}" for outlet, name in outlet_names.items()]
-                )
-                _LOGGER.debug("Parsed outlet names: %s", names_str)
-                self._outlet_names.update(outlet_names)
-                _LOGGER.debug("Updated %d outlet names", len(outlet_names))
+                # Update internal state
+                if outlet_states:
+                    self._outlet_states.update(outlet_states)
+                    _LOGGER.debug("Updated states for %d outlets", len(outlet_states))
+                    return self._outlet_states
 
-            return self._outlet_states
+            # If we reach here, no states were found in the response
+            _LOGGER.warning(
+                "No outlet states found in response, falling back to individual queries"
+            )
+            await self._get_outlet_states_individually()
 
         except Exception as e:
             _LOGGER.error("Error getting all outlet states: %s", e)
-            return self._outlet_states
+
+        return self._outlet_states
+
+    async def _get_outlet_states_individually(self):
+        """Get outlet states one by one as a fallback method."""
+        _LOGGER.debug("Getting outlet states individually")
+
+        capabilities = self.get_model_capabilities()
+        num_outlets = capabilities.get("num_outlets", 8)
+
+        for outlet_num in range(1, num_outlets + 1):
+            try:
+                # Get state of each outlet
+                cmd = f"power outlets status {outlet_num}"
+                response = await self.send_command(cmd)
+
+                if response:
+                    # Use the parser to extract the state
+                    from .parser import parse_outlet_state
+
+                    state = parse_outlet_state(response, outlet_num)
+
+                    if state is not None:
+                        self._outlet_states[outlet_num] = state
+                        _LOGGER.debug(
+                            "Outlet %d state: %s", outlet_num, "ON" if state else "OFF"
+                        )
+                    else:
+                        # Assume OFF if state couldn't be determined
+                        self._outlet_states[outlet_num] = False
+                        _LOGGER.warning(
+                            "Could not determine state for outlet %d, assuming OFF",
+                            outlet_num,
+                        )
+                else:
+                    # Assume OFF if no response
+                    self._outlet_states[outlet_num] = False
+                    _LOGGER.warning(
+                        "No response for outlet %d status, assuming OFF", outlet_num
+                    )
+
+            except Exception as e:
+                _LOGGER.error("Error getting state for outlet %d: %s", outlet_num, e)
+                # Assume OFF in case of error
+                self._outlet_states[outlet_num] = False
 
     async def set_outlet_name(self, outlet_num: int, name: str) -> bool:
         """Set the name of a specific outlet."""
