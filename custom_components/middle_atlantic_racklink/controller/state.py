@@ -79,9 +79,9 @@ class StateMixin:
             try:
                 # Import parser module here to avoid circular imports
                 from ..parser import (
+                    normalize_model_name,
                     parse_device_info,
                     parse_network_info,
-                    normalize_model_name,
                 )
 
                 # Get PDU details
