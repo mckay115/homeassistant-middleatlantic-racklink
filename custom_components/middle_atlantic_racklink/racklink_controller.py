@@ -540,24 +540,68 @@ class RacklinkController:
         """Load initial data from the PDU."""
         _LOGGER.debug("Loading initial PDU data")
         try:
-            # Get PDU model information
+            # Get PDU information first
             await self.get_device_info()
 
-            # Initialize outlet states
+            # Get basic help to understand available commands
+            help_cmd = "help"
+            help_response = await self.send_command(help_cmd)
+            _LOGGER.debug("Help response: %s", help_response[:500])
+
+            # Get power help for more specific command syntax
+            power_help_cmd = "help power"
+            power_help_response = await self.send_command(power_help_cmd)
+            _LOGGER.debug("Power help response: %s", power_help_response[:500])
+
+            # Try to discover valid commands for this device
+            await self.discover_valid_commands()
+
+            # Get additional data
             await self.get_all_outlet_states()
+            await self.get_sensor_values()
+
         except Exception as e:
-            _LOGGER.error("Error loading initial PDU data: %s", e)
+            _LOGGER.error("Error loading initial data: %s", e)
+            return False
+
+        return True
 
     def _normalize_model_name(self, model_string: str) -> str:
-        """
-        DEPRECATED: This method is now provided by the parser module.
-        Use parser.normalize_model_name() instead.
+        """Normalize model name from various formats."""
+        if not model_string:
+            _LOGGER.warning("Empty model string, using default model RLNK-P920R")
+            return "RLNK-P920R"
 
-        This method is kept for backward compatibility but will be removed in a future version.
-        """
-        from .parser import normalize_model_name
+        # Clean up the model string
+        model = model_string.strip().upper()
 
-        return normalize_model_name(model_string)
+        # Check for known prefixes and patterns
+        if model.startswith("RLNK-P"):
+            # Already normalized format
+            _LOGGER.debug("Model already in normalized format: %s", model)
+            return model
+
+        # Look for P9xx pattern in the model string
+        p9_match = re.search(r"P9(\d+)R?", model, re.IGNORECASE)
+        if p9_match:
+            suffix = p9_match.group(1)
+            normalized = f"RLNK-P9{suffix}R"
+            _LOGGER.debug("Normalized P9 model: %s to %s", model, normalized)
+            return normalized
+
+        # Look for P4xx pattern in the model string
+        p4_match = re.search(r"P4(\d+)", model, re.IGNORECASE)
+        if p4_match:
+            suffix = p4_match.group(1)
+            normalized = f"RLNK-P4{suffix}"
+            _LOGGER.debug("Normalized P4 model: %s to %s", model, normalized)
+            return normalized
+
+        # No pattern matches, use a safe default
+        _LOGGER.warning(
+            "Could not normalize model '%s', using default RLNK-P920R", model
+        )
+        return "RLNK-P920R"
 
     async def get_device_info(self) -> dict:
         """Get device information."""
@@ -1091,122 +1135,43 @@ class RacklinkController:
         _LOGGER.info("Controller for %s has been shut down", self._host)
 
     def _map_standard_command(self, command: str) -> str:
-        """Map standard command to device-specific command format based on discovery."""
-        # Don't attempt to map empty commands
-        if not command:
-            return command
+        """Map a standard command to one that works with this device."""
+        # First, check exact matches for standard commands
+        if command == "show outlets all":
+            return "show outlets"
 
-        # Check if we've done command discovery
-        if not hasattr(self, "_valid_commands") or not self._valid_commands:
-            # If no command map yet, return original
-            return command
+        # Handle show outlet details command for specific outlet
+        if re.match(r"show outlets? (\d+) details?", command):
+            outlet_num = re.match(r"show outlets? (\d+) details?", command).group(1)
+            return f"show outlet {outlet_num}"
 
-        # Lower case for matching
-        cmd_lower = command.lower()
+        # Handle power commands with different syntax
+        power_off_match = re.match(r"power outlets? (\d+) off", command)
+        if power_off_match:
+            outlet_num = power_off_match.group(1)
+            return f"power outlets off {outlet_num}"
 
-        # Extract information from command
-        outlet_match = re.search(r"outlets? (\d+)", cmd_lower)
-        outlet_num = outlet_match.group(1) if outlet_match else None
+        power_on_match = re.match(r"power outlets? (\d+) on", command)
+        if power_on_match:
+            outlet_num = power_on_match.group(1)
+            return f"power outlets on {outlet_num}"
 
-        # Handle outlet state commands
-        if "show outlets all" in cmd_lower:
-            # Try alternatives in preference order
-            alternatives = [
-                "power outlets status",
-                "power outlets all",
-                "show outlets",
-                "show outlet",
-                "power status",
-                "show power",
-            ]
+        cycle_match = re.match(r"power outlets? (\d+) cycle", command)
+        if cycle_match:
+            outlet_num = cycle_match.group(1)
+            return f"power outlets cycle {outlet_num}"
 
-            for alt in alternatives:
-                if alt in self._valid_commands and self._valid_commands[alt]:
-                    _LOGGER.debug("Mapped 'show outlets all' to '%s'", alt)
-                    return alt
+        # All outlets commands
+        if command == "power outlets all on":
+            return "power outlets on all"
 
-        # Handle outlet detail commands
-        elif "show outlets" in cmd_lower and "details" in cmd_lower and outlet_num:
-            # Try alternatives in preference order
-            alternatives = [
-                f"power outlets {outlet_num}",
-                f"power outlet {outlet_num}",
-                f"power outlets {outlet_num} status",
-                f"show outlets {outlet_num}",
-                f"show outlet {outlet_num}",
-                f"power status outlets {outlet_num}",
-            ]
+        if command == "power outlets all off":
+            return "power outlets off all"
 
-            for alt in alternatives:
-                alt_base = alt.split()[0]
-                if alt_base in self._valid_commands and self._valid_commands[alt_base]:
-                    _LOGGER.debug(
-                        "Mapped 'show outlets %s details' to '%s'", outlet_num, alt
-                    )
-                    return alt
+        if command == "power outlets all cycle":
+            return "power outlets cycle all"
 
-        # Handle power control commands
-        elif "power outlets" in cmd_lower and ("on" in cmd_lower or "off" in cmd_lower):
-            action = "on" if "on" in cmd_lower else "off"
-
-            if outlet_num:
-                # Single outlet power control
-                alternatives = [
-                    f"power outlets {outlet_num} {action}",
-                    f"power outlet {outlet_num} {action}",
-                    f"power {action} outlets {outlet_num}",
-                    f"power {action} outlet {outlet_num}",
-                ]
-
-                for alt in alternatives:
-                    alt_base = " ".join(alt.split()[:2])  # Get first two words
-                    if (
-                        alt_base in self._valid_commands
-                        and self._valid_commands[alt_base]
-                    ):
-                        _LOGGER.debug(
-                            "Mapped 'power outlets %s %s' to '%s'",
-                            outlet_num,
-                            action,
-                            alt,
-                        )
-                        return alt
-            else:
-                # All outlets power control
-                alternatives = [
-                    f"power outlets all {action}",
-                    f"power outlet all {action}",
-                    f"power {action} outlets all",
-                    f"power {action} all",
-                ]
-
-                for alt in alternatives:
-                    alt_base = " ".join(alt.split()[:2])  # Get first two words
-                    if (
-                        alt_base in self._valid_commands
-                        and self._valid_commands[alt_base]
-                    ):
-                        _LOGGER.debug(
-                            "Mapped 'power outlets all %s' to '%s'", action, alt
-                        )
-                        return alt
-
-        # Handle PDU commands
-        elif "show pdu details" in cmd_lower:
-            alternatives = [
-                "show pdu",
-                "show system",
-                "system info",
-                "pdu info",
-                "show status",
-            ]
-
-            for alt in alternatives:
-                if alt in self._valid_commands and self._valid_commands[alt]:
-                    _LOGGER.debug("Mapped 'show pdu details' to '%s'", alt)
-                    return alt
-
-        # Default to original command
+        # Return original command if no mapping found
         return command
 
     async def send_command(
@@ -1827,30 +1792,44 @@ class RacklinkController:
 
     async def cycle_outlet(self, outlet_num: int) -> bool:
         """Cycle power for a specific outlet."""
-        if not self._connected:
-            _LOGGER.warning("Not connected, cannot cycle outlet %d", outlet_num)
-            return False
+        _LOGGER.debug("Cycling outlet %s", outlet_num)
 
         try:
-            _LOGGER.info("Cycling power for outlet %d", outlet_num)
+            # Direct cycle command
+            cmd = f"power outlets cycle {outlet_num}"
+            response = await self.send_command(cmd)
 
-            # First turn the outlet off
-            off_command = f"power outlets {outlet_num} off /y"
-            await self.send_command(off_command)
+            # Check if command was successful
+            if "unknown command" in response.lower() or "error" in response.lower():
+                _LOGGER.warning("Cycle command not recognized: %s", response)
+                # Fall back to manual on/off cycling
+                _LOGGER.debug("Trying manual cycle (off then on)")
 
-            # Wait 5 seconds
-            await asyncio.sleep(5)
+                # Turn off first
+                off_success = await self.direct_turn_outlet_off(outlet_num)
+                if not off_success:
+                    _LOGGER.error("Failed to turn outlet %s off for cycle", outlet_num)
+                    return False
 
-            # Then turn it back on
-            on_command = f"power outlets {outlet_num} on /y"
-            await self.send_command(on_command)
+                # Wait for cycle delay
+                await asyncio.sleep(5)
 
-            # Update internal state
-            self._outlet_states[outlet_num] = True
+                # Turn back on
+                on_success = await self.direct_turn_outlet_on(outlet_num)
+                if not on_success:
+                    _LOGGER.error(
+                        "Failed to turn outlet %s back on for cycle", outlet_num
+                    )
+                    return False
 
+                _LOGGER.info("Successfully manually cycled outlet %s", outlet_num)
+                return True
+
+            _LOGGER.info("Successfully cycled outlet %s", outlet_num)
             return True
-        except Exception as e:
-            _LOGGER.error("Error cycling outlet %d: %s", outlet_num, e)
+
+        except Exception as err:
+            _LOGGER.error("Error cycling outlet %s: %s", outlet_num, err)
             return False
 
     async def cycle_all_outlets(self) -> bool:
@@ -2613,255 +2592,49 @@ class RacklinkController:
         return False
 
     async def direct_turn_outlet_on(self, outlet_num: int) -> bool:
-        """Try alternative methods to turn outlet on."""
-        if not self._connected:
-            _LOGGER.debug("Not connected, cannot turn on outlet")
-            return False
+        """Turn an outlet on using a direct command (without verification).
 
-        # Try power-specific commands based on the device's help output
-        commands = [
-            f"power outlet {outlet_num} on",  # Try explicit on command
-            f"power on outlet {outlet_num}",  # Try verb-first syntax
-            "config",  # Try config mode as last resort
-        ]
+        This is a more direct approach than turn_outlet_on which includes verification.
+        """
+        _LOGGER.debug("Directly turning outlet %s ON", outlet_num)
 
-        for cmd in commands:
-            _LOGGER.debug("Trying alternative command for turning on outlet: %s", cmd)
-            response = await self.send_command(cmd, retry_alternative_command=False)
+        try:
+            # Send direct power command to turn on outlet
+            cmd = f"power outlets on {outlet_num}"
+            response = await self.send_command(cmd)
 
-            if not response:
-                continue
+            # Check for error responses
+            if "error" in response.lower() or "unknown command" in response.lower():
+                _LOGGER.warning("Error turning outlet %s ON: %s", outlet_num, response)
+                return False
 
-            # If we're entering config mode as a last resort
-            if cmd == "config" and "config" in response.lower():
-                _LOGGER.debug("Entered config mode, trying to turn on outlet")
-                try:
-                    # Try to power on outlet from config mode
-                    outlet_cmd = f"outlet {outlet_num} power on"
-                    await self.send_command(outlet_cmd, retry_alternative_command=False)
-
-                    # Try to apply changes
-                    await self.send_command("apply", retry_alternative_command=False)
-
-                    # Exit config mode
-                    await self.send_command("exit", retry_alternative_command=False)
-
-                    # Verify the outlet state
-                    await asyncio.sleep(1)  # Give time for the change to take effect
-                    state = await self.get_direct_outlet_state(outlet_num)
-                    if state:
-                        _LOGGER.info(
-                            "Successfully turned outlet %d ON via config mode",
-                            outlet_num,
-                        )
-                        self._outlet_states[outlet_num] = True
-                        return True
-                    else:
-                        _LOGGER.warning(
-                            "Config mode may not have turned outlet %d ON", outlet_num
-                        )
-                except Exception as e:
-                    _LOGGER.error("Error in config mode: %s", e)
-                    # Make sure we exit config mode
-                    await self.send_command("exit", retry_alternative_command=False)
-                continue
-
-            # Check for "unknown command" errors
-            if (
-                "unknown command" in response.lower()
-                or "unrecognized" in response.lower()
-            ):
-                _LOGGER.debug("Command '%s' not recognized", cmd)
-                continue
-
-            # If we have a response without errors, assume success
-            _LOGGER.info("Command '%s' appears to have worked", cmd)
-
-            # Verify the outlet state after a brief delay
-            await asyncio.sleep(1)  # Give time for the change to take effect
-            try:
-                state = await self.get_direct_outlet_state(outlet_num)
-                if state:
-                    _LOGGER.info("Verified outlet %d is now ON", outlet_num)
-                else:
-                    _LOGGER.warning(
-                        "Command accepted but outlet %d may not be ON", outlet_num
-                    )
-            except Exception as e:
-                _LOGGER.error("Error verifying outlet state: %s", e)
-
-            # Update internal state and return success
+            # Update internal state
             self._outlet_states[outlet_num] = True
             return True
-
-        # If help command is available, try to get command syntax
-        try:
-            _LOGGER.debug("Checking 'help power' for command syntax")
-            help_response = await self.send_command(
-                "help power", retry_alternative_command=False
-            )
-            if help_response:
-                _LOGGER.info("Power help response: %s", help_response[:200])
-
-                # Try to find commands with "on" and "outlet" in the help text
-                for line in help_response.splitlines():
-                    if "on" in line.lower() and "outlet" in line.lower():
-                        # Try to extract command examples
-                        example_pattern = r"(power\s+[^:]+)"
-                        match = re.search(example_pattern, line, re.IGNORECASE)
-                        if match:
-                            example_cmd = match.group(1).strip()
-                            # Try to adapt the example to our outlet number
-                            cmd = example_cmd.replace("<id>", str(outlet_num))
-                            cmd = cmd.replace("<n>", str(outlet_num))
-                            cmd = cmd.replace("<outlet>", str(outlet_num))
-                            _LOGGER.info("Trying command from help example: %s", cmd)
-                            response = await self.send_command(
-                                cmd, retry_alternative_command=False
-                            )
-
-                            # If command worked, verify outlet state
-                            if response and "unknown command" not in response.lower():
-                                await asyncio.sleep(1)
-                                state = await self.get_direct_outlet_state(outlet_num)
-                                if state:
-                                    _LOGGER.info(
-                                        "Successfully turned outlet %d ON via help command",
-                                        outlet_num,
-                                    )
-                                    self._outlet_states[outlet_num] = True
-                                    return True
-        except Exception as e:
-            _LOGGER.error("Error checking help for commands: %s", e)
-
-        _LOGGER.warning(
-            "Could not turn outlet %d ON with any known command", outlet_num
-        )
-        return False
-
-    async def direct_turn_outlet_off(self, outlet_num: int) -> bool:
-        """Try alternative methods to turn outlet off."""
-        if not self._connected:
-            _LOGGER.debug("Not connected, cannot turn off outlet")
+        except Exception as err:
+            _LOGGER.error("Exception turning outlet %s ON: %s", outlet_num, err)
             return False
 
-        # Try power-specific commands based on the device's help output
-        commands = [
-            f"power outlet {outlet_num} off",  # Try explicit off command
-            f"power off outlet {outlet_num}",  # Try verb-first syntax
-            "config",  # Try config mode as last resort
-        ]
+    async def direct_turn_outlet_off(self, outlet_num: int) -> bool:
+        """Turn an outlet off using a direct command (without verification).
 
-        for cmd in commands:
-            _LOGGER.debug("Trying alternative command for turning off outlet: %s", cmd)
-            response = await self.send_command(cmd, retry_alternative_command=False)
+        This is a more direct approach than turn_outlet_off which includes verification.
+        """
+        _LOGGER.debug("Directly turning outlet %s OFF", outlet_num)
 
-            if not response:
-                continue
+        try:
+            # Send direct power command to turn off outlet
+            cmd = f"power outlets off {outlet_num}"
+            response = await self.send_command(cmd)
 
-            # If we're entering config mode as a last resort
-            if cmd == "config" and "config" in response.lower():
-                _LOGGER.debug("Entered config mode, trying to turn off outlet")
-                try:
-                    # Try to power off outlet from config mode
-                    outlet_cmd = f"outlet {outlet_num} power off"
-                    await self.send_command(outlet_cmd, retry_alternative_command=False)
+            # Check for error responses
+            if "error" in response.lower() or "unknown command" in response.lower():
+                _LOGGER.warning("Error turning outlet %s OFF: %s", outlet_num, response)
+                return False
 
-                    # Try to apply changes
-                    await self.send_command("apply", retry_alternative_command=False)
-
-                    # Exit config mode
-                    await self.send_command("exit", retry_alternative_command=False)
-
-                    # Verify the outlet state
-                    await asyncio.sleep(1)  # Give time for the change to take effect
-                    state = await self.get_direct_outlet_state(outlet_num)
-                    if not state:
-                        _LOGGER.info(
-                            "Successfully turned outlet %d OFF via config mode",
-                            outlet_num,
-                        )
-                        self._outlet_states[outlet_num] = False
-                        return True
-                    else:
-                        _LOGGER.warning(
-                            "Config mode may not have turned outlet %d OFF", outlet_num
-                        )
-                except Exception as e:
-                    _LOGGER.error("Error in config mode: %s", e)
-                    # Make sure we exit config mode
-                    await self.send_command("exit", retry_alternative_command=False)
-                continue
-
-            # Check for "unknown command" errors
-            if (
-                "unknown command" in response.lower()
-                or "unrecognized" in response.lower()
-            ):
-                _LOGGER.debug("Command '%s' not recognized", cmd)
-                continue
-
-            # If we have a response without errors, assume success
-            _LOGGER.info("Command '%s' appears to have worked", cmd)
-
-            # Verify the outlet state after a brief delay
-            await asyncio.sleep(1)  # Give time for the change to take effect
-            try:
-                state = await self.get_direct_outlet_state(outlet_num)
-                if not state:
-                    _LOGGER.info("Verified outlet %d is now OFF", outlet_num)
-                else:
-                    _LOGGER.warning(
-                        "Command accepted but outlet %d may still be ON", outlet_num
-                    )
-            except Exception as e:
-                _LOGGER.error("Error verifying outlet state: %s", e)
-
-            # Update internal state and return success
+            # Update internal state
             self._outlet_states[outlet_num] = False
             return True
-
-        # If help command is available, try to get command syntax
-        try:
-            _LOGGER.debug("Checking 'help power' for command syntax")
-            help_response = await self.send_command(
-                "help power", retry_alternative_command=False
-            )
-            if help_response:
-                _LOGGER.info("Power help response: %s", help_response[:200])
-
-                # Try to find commands with "off" and "outlet" in the help text
-                for line in help_response.splitlines():
-                    if "off" in line.lower() and "outlet" in line.lower():
-                        # Try to extract command examples
-                        example_pattern = r"(power\s+[^:]+)"
-                        match = re.search(example_pattern, line, re.IGNORECASE)
-                        if match:
-                            example_cmd = match.group(1).strip()
-                            # Try to adapt the example to our outlet number
-                            cmd = example_cmd.replace("<id>", str(outlet_num))
-                            cmd = cmd.replace("<n>", str(outlet_num))
-                            cmd = cmd.replace("<outlet>", str(outlet_num))
-                            _LOGGER.info("Trying command from help example: %s", cmd)
-                            response = await self.send_command(
-                                cmd, retry_alternative_command=False
-                            )
-
-                            # If command worked, verify outlet state
-                            if response and "unknown command" not in response.lower():
-                                await asyncio.sleep(1)
-                                state = await self.get_direct_outlet_state(outlet_num)
-                                if not state:
-                                    _LOGGER.info(
-                                        "Successfully turned outlet %d OFF via help command",
-                                        outlet_num,
-                                    )
-                                    self._outlet_states[outlet_num] = False
-                                    return True
-        except Exception as e:
-            _LOGGER.error("Error checking help for commands: %s", e)
-
-        _LOGGER.warning(
-            "Could not turn outlet %d OFF with any known command", outlet_num
-        )
-        return False
+        except Exception as err:
+            _LOGGER.error("Exception turning outlet %s OFF: %s", outlet_num, err)
+            return False
