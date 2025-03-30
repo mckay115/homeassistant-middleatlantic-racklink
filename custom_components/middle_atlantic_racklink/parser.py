@@ -218,7 +218,7 @@ def parse_outlet_names(response: str) -> Dict[int, str]:
 
 
 def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
-    """Parse the state of a specific outlet from 'show outlets X details' response."""
+    """Parse the state of a specific outlet from command response."""
     if not response:
         _LOGGER.warning(
             "Empty response received when parsing outlet state for outlet %s",
@@ -229,23 +229,39 @@ def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
     # Log the entire response for debugging
     _LOGGER.debug("Full response for outlet %s:\n%s", outlet_num, response)
 
-    # First check if there's an error message indicating "Unknown command"
-    if "Unknown command" in response:
+    # First check if this is a help or error message response
+    if "Unknown command" in response or "Available commands" in response:
         _LOGGER.warning(
-            "Could not parse outlet state from response for outlet %s. Response excerpt: %s",
+            "Command error when parsing outlet state for outlet %s. Response excerpt: %s",
             outlet_num,
             response[:200].replace("\n", " "),
         )
         return None
 
-    # Try direct command pattern first (outlets on/off pattern)
+    # Look for outlet status from "power outlets status" command
+    # Format: "Outlet N is (On|Off)"
     status_match = re.search(
-        r"outlet[s\s]+%d\s+(?:is\s+)?(on|off)" % outlet_num,
+        r"Outlet\s+%d\s+is\s+(On|Off)" % outlet_num,
         response,
         re.IGNORECASE | re.MULTILINE,
     )
     if status_match:
         state = status_match.group(1).lower() == "on"
+        _LOGGER.debug(
+            "Parsed outlet %s state (status pattern): %s",
+            outlet_num,
+            "ON" if state else "OFF",
+        )
+        return state
+
+    # Try direct command pattern
+    direct_match = re.search(
+        r"outlet[s\s]+%d\s+(?:is\s+)?(on|off)" % outlet_num,
+        response,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if direct_match:
+        state = direct_match.group(1).lower() == "on"
         _LOGGER.debug(
             "Parsed outlet %s state (direct pattern): %s",
             outlet_num,
@@ -253,64 +269,9 @@ def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
         )
         return state
 
-    # Standard pattern format
-    state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
-    if state_match:
-        state = state_match.group(1).lower() == "on"
-        _LOGGER.debug(
-            "Parsed outlet %s state: %s", outlet_num, "ON" if state else "OFF"
-        )
-        return state
-
-    # If standard format fails, try alternative formats
-    alt_match = re.search(
-        r"Outlet\s+%d.*?state\s*[:=]\s*(\w+)" % outlet_num,
-        response,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if alt_match:
-        state = alt_match.group(1).lower() == "on"
-        _LOGGER.debug(
-            "Parsed outlet %s state (alternative format): %s",
-            outlet_num,
-            "ON" if state else "OFF",
-        )
-        return state
-
-    # Try another alternative format that might be used
-    alt_match2 = re.search(
-        r"Outlet\s+%d[^\n]*\n\s*Status:\s*(\w+)" % outlet_num,
-        response,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if alt_match2:
-        state = alt_match2.group(1).lower() == "on"
-        _LOGGER.debug(
-            "Parsed outlet %s state (Status field): %s",
-            outlet_num,
-            "ON" if state else "OFF",
-        )
-        return state
-
-    # Try to find any on/off within a reasonable proximity of the outlet number
-    proximity_match = re.search(
-        r"(?:Outlet|Port)\s+%d.*?(?:\n.*?){0,5}(ON|OFF|On|Off)" % outlet_num,
-        response,
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    if proximity_match:
-        state = proximity_match.group(1).lower() == "on"
-        _LOGGER.debug(
-            "Parsed outlet %s state (proximity search): %s",
-            outlet_num,
-            "ON" if state else "OFF",
-        )
-        return state
-
-    # If we reach here, we couldn't find a state
+    # If we couldn't find the state in expected formats, log the issue
     _LOGGER.warning(
-        "Could not parse outlet state from response for outlet %s. Response excerpt: %s",
+        "Could not find outlet state in response for outlet %s. Response excerpt: %s",
         outlet_num,
         response[:200].replace("\n", " "),
     )
