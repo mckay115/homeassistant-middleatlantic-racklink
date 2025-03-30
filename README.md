@@ -13,15 +13,18 @@ This integration allows Home Assistant to control and monitor Middle Atlantic Ra
 
 ## Supported Devices
 
-This integration supports various Middle Atlantic RackLink PDU models, including:
+This integration supports the following Middle Atlantic RackLink PDU models:
 
-- RLNK-SW215, RLNK-SW415, RLNK-SW815, RLNK-SW915, RLNK-SW1115
-- RLNK-215, RLNK-415, RLNK-415-20
-- RLNK-815, RLNK-820
-- RLNK-915, RLNK-920
-- RLNK-1115, RLNK-1120
+- RLNK-P415
+- RLNK-P420
+- RLNK-P915R
+- RLNK-P915R-SP
+- RLNK-P920R
+- RLNK-P920R-SP
 
-Advanced models with part numbers ending in "20" (such as RLNK-820) provide additional power monitoring features.
+Model number guide:
+- Numbers "15" and "20" indicate amperage rating (15A or 20A service)
+- "SP" indicates models with surge protection
 
 ## Installation
 
