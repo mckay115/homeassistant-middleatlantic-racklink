@@ -435,46 +435,133 @@ class RacklinkController:
             if not self.pdu_model:
                 _LOGGER.info("Getting PDU information")
 
-                # Get system information
-                system_info = await self.send_command("show system info")
+                # Try different commands to extract system info
+                commands_to_try = [
+                    "show system info",
+                    "show system",
+                    "system info",
+                    "info",
+                    "show info",
+                ]
+
+                system_info = None
+                for cmd in commands_to_try:
+                    _LOGGER.debug(f"Trying command: {cmd}")
+                    response = await self.send_command(cmd)
+                    if (
+                        response and len(response) > 20
+                    ):  # Ensure we got a meaningful response
+                        system_info = response
+                        _LOGGER.debug(f"Got response from command: {cmd}")
+                        break
+                    await asyncio.sleep(0.5)  # Brief delay between commands
+
                 if system_info:
-                    # Extract model information
-                    model_match = re.search(r"Model Name:\s*([^\r\n]+)", system_info)
-                    if model_match:
-                        self.pdu_model = model_match.group(1).strip()
-                        _LOGGER.debug("Found PDU model: %s", self.pdu_model)
+                    _LOGGER.debug("System info response: %s", system_info)
 
-                    # Extract firmware
-                    firmware_match = re.search(
-                        r"Firmware Version:\s*([^\r\n]+)", system_info
-                    )
-                    if firmware_match:
-                        self.pdu_firmware = firmware_match.group(1).strip()
-                        _LOGGER.debug("Found PDU firmware: %s", self.pdu_firmware)
+                    # Try multiple different patterns for model information
+                    model_patterns = [
+                        r"Model Name:\s*([^\r\n]+)",
+                        r"Model:\s*([^\r\n]+)",
+                        r"Product( type)?:\s*([^\r\n]+)",
+                        r"Type:\s*([^\r\n]+)",
+                    ]
 
-                    # Extract serial number
-                    serial_match = re.search(
-                        r"Serial Number:\s*([^\r\n]+)", system_info
-                    )
-                    if serial_match:
-                        self.pdu_serial = serial_match.group(1).strip()
-                        _LOGGER.debug("Found PDU serial: %s", self.pdu_serial)
+                    for pattern in model_patterns:
+                        model_match = re.search(pattern, system_info)
+                        if model_match:
+                            # If we have multiple capturing groups, use the last one
+                            group_index = len(model_match.groups())
+                            self.pdu_model = model_match.group(group_index).strip()
+                            _LOGGER.debug("Found PDU model: %s", self.pdu_model)
+                            break
 
-                    # If we don't have a serial number, generate one based on hostname
-                    if not self.pdu_serial:
-                        self.pdu_serial = f"RLNK_{self._host.replace('.', '_')}"
-                        _LOGGER.debug("Generated PDU serial: %s", self.pdu_serial)
+                    # If we still don't have a model, try a broader search
+                    if not self.pdu_model:
+                        model_lines = re.findall(r"[Mm]odel.*", system_info)
+                        if model_lines:
+                            self.pdu_model = model_lines[0].strip()
+                            _LOGGER.debug(
+                                "Found PDU model from line: %s", self.pdu_model
+                            )
 
-                    # Get outlet count
-                    outlets_info = await self.send_command("show outlets")
+                    # Try multiple patterns for firmware
+                    firmware_patterns = [
+                        r"Firmware [Vv]ersion:\s*([^\r\n]+)",
+                        r"Firmware:\s*([^\r\n]+)",
+                        r"Version:\s*([^\r\n]+)",
+                        r"FW( Version)?:\s*([^\r\n]+)",
+                    ]
+
+                    for pattern in firmware_patterns:
+                        firmware_match = re.search(pattern, system_info)
+                        if firmware_match:
+                            # If we have multiple capturing groups, use the last one
+                            group_index = len(firmware_match.groups())
+                            self.pdu_firmware = firmware_match.group(
+                                group_index
+                            ).strip()
+                            _LOGGER.debug("Found PDU firmware: %s", self.pdu_firmware)
+                            break
+
+                    # Try multiple patterns for serial number
+                    serial_patterns = [
+                        r"Serial [Nn]umber:\s*([^\r\n]+)",
+                        r"Serial:\s*([^\r\n]+)",
+                        r"SN:\s*([^\r\n]+)",
+                    ]
+
+                    for pattern in serial_patterns:
+                        serial_match = re.search(pattern, system_info)
+                        if serial_match:
+                            self.pdu_serial = serial_match.group(1).strip()
+                            _LOGGER.debug("Found PDU serial: %s", self.pdu_serial)
+                            break
+                else:
+                    _LOGGER.warning("Could not get system info from any command")
+
+                # If we still don't have essential information, set reasonable defaults
+                if not self.pdu_model:
+                    self.pdu_model = "RackLink PDU"
+                    _LOGGER.debug("Using default model name: %s", self.pdu_model)
+
+                if not self.pdu_serial:
+                    self.pdu_serial = f"RLNK_{self._host.replace('.', '_')}"
+                    _LOGGER.debug("Generated PDU serial: %s", self.pdu_serial)
+
+                if not self.pdu_firmware:
+                    self.pdu_firmware = "Unknown"
+
+                # Try to get outlet information to determine outlet count
+                try:
+                    outlet_commands = ["show outlets", "outlets", "show outlet"]
+                    outlets_info = None
+
+                    for cmd in outlet_commands:
+                        response = await self.send_command(cmd)
+                        if response and len(response) > 20:
+                            outlets_info = response
+                            break
+                        await asyncio.sleep(0.5)
+
                     if outlets_info:
-                        # Count the number of outlets by counting the outlet rows
-                        outlet_rows = re.findall(
-                            r"^\s*\d+\s+\|", outlets_info, re.MULTILINE
-                        )
-                        if outlet_rows:
-                            num_outlets = len(outlet_rows)
-                            _LOGGER.info("Found %s outlets", num_outlets)
+                        # Try different patterns to count outlets
+                        outlet_patterns = [
+                            r"^\s*\d+\s+\|",  # Pattern like "  1 |"
+                            r"Outlet\s+(\d+)",  # Pattern like "Outlet 1"
+                            r"^\s*(\d+)[\s-]+\w+",  # Pattern like "1 - OutletName"
+                        ]
+
+                        for pattern in outlet_patterns:
+                            outlet_matches = re.findall(
+                                pattern, outlets_info, re.MULTILINE
+                            )
+                            if outlet_matches:
+                                num_outlets = len(outlet_matches)
+                                _LOGGER.info("Found %s outlets", num_outlets)
+                                break
+                except Exception as e:
+                    _LOGGER.error("Error getting outlet information: %s", e)
 
                 # Update the pdu_info dictionary
                 self.pdu_info = {
@@ -484,10 +571,31 @@ class RacklinkController:
                     "name": self.pdu_name,
                 }
 
+            # Ensure we have basic information to satisfy config_flow
+            if "model" not in self.pdu_info or not self.pdu_info["model"]:
+                self.pdu_info["model"] = self.pdu_model or "RackLink PDU"
+
+            if "serial" not in self.pdu_info or not self.pdu_info["serial"]:
+                self.pdu_info["serial"] = (
+                    self.pdu_serial or f"RLNK_{self._host.replace('.', '_')}"
+                )
+
             return self.pdu_info
 
         except Exception as e:
             _LOGGER.error("Error getting device info: %s", e)
+            # Make sure we still return valid info even after an error
+            if (
+                not self.pdu_info
+                or "model" not in self.pdu_info
+                or not self.pdu_info["model"]
+            ):
+                self.pdu_info = {
+                    "model": "RackLink PDU",
+                    "firmware": "Unknown",
+                    "serial": f"RLNK_{self._host.replace('.', '_')}",
+                    "name": self.pdu_name or "Middle Atlantic RackLink",
+                }
             return self.pdu_info
 
     def get_model_capabilities(self) -> Dict[str, Any]:
@@ -931,3 +1039,125 @@ class RacklinkController:
         await self._close_socket()
 
         _LOGGER.info("Controller for %s has been shut down", self._host)
+
+    async def send_command(self, command: str, timeout: int = None) -> str:
+        """Send a command to the device and wait for the response."""
+        if not command:
+            return ""
+
+        command_timeout = timeout or self._command_timeout
+        command_with_newline = f"{command}\r\n"
+
+        try:
+            if not self._connected:
+                _LOGGER.debug("Not connected while sending command: %s", command)
+                await self.reconnect()
+                if not self._connected:
+                    _LOGGER.warning("Could not reconnect to send command: %s", command)
+                    return ""
+
+            _LOGGER.debug("Sending command: %s (timeout: %s)", command, command_timeout)
+
+            # Send the command directly
+            await self._socket_write(command_with_newline.encode())
+
+            # Wait for the prompt to return, which indicates command completion
+            response = await self._socket_read_until(b">", timeout=command_timeout)
+
+            # Clean up the response
+            if response:
+                # Convert to string
+                response_str = response.decode(errors="ignore")
+
+                # Remove echo of the command itself from the beginning
+                lines = response_str.splitlines()
+                if len(lines) > 0 and command in lines[0]:
+                    response_str = "\n".join(lines[1:])
+
+                # Remove ANSI escape sequences
+                response_str = re.sub(r"\x1b\[[0-9;]*[mK]", "", response_str)
+
+                # Remove trailing prompt
+                response_str = response_str.rstrip(">").strip()
+
+                _LOGGER.debug(
+                    "Command response (truncated): %s",
+                    response_str[:100] + ("..." if len(response_str) > 100 else ""),
+                )
+                return response_str
+            else:
+                _LOGGER.warning("Empty response for command: %s", command)
+                return ""
+
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Command timed out: %s", command)
+            return ""
+        except Exception as e:
+            _LOGGER.error("Error sending command: %s - %s", command, e)
+            return ""
+
+    async def _process_command_queue(self):
+        """Process commands from the queue."""
+        _LOGGER.debug("Starting command queue processor")
+
+        while not self._shutdown_requested:
+            try:
+                # Check if we're connected
+                if not self._connected:
+                    _LOGGER.debug("Not connected, waiting before processing commands")
+                    await asyncio.sleep(1)
+                    continue
+
+                # Try to get a command from the queue with a timeout
+                try:
+                    command_item = await asyncio.wait_for(
+                        self._command_queue.get(), timeout=0.5
+                    )
+                except asyncio.TimeoutError:
+                    # No commands in queue, continue the loop
+                    await asyncio.sleep(0.1)
+                    continue
+
+                command, future = command_item
+                _LOGGER.debug("Processing command from queue: %s", command)
+
+                # Send the command and get response
+                try:
+                    # Try to send the command
+                    response = await self.send_command(command)
+
+                    # Set the result if we have a future
+                    if future is not None and not future.done():
+                        future.set_result(response)
+                except Exception as e:
+                    _LOGGER.error("Error executing queued command '%s': %s", command, e)
+                    # Set exception on future if we have one
+                    if future is not None and not future.done():
+                        future.set_exception(e)
+                finally:
+                    # Mark task as done regardless of outcome
+                    self._command_queue.task_done()
+
+                # Small delay to prevent flooding the device
+                await asyncio.sleep(0.1)
+
+            except asyncio.CancelledError:
+                _LOGGER.debug("Command processor was cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error("Unexpected error in command processor: %s", e)
+                await asyncio.sleep(
+                    1
+                )  # Sleep briefly to avoid tight loop on persistent errors
+
+        _LOGGER.debug(
+            "Command processor exiting, shutdown requested: %s",
+            self._shutdown_requested,
+        )
+
+        # If we're not shutting down, restart the processor
+        if not self._shutdown_requested:
+            _LOGGER.debug("Restarting command processor")
+            self._command_process_task = asyncio.create_task(
+                self._process_command_queue()
+            )
