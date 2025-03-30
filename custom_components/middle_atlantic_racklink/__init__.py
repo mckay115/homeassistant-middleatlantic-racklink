@@ -50,30 +50,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Starting background connection to %s", host)
         await controller.start_background_connection()
 
-        # Ensure update method is implemented and ready
-        # This will allow entity updates to function correctly
-        if not hasattr(controller, "update"):
-            _LOGGER.warning(
-                "Controller missing update method, patching with synchronization method"
-            )
-
-            async def update_wrapper():
-                """Handle update requests."""
-                _LOGGER.debug("Update request for %s", host)
-                # Get outlet states
-                await controller.get_all_outlet_states(force_refresh=True)
-                # Get sensor values
-                await controller.get_sensor_values(force_refresh=True)
-
-        # Add update method to controller
-        controller.update = update_wrapper
-
         # Wait for background connection to establish
-        await asyncio.sleep(5)
+        await asyncio.sleep(2)
 
         # Force an initial update to populate data
         _LOGGER.debug("Triggering initial data refresh for %s", host)
-        await controller.update()
+        try:
+            await asyncio.wait_for(controller.update(), timeout=10)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Initial update timed out, will retry in the background")
+        except Exception as err:
+            _LOGGER.warning("Error during initial update: %s", err)
 
     except Exception as e:
         _LOGGER.error("Error during initial setup: %s", e)
@@ -93,11 +80,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             # Check if controller is connected, if not, attempt reconnection
             if not controller.connected:
-                await controller.connect()
+                _LOGGER.debug("Not connected during update, attempting reconnection")
+                try:
+                    await asyncio.wait_for(controller.connect(), timeout=5)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Reconnection attempt timed out")
+                    raise UpdateFailed("Connection timed out")
+                except Exception as err:
+                    _LOGGER.warning("Reconnection attempt failed: %s", err)
+                    raise UpdateFailed(f"Reconnection failed: {err}")
 
             # Update all data from device
             if controller.connected:
-                await controller.update()
+                try:
+                    # Use timeout for update to prevent blocking
+                    await asyncio.wait_for(controller.update(), timeout=20)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Controller update timed out")
+                    raise UpdateFailed("Update timed out")
+                except Exception as err:
+                    _LOGGER.warning("Controller update failed: %s", err)
+                    raise UpdateFailed(f"Update failed: {err}")
 
             # Signal entities to update
             async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
@@ -118,7 +121,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Start the initial refresh
-    await coordinator.async_refresh()
+    try:
+        # Use a timeout to prevent blocking initial setup
+        await asyncio.wait_for(coordinator.async_refresh(), timeout=15)
+    except asyncio.TimeoutError:
+        _LOGGER.warning(
+            "Initial coordinator refresh timed out, will retry automatically"
+        )
+    except Exception as err:
+        _LOGGER.warning("Error during initial coordinator refresh: %s", err)
 
     # Store coordinator in the data dict
     hass.data[DOMAIN][entry.entry_id + "_coordinator"] = coordinator

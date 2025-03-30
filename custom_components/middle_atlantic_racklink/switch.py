@@ -396,13 +396,35 @@ class RacklinkOutlet(SwitchEntity):
         """Cycle the outlet power."""
         try:
             _LOGGER.debug("Cycling outlet %d (%s)", self._outlet, self._outlet_name)
-            await asyncio.wait_for(
-                self._controller.cycle_outlet(self._outlet), timeout=10
-            )
-            # Schedule a refresh to confirm state after a short delay
-            async_call_later(self.hass, 5, self._async_refresh_state)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout cycling outlet %s", self._outlet)
+            try:
+                await asyncio.wait_for(
+                    self._controller.cycle_outlet(self._outlet), timeout=15
+                )
+                # Schedule a refresh to confirm state after a short delay
+                async_call_later(self.hass, 5, self._async_refresh_state)
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    "Timeout cycling outlet %s, trying alternative method", self._outlet
+                )
+                # Try alternative cycle method - turn off then on with delay
+                try:
+                    await asyncio.wait_for(
+                        self._controller.set_outlet_state(self._outlet, False),
+                        timeout=7,
+                    )
+                    await asyncio.sleep(3)
+                    await asyncio.wait_for(
+                        self._controller.set_outlet_state(self._outlet, True), timeout=7
+                    )
+                    _LOGGER.info(
+                        "Alternative cycle method completed for outlet %s", self._outlet
+                    )
+                    # Schedule a refresh to confirm state after a short delay
+                    async_call_later(self.hass, 5, self._async_refresh_state)
+                except Exception as e:
+                    _LOGGER.error("Alternative cycle method also failed: %s", e)
+            except Exception as e:
+                _LOGGER.error("Error cycling outlet %s: %s", self._outlet, e)
         except Exception as err:
             _LOGGER.error("Error cycling outlet %s: %s", self._outlet, err)
 
