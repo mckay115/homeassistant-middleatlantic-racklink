@@ -27,8 +27,15 @@ async def async_setup_entry(
 
     entities = []
 
-    # Add outlets as switches
-    for outlet_num in coordinator.outlet_data:
+    # Add outlets as switches - ensure we create switches even if no outlet data yet
+    # Default to creating 8 outlets, which is common for these PDUs
+    max_outlets = 8
+    existing_outlets = list(coordinator.outlet_data.keys())
+
+    # Use existing outlet data if available, otherwise create for standard number
+    outlet_numbers = existing_outlets if existing_outlets else range(1, max_outlets + 1)
+
+    for outlet_num in outlet_numbers:
         entities.append(RacklinkOutletSwitch(coordinator, outlet_num))
 
     async_add_entities(entities)
@@ -42,20 +49,26 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self._outlet_number = outlet_number
 
-        # Set unique ID and name
+        # Set unique ID
         self._attr_unique_id = (
             f"{coordinator.controller.pdu_serial}_outlet_{outlet_number}"
         )
-        self._name = f"Outlet {outlet_number}"
+
+        # Always include outlet number in name, custom name will be added in @name property
+        self._base_name = f"Outlet {outlet_number}"
 
     @property
     def name(self) -> str:
-        """Return the name of the switch."""
+        """Return the name of the switch, always including outlet number."""
         outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
         custom_name = outlet_data.get("name")
-        if custom_name and custom_name != f"Outlet {self._outlet_number}":
-            return custom_name
-        return self._name
+
+        # If we have a custom name that's different from the default, use it with the outlet number
+        if custom_name and custom_name != self._base_name:
+            return f"{self._base_name}: {custom_name}"
+
+        # Otherwise just return the base name (Outlet X)
+        return self._base_name
 
     @property
     def is_on(self) -> bool:
@@ -71,6 +84,8 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
+        # Consider the switch available if coordinator is available,
+        # even if no outlet data yet (will show as OFF)
         return self.coordinator.available
 
     async def async_turn_on(self, **kwargs: Any) -> None:

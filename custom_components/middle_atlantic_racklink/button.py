@@ -27,8 +27,15 @@ async def async_setup_entry(
 
     entities = []
 
-    # Add outlet cycle buttons
-    for outlet_num in coordinator.outlet_data:
+    # Add outlet cycle buttons - ensure we create buttons even if no outlet data yet
+    # Default to creating 8 outlets, which is common for these PDUs
+    max_outlets = 8
+    existing_outlets = list(coordinator.outlet_data.keys())
+
+    # Use existing outlet data if available, otherwise create for standard number
+    outlet_numbers = existing_outlets if existing_outlets else range(1, max_outlets + 1)
+
+    for outlet_num in outlet_numbers:
         entities.append(RacklinkOutletCycleButton(coordinator, outlet_num))
 
     # Add system-wide buttons
@@ -90,22 +97,28 @@ class RacklinkOutletCycleButton(RacklinkButtonBase):
         async def cycle_this_outlet():
             await coordinator.cycle_outlet(outlet_number)
 
+        # Base name always includes outlet number
+        self._base_name = f"Cycle Outlet {outlet_number}"
+
         super().__init__(
             coordinator=coordinator,
             key=f"outlet_{outlet_number}_cycle",
-            name=f"Cycle Outlet {outlet_number}",
+            name=self._base_name,
             press_action=cycle_this_outlet,
         )
         self._outlet_number = outlet_number
 
     @property
     def name(self) -> str:
-        """Return the name of the button."""
+        """Return the name of the button, including outlet number and custom name if available."""
         outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
-        outlet_name = outlet_data.get("name")
-        if outlet_name and outlet_name != f"Outlet {self._outlet_number}":
-            return f"Cycle {outlet_name}"
-        return self._attr_name
+        custom_name = outlet_data.get("name")
+
+        # If we have a custom name, format as "Cycle Outlet X: NAME"
+        if custom_name and custom_name != f"Outlet {self._outlet_number}":
+            return f"Cycle Outlet {self._outlet_number}: {custom_name}"
+
+        return self._base_name
 
 
 class RacklinkAllOutletsCycleButton(RacklinkButtonBase):
