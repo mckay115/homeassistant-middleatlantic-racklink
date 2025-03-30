@@ -128,15 +128,6 @@ class RacklinkSensor(Entity):
             "sw_version": self._controller.pdu_firmware,
         }
 
-    async def async_added_to_hass(self) -> None:
-        """Register callbacks when entity is added."""
-        # Listen for entity updates from the dispatcher signal
-        self.async_on_remove(
-            self.hass.helpers.dispatcher.async_dispatcher_connect(
-                f"{DOMAIN}_entity_update", self.async_write_ha_state
-            )
-        )
-
     async def async_update(self) -> None:
         """Update method to be implemented by derived classes."""
         raise NotImplementedError("Subclasses must implement async_update")
@@ -377,20 +368,21 @@ class RacklinkPowerFactor(RacklinkSensor):
 class RacklinkOutletPower(RacklinkSensor):
     """Outlet power sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Power",
+            f"{outlet_name} Power",
             UnitOfPower.WATT,
             f"outlet_{outlet}_power",
             SensorDeviceClass.POWER,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -399,15 +391,27 @@ class RacklinkOutletPower(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_power.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Power"
+
+            self._state = self._controller.outlet_power.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
-                "Error updating outlet %d power sensor: %s", self._outlet, err
+                "Error updating outlet power sensor %d: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False
@@ -416,20 +420,21 @@ class RacklinkOutletPower(RacklinkSensor):
 class RacklinkOutletCurrent(RacklinkSensor):
     """Outlet current sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet current sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Current",
+            f"{outlet_name} Current",
             UnitOfElectricCurrent.AMPERE,
             f"outlet_{outlet}_current",
             SensorDeviceClass.CURRENT,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -438,15 +443,27 @@ class RacklinkOutletCurrent(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_current.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Current"
+
+            self._state = self._controller.outlet_current.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
-                "Error updating outlet %d current sensor: %s", self._outlet, err
+                "Error updating outlet current sensor %d: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False
@@ -455,20 +472,21 @@ class RacklinkOutletCurrent(RacklinkSensor):
 class RacklinkOutletEnergy(RacklinkSensor):
     """Outlet energy sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet energy sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Energy",
+            f"{outlet_name} Energy",
             UnitOfEnergy.KILO_WATT_HOUR,
             f"outlet_{outlet}_energy",
             SensorDeviceClass.ENERGY,
             SensorStateClass.TOTAL_INCREASING,
         )
         self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -477,37 +495,60 @@ class RacklinkOutletEnergy(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_energy.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Energy"
+
+            # Convert from Wh to kWh if needed
+            energy_wh = self._controller.outlet_energy.get(self._outlet)
+            if energy_wh is not None:
+                self._state = energy_wh / 1000.0  # Convert Wh to kWh
+            else:
+                self._state = None
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
-                "Error updating outlet %d energy sensor: %s", self._outlet, err
+                "Error updating outlet energy sensor %d: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False
+
+    @property
+    def last_reset(self) -> None:
+        """Return the last reset time."""
+        return None  # or return a specific datetime if you have this information
 
 
 class RacklinkOutletPowerFactor(RacklinkSensor):
     """Outlet power factor sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power factor sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Power Factor",
+            f"{outlet_name} Power Factor",
             "%",
             f"outlet_{outlet}_power_factor",
             SensorDeviceClass.POWER_FACTOR,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -516,18 +557,28 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_power_factor.get(self._outlet)
-            if self._state is not None:
-                # Convert to percentage (0-100) for power factor
-                self._state = self._state * 100
-            self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._state is not None
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Power Factor"
+
+            # Get the power factor value
+            self._state = self._controller.outlet_power_factor.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
-                "Error updating outlet %d power factor sensor: %s", self._outlet, err
+                "Error updating outlet power factor sensor %d: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False
@@ -536,20 +587,17 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
 class RacklinkOutletApparentPower(RacklinkSensor):
     """Outlet apparent power sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
-        """Initialize the outlet apparent power sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the apparent power sensor."""
+        self._outlet = outlet
         super().__init__(
             controller,
             f"Outlet {outlet} Apparent Power",
             "VA",
             f"outlet_{outlet}_apparent_power",
-            None,
+            SensorDeviceClass.APPARENT_POWER,
             SensorStateClass.MEASUREMENT,
         )
-        self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -559,11 +607,19 @@ class RacklinkOutletApparentPower(RacklinkSensor):
 
         try:
             self._state = self._controller.outlet_apparent_power.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
             self._attr_available = (
                 self._controller.connected
                 and self._controller.available
                 and self._state is not None
             )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d apparent power data is missing, may need refresh",
+                    self._outlet,
+                )
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet %d apparent power sensor: %s", self._outlet, err
@@ -575,10 +631,9 @@ class RacklinkOutletApparentPower(RacklinkSensor):
 class RacklinkOutletVoltage(RacklinkSensor):
     """Outlet voltage sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
-        """Initialize the outlet voltage sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the voltage sensor."""
+        self._outlet = outlet
         super().__init__(
             controller,
             f"Outlet {outlet} Voltage",
@@ -587,8 +642,6 @@ class RacklinkOutletVoltage(RacklinkSensor):
             SensorDeviceClass.VOLTAGE,
             SensorStateClass.MEASUREMENT,
         )
-        self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -598,11 +651,19 @@ class RacklinkOutletVoltage(RacklinkSensor):
 
         try:
             self._state = self._controller.outlet_voltage.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
             self._attr_available = (
                 self._controller.connected
                 and self._controller.available
                 and self._state is not None
             )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d voltage data is missing, may need refresh",
+                    self._outlet,
+                )
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet %d voltage sensor: %s", self._outlet, err
@@ -614,20 +675,17 @@ class RacklinkOutletVoltage(RacklinkSensor):
 class RacklinkOutletLineFrequency(RacklinkSensor):
     """Outlet line frequency sensor."""
 
-    _attr_has_entity_name = True
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
-        """Initialize the outlet line frequency sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the line frequency sensor."""
+        self._outlet = outlet
         super().__init__(
             controller,
             f"Outlet {outlet} Line Frequency",
             "Hz",
-            f"outlet_{outlet}_line_frequency",
+            f"outlet_{outlet}_frequency",
             SensorDeviceClass.FREQUENCY,
             SensorStateClass.MEASUREMENT,
         )
-        self._outlet = outlet
-        self._attr_entity_registry_enabled_default = True
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -637,14 +695,22 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
 
         try:
             self._state = self._controller.outlet_line_frequency.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
             self._attr_available = (
                 self._controller.connected
                 and self._controller.available
                 and self._state is not None
             )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d frequency data is missing, may need refresh",
+                    self._outlet,
+                )
         except Exception as err:
             _LOGGER.error(
-                "Error updating outlet %d line frequency sensor: %s", self._outlet, err
+                "Error updating outlet %d frequency sensor: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False

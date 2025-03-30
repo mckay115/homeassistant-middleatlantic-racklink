@@ -131,17 +131,12 @@ class RacklinkCycleAllButton(RacklinkButtonBase):
 class RacklinkOutletCycleButton(RacklinkButtonBase):
     """Button to cycle a specific outlet."""
 
-    _attr_has_entity_name = True
-    entity_category = None
-
     def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet cycle button."""
         super().__init__(
-            controller, f"Outlet {outlet} Cycle", f"cycle_outlet_{outlet}_button"
+            controller, f"Cycle Outlet {outlet}", f"cycle_outlet_{outlet}_button"
         )
         self._outlet = outlet
-        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
-        self._attr_entity_registry_enabled_default = True
 
     async def async_press(self) -> None:
         """Handle the button press. Cycle the outlet."""
@@ -150,19 +145,7 @@ class RacklinkOutletCycleButton(RacklinkButtonBase):
             await asyncio.wait_for(
                 self._controller.cycle_outlet(self._outlet), timeout=10
             )
-            # Force a controller update after cycling
-            await asyncio.sleep(3)
-            await self._controller.update()
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout cycling outlet %d", self._outlet)
         except Exception as err:
             _LOGGER.error("Error cycling outlet %d: %s", self._outlet, err)
-
-    async def async_added_to_hass(self) -> None:
-        """Register callbacks when entity is added."""
-        # Listen for entity updates from the dispatcher signal
-        self.async_on_remove(
-            self.hass.helpers.dispatcher.async_dispatcher_connect(
-                f"{DOMAIN}_entity_update", self.async_write_ha_state
-            )
-        )

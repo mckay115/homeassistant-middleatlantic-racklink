@@ -425,162 +425,151 @@ class RacklinkController:
         except (asyncio.TimeoutError, Exception) as e:
             _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
 
-    async def send_command(
-        self, command, wait_for_response=True, force_reconnect=False
-    ):
-        """Send a command to the PDU and wait for a response."""
+    async def send_command(self, cmd: str) -> str:
+        """Queue a command to be sent to the device and return the response."""
         if self._shutdown_requested:
-            _LOGGER.debug("Command skipped, shutdown in progress: %s", command)
-            return None
+            _LOGGER.debug("Shutdown requested, not sending command to %s", self.host)
+            return ""
 
-        # Don't perform device I/O without the lock
-        async with self._command_lock:
-            if not self.connected or force_reconnect:
-                _LOGGER.debug(
-                    "Not connected before sending command, attempting to connect first"
-                )
-                try:
-                    # Use a timeout on connection to avoid hanging
-                    await asyncio.wait_for(self.connect(), timeout=10)
-                except asyncio.TimeoutError:
-                    _LOGGER.error(
-                        "Connection timeout before sending command: %s", command
-                    )
-                    return None
-                except Exception as err:
-                    _LOGGER.error("Connection error before sending command: %s", err)
-                    return None
+        if not self.connected:
+            _LOGGER.debug("Not connected, attempting to connect before sending command")
+            try:
+                # Use a longer timeout for connection attempts
+                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Connection attempt timed out")
+                return ""
+            except Exception as err:
+                _LOGGER.error("Connection attempt failed: %s", err)
+                return ""
 
             if not self.connected:
-                _LOGGER.warning("Still not connected, cannot send command: %s", command)
-                return None
+                _LOGGER.error("Still not connected after connection attempt")
+                return ""
 
+        # Create a future to get the result
+        future = asyncio.get_running_loop().create_future()
+
+        # Add the command to the queue
+        await self._command_queue.put((cmd, future))
+
+        # Wait for the result
+        try:
+            response = await asyncio.wait_for(future, timeout=self._command_timeout)
+            return response
+        except asyncio.TimeoutError:
+            _LOGGER.error("Command timed out waiting for result: %s", cmd)
+            return ""
+        except Exception as e:
+            _LOGGER.error("Error waiting for command result: %s - %s", cmd, e)
+            return ""
+
+    async def _process_command_queue(self):
+        """Process commands from the queue with rate limiting."""
+        while not self._shutdown_requested:
             try:
-                # Record the command for diagnostic purposes
-                self.last_cmd = command
+                # Get the next command from the queue
+                cmd, future = await self._command_queue.get()
 
-                # If command/response might take a while, use telnet object directly
-                cmd_bytes = (command + "\r\n").encode("ascii")
-                _LOGGER.debug("Sending: %s", command)
-
-                # Calculate time since last command to avoid flooding the device
-                now = asyncio.get_event_loop().time()
-                time_since_last = now - self._last_command_time
-
-                # If we sent a command very recently, add a small delay
-                if time_since_last < self._command_delay:
-                    delay = self._command_delay - time_since_last
-                    _LOGGER.debug("Adding delay of %.2f seconds before command", delay)
-                    await asyncio.sleep(delay)
-
-                # Now send the command
-                if self.telnet:
-                    self.telnet.write(cmd_bytes)
-                    self._last_command_time = asyncio.get_event_loop().time()
-                else:
-                    _LOGGER.error("Telnet object is None when sending command")
-                    return None
-
-                if not wait_for_response:
-                    return ""  # Don't wait for response
-
-                # Increase timeout for commands that may take longer
-                response_timeout = 20 if "show" in command.lower() else 10
                 try:
-                    response = await asyncio.wait_for(
-                        self._read_response(), timeout=response_timeout
-                    )
-                    return response
-                except asyncio.TimeoutError:
-                    _LOGGER.error("Timeout waiting for result: %s", command)
-                    # Mark controller as potentially disconnected to force reconnect on next command
-                    self._connected = False
-                    return None
-                except Exception as err:
-                    _LOGGER.error("Error reading response: %s", err)
-                    return None
-            except Exception as err:
-                _LOGGER.error("Error sending command %s: %s", command, err)
-                return None
-
-    async def _read_response(self):
-        """Read response from the device with timeout handling."""
-        response = ""
-        loop_count = 0
-        max_loops = 200  # 20 seconds max (0.1s per loop)
-
-        while loop_count < max_loops:
-            try:
-                # Check if we have data available
-                if self.telnet and self.telnet.sock_avail():
-                    new_data = self.telnet.read_eager().decode("ascii", errors="ignore")
-                    if new_data:
-                        response += new_data
-                        # Look for a command prompt indicating response is complete
-                        if (
-                            "RackLink>" in new_data
-                            or "Username:" in new_data
-                            or "Password:" in new_data
-                        ):
-                            break
-                # If no data is available, sleep a bit to avoid CPU spin
-                await asyncio.sleep(0.1)
-                loop_count += 1
-
-                # Every 10 loops (about 1 second), check if we should break
-                if loop_count % 10 == 0 and response:
-                    # Debug output to show response so far
-                    if len(response) > 0:
+                    # Enforce delay between commands
+                    now = asyncio.get_event_loop().time()
+                    time_since_last = now - self._last_command_time
+                    if time_since_last < self._command_delay:
+                        delay = self._command_delay - time_since_last
                         _LOGGER.debug(
-                            "Response so far (%d chars): %s",
-                            len(response),
-                            response[:50] + ("..." if len(response) > 50 else ""),
+                            "Rate limiting: Waiting %.2f seconds before next command",
+                            delay,
                         )
+                        await asyncio.sleep(delay)
 
-                    # If we have a substantial response but no prompt, might be complete
-                    if len(response) > 50 and "RackLink>" not in response:
-                        # For some commands, we can detect completion without a prompt
-                        if (
-                            (
-                                self.last_cmd.startswith("show outlet")
-                                and "Power state:" in response
-                            )
-                            or (
-                                self.last_cmd.startswith("show sensor")
-                                and "Reading:" in response
-                            )
-                            or (
-                                self.last_cmd.startswith("show pdu")
-                                and "Model:" in response
-                            )
-                        ):
-                            _LOGGER.debug(
-                                "Found expected data, considering response complete"
-                            )
-                            break
-            except ConnectionError as err:
-                _LOGGER.error("Connection error reading response: %s", err)
-                self._connected = False
-                raise
-            except Exception as err:
-                _LOGGER.error("Error reading response: %s", err)
-                await asyncio.sleep(0.5)  # Pause to avoid rapid errors
+                    # Process the command
+                    result = await self._send_command_internal(cmd)
+                    self._last_command_time = asyncio.get_event_loop().time()
 
-        # If we never got a response, this is a problem
-        if not response:
-            _LOGGER.error("No response received for command: %s", self.last_cmd)
-            self._connected = False
-            raise TimeoutError("No response received")
+                    # Set the result in the future
+                    if not future.done():
+                        future.set_result(result)
+                except Exception as e:
+                    if not future.done():
+                        future.set_exception(e)
+                finally:
+                    # Mark the task as done
+                    self._command_queue.task_done()
 
-        # If we hit loop limit, we timed out
-        if loop_count >= max_loops:
-            _LOGGER.warning(
-                "Internal timeout waiting for complete response to: %s (got %d chars)",
-                self.last_cmd,
-                len(response),
+            except asyncio.CancelledError:
+                _LOGGER.debug("Command processor task cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error("Error in command processor: %s", e)
+                await asyncio.sleep(1)  # Prevent tight loop if there's an error
+
+        _LOGGER.debug("Command processor task exiting")
+
+    async def _send_command_internal(self, cmd: str) -> str:
+        """Send a command to the device and return the response."""
+        try:
+            _LOGGER.debug("Sending command: %s", cmd)
+            # Make sure we have a valid telnet connection
+            if not self.telnet:
+                _LOGGER.error("No telnet connection available, attempting to reconnect")
+                await self.reconnect()
+                if not self.connected or not self.telnet:
+                    _LOGGER.error("Failed to establish telnet connection")
+                    return ""
+
+            # Make sure to include CRLF - this is critical for telnet protocol
+            await self._telnet_write(f"{cmd}\r\n".encode())
+            self.last_cmd = cmd
+            self.context = cmd.replace(" ", "")
+
+            # Read until prompt character
+            _LOGGER.debug("Waiting for response to command: %s", cmd)
+            response = await asyncio.wait_for(
+                self._telnet_read_until(b"#", self._telnet_timeout),
+                timeout=self._command_timeout,  # Use a longer timeout for commands
             )
 
-        return response
+            if response:
+                # Decode and clean up the response
+                self.response_cache = response.decode("utf-8", errors="ignore")
+                _LOGGER.debug(
+                    "Response (first 100 chars): %s",
+                    self.response_cache[:100].replace("\r\n", " "),
+                )
+
+                # Add a small delay after receiving response to make sure device is ready for next command
+                await asyncio.sleep(0.2)
+
+                return self.response_cache
+            else:
+                _LOGGER.warning("Empty response for command: %s", cmd)
+                return ""
+
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Command timed out after %s seconds: %s",
+                self._command_timeout,
+                cmd,
+            )
+            self._handle_error(f"Command timed out: {cmd}")
+            # Attempt to reconnect on timeout
+            await self.reconnect()
+            # Don't attempt reconnect immediately on timeout, just return empty
+            return ""
+        except ConnectionError as e:
+            _LOGGER.error("Connection error while sending command: %s", e)
+            self._handle_error(f"Connection error while sending command: {e}")
+            await self.reconnect()
+            # After reconnection, try sending the command again if we're connected
+            if self.connected:
+                return await self.send_command(cmd)
+            return ""
+        except Exception as e:
+            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
+            self._handle_error(f"Error sending command: {e}")
+            await self.reconnect()
+            return ""
 
     async def login(self) -> None:
         """Login to the device."""
@@ -1549,18 +1538,10 @@ class RacklinkController:
         # Get outlet states (this will also update outlet metrics)
         _LOGGER.debug("Updating outlet states for %s", self.host)
         try:
-            # Get outlet state with longer timeout
-            try:
-                await asyncio.wait_for(
-                    self.get_all_outlet_states(force_refresh=True),
-                    timeout=self._command_timeout
-                    * 2,  # Double timeout for outlet states
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning(
-                    "Timeout getting outlet states, will retry on next update"
-                )
-
+            await asyncio.wait_for(
+                self.get_all_outlet_states(force_refresh=True),
+                timeout=self._command_timeout,
+            )
             _LOGGER.debug(
                 "After update, found %d outlet states", len(self.outlet_states)
             )
@@ -1569,19 +1550,56 @@ class RacklinkController:
         except Exception as err:
             _LOGGER.error("Failed to update outlet states: %s", err)
 
+        # If outlet states are still empty, try the individual approach
+        if not self.outlet_states:
+            _LOGGER.debug("No outlet states found, trying individual outlet queries")
+            for outlet_num in range(1, 10):  # Try outlets 1-9
+                try:
+                    response = await self.send_command(
+                        f"show outlets {outlet_num} details"
+                    )
+                    if response:
+                        state_match = re.search(
+                            r"Power state:\s*(\w+)", response, re.IGNORECASE
+                        )
+                        if state_match:
+                            raw_state = state_match.group(1)
+                            state = raw_state.lower() in [
+                                "on",
+                                "1",
+                                "true",
+                                "yes",
+                                "active",
+                            ]
+                            self.outlet_states[outlet_num] = state
+                            _LOGGER.debug(
+                                "Individual query - Outlet %d state: %s (raw: %s)",
+                                outlet_num,
+                                state,
+                                raw_state,
+                            )
+
+                            # Also extract the name while we're here
+                            name_match = re.search(
+                                r"Outlet \d+ - (.+?)[\r\n]", response
+                            )
+                            if name_match:
+                                name = name_match.group(1).strip()
+                                self.outlet_names[outlet_num] = name
+                                _LOGGER.debug(
+                                    "Found outlet %d name: %s", outlet_num, name
+                                )
+                            else:
+                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                except Exception as err:
+                    _LOGGER.debug("Error querying outlet %d: %s", outlet_num, err)
+
         # Get sensor values
         try:
-            # Get sensor values with longer timeout
-            try:
-                await asyncio.wait_for(
-                    self.get_sensor_values(force_refresh=True),
-                    timeout=self._command_timeout
-                    * 2,  # Double timeout for sensor values
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning(
-                    "Timeout getting sensor values, will retry on next update"
-                )
+            await asyncio.wait_for(
+                self.get_sensor_values(force_refresh=True),
+                timeout=self._command_timeout,
+            )
             _LOGGER.debug("After update, sensors: %s", self.sensors)
         except Exception as err:
             _LOGGER.error("Failed to update sensor values: %s", err)
