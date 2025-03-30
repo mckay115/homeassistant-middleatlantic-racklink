@@ -24,7 +24,7 @@ from ..const import (
 from ..parser import (
     parse_available_commands,
     parse_device_info,
-    parse_outlet_states,
+    parse_all_outlet_states,
     parse_pdu_power_data,
     parse_pdu_temperature,
 )
@@ -469,12 +469,12 @@ class BaseController:
         try:
             # First try 'show outlets'
             response = await self.queue_command("show outlets")
-            outlet_data = parse_outlet_states(response)
+            outlet_data = parse_all_outlet_states(response)
 
             if not outlet_data:
                 # Try alternative command 'show outlet'
                 response = await self.queue_command("show outlet")
-                outlet_data = parse_outlet_states(response)
+                outlet_data = parse_all_outlet_states(response)
 
             if outlet_data:
                 self.outlet_states = outlet_data.get("states", {})
