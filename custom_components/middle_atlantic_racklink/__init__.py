@@ -3,15 +3,18 @@
 import asyncio
 import logging
 from datetime import timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, DEFAULT_PORT
-from .device import RacklinkDevice
-from .coordinator import RacklinkDataUpdateCoordinator
+from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,14 +41,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model,
     )
 
-    # Create device instance
-    device = RacklinkDevice(host, port, username, password, model)
+    # Create controller instance
+    controller = RacklinkController(host, port, username, password, model)
 
     # Start background connection with timeout
     try:
         # Attempt initial connection to device with timeout
         _LOGGER.debug("Starting background connection to %s", host)
-        connection_task = device.start_background_connection()
+        connection_task = controller.start_background_connection()
         # Set 15 second timeout for initial connection
         try:
             await asyncio.wait_for(connection_task, timeout=15)
@@ -53,13 +56,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Initial connection timed out, proceeding with setup")
             # Continue anyway - entities will show as unavailable until connected
 
+        # Ensure update method is implemented and ready
+        # This will allow entity updates to function correctly
+        if not hasattr(controller, "update"):
+            _LOGGER.warning(
+                "Controller missing update method, patching with synchronization method"
+            )
+
+            async def update_wrapper():
+                """Handle update requests."""
+                _LOGGER.debug("Update request for %s", host)
+                # Get outlet states
+                await controller.get_all_outlet_states(force_refresh=True)
+                # Get sensor values
+                await controller.get_sensor_values(force_refresh=True)
+
+            # Add update method to controller
+            controller.update = update_wrapper
+
         # Wait briefly for connection to establish - reduce from 5 to 2 seconds
         await asyncio.sleep(2)
 
         # Force an initial update to populate data with timeout
         _LOGGER.debug("Triggering initial data refresh for %s", host)
         try:
-            await asyncio.wait_for(device.update(), timeout=10)
+            await asyncio.wait_for(controller.update(), timeout=10)
         except asyncio.TimeoutError:
             _LOGGER.warning("Initial data refresh timed out")
             # Continue with setup - the coordinator will retry
@@ -69,131 +90,243 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Continue anyway - Home Assistant will show entities as unavailable
         # until connection is established
 
-    # Store the device
+    # Store the controller
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = device
+    hass.data[DOMAIN][entry.entry_id] = controller
 
     # Create update coordinator to refresh the data
-    coordinator = RacklinkDataUpdateCoordinator(
-        hass, device, f"Racklink {host}", DEFAULT_SCAN_INTERVAL
+    async def async_update_data():
+        """Fetch data from the controller."""
+        try:
+            # Check if controller is connected, if not, attempt reconnection
+            if not controller.connected:
+                _LOGGER.debug("Controller not connected, attempting reconnection")
+                try:
+                    await controller.reconnect()
+
+                    # If still not connected, raise exception but let coordinator handle it
+                    if not controller.connected:
+                        _LOGGER.warning("Connection not available, will retry later")
+                        raise UpdateFailed("Device connection unavailable")
+                except Exception as e:
+                    _LOGGER.warning("Error during reconnection attempt: %s", e)
+                    raise UpdateFailed(f"Connection error: {e}")
+
+            # Check connection again before attempting update
+            if controller.connected:
+                _LOGGER.debug("Updating controller data from device")
+                try:
+                    # Use a timeout to prevent blocking indefinitely
+                    success = await asyncio.wait_for(controller.update(), timeout=15)
+
+                    if not success:
+                        _LOGGER.warning(
+                            "Controller update returned unsuccessful status"
+                        )
+                        # We'll still return data, but log the issue
+
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Data update timed out")
+                    raise UpdateFailed("Data update timed out")
+                except Exception as e:
+                    _LOGGER.error("Error during controller update: %s", e)
+                    raise UpdateFailed(f"Update error: {e}")
+
+                # Get the latest device info
+                device_info = await controller.get_device_info()
+
+                # Collect updated data for entities
+                return {
+                    "device_info": device_info,
+                    "available": controller.available,
+                    "outlet_states": controller.outlet_states.copy(),
+                    "outlet_names": controller.outlet_names.copy(),
+                    "outlet_power": (
+                        controller.outlet_power.copy()
+                        if hasattr(controller, "outlet_power")
+                        else {}
+                    ),
+                    "outlet_current": (
+                        controller.outlet_current.copy()
+                        if hasattr(controller, "outlet_current")
+                        else {}
+                    ),
+                    "outlet_energy": (
+                        controller.outlet_energy.copy()
+                        if hasattr(controller, "outlet_energy")
+                        else {}
+                    ),
+                    "outlet_voltage": (
+                        controller.outlet_voltage.copy()
+                        if hasattr(controller, "outlet_voltage")
+                        else {}
+                    ),
+                    "outlet_power_factor": (
+                        controller.outlet_power_factor.copy()
+                        if hasattr(controller, "outlet_power_factor")
+                        else {}
+                    ),
+                    "sensors": (
+                        controller.sensors.copy()
+                        if hasattr(controller, "sensors")
+                        else {}
+                    ),
+                    "last_update": getattr(controller, "_last_update", 0),
+                    "pdu_info": (
+                        controller.pdu_info.copy()
+                        if hasattr(controller, "pdu_info")
+                        else {}
+                    ),
+                }
+            else:
+                _LOGGER.warning("Controller is not connected, cannot update data")
+                raise UpdateFailed("Device not connected")
+
+        except UpdateFailed:
+            # Re-raise UpdateFailed exceptions without modification
+            raise
+        except Exception as e:
+            _LOGGER.error("Unexpected error updating from device: %s", e)
+            # Convert exception into update failure for coordinator
+            raise UpdateFailed(f"Error communicating with device: {e}")
+
+    # Create the update coordinator with reasonable update interval
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name=f"Racklink {host}",
+        update_method=async_update_data,
+        update_interval=DEFAULT_SCAN_INTERVAL,
     )
 
-    # Store the coordinator
+    # Start the initial refresh with timeout
+    try:
+        await asyncio.wait_for(coordinator.async_refresh(), timeout=15)
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Initial coordinator refresh timed out, proceeding with setup")
+    except Exception as e:
+        _LOGGER.warning("Error during initial coordinator refresh: %s", e)
+
+    # Store coordinator in the data dict
     hass.data[DOMAIN][entry.entry_id + "_coordinator"] = coordinator
 
-    # Initial data refresh
-    await coordinator.async_config_entry_first_refresh()
+    # Set up all platforms
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register services
+    # Set up services
     async def async_cycle_all_outlets(call):
-        """Cycle power to all outlets."""
-        # Make sure this doesn't fail even if the device is unavailable
+        """Cycle power for all outlets."""
         try:
-            _LOGGER.info("Cycling power to all outlets")
-            await device.cycle_all_outlets()
-            await coordinator.async_refresh()
+            _LOGGER.info("Cycling all outlets on %s", controller.pdu_name)
+            await asyncio.wait_for(controller.cycle_all_outlets(), timeout=15)
+            # Force a refresh to update the states after cycling
+            await coordinator.async_request_refresh()
+        except asyncio.TimeoutError:
+            _LOGGER.error("Cycling all outlets timed out")
         except Exception as e:
             _LOGGER.error("Error cycling all outlets: %s", e)
 
+    hass.services.async_register(DOMAIN, "cycle_all_outlets", async_cycle_all_outlets)
+
+    # Register cycle_outlet service
     async def async_cycle_outlet(call):
-        """Cycle power to a specific outlet."""
-        outlet_number = call.data.get("outlet_number")
-        if not outlet_number:
+        """Cycle power for a specific outlet."""
+        outlet = call.data.get("outlet")
+        if outlet is None:
             _LOGGER.error("Outlet number is required for cycle_outlet service")
             return
 
-        # Make sure this doesn't fail even if the device is unavailable
         try:
-            _LOGGER.info("Cycling power to outlet %s", outlet_number)
-            await device.cycle_outlet(outlet_number)
-            await coordinator.async_refresh()
+            _LOGGER.info("Cycling outlet %s on %s", outlet, controller.pdu_name)
+            await asyncio.wait_for(controller.cycle_outlet(outlet), timeout=10)
+            # Force a refresh to update the states after cycling
+            await coordinator.async_request_refresh()
+        except asyncio.TimeoutError:
+            _LOGGER.error("Outlet cycle operation timed out")
         except Exception as e:
-            _LOGGER.error("Error cycling outlet %s: %s", outlet_number, e)
+            _LOGGER.error("Error cycling outlet %s: %s", outlet, e)
 
+    hass.services.async_register(DOMAIN, "cycle_outlet", async_cycle_outlet)
+
+    # Register set_outlet_name service
     async def async_set_outlet_name(call):
-        """Set the name of a specific outlet."""
-        outlet_number = call.data.get("outlet_number")
+        """Set the name of an outlet."""
+        outlet = call.data.get("outlet")
         name = call.data.get("name")
-        if not outlet_number or not name:
-            _LOGGER.error(
-                "Outlet number and name are required for set_outlet_name service"
-            )
-            return
+        if outlet is not None and name is not None:
+            try:
+                await asyncio.wait_for(
+                    controller.set_outlet_name(outlet, name), timeout=5
+                )
+                # Force refresh of coordinator after name change
+                await coordinator.async_request_refresh()
+            except asyncio.TimeoutError:
+                _LOGGER.error("Setting outlet name timed out")
+            except Exception as e:
+                _LOGGER.error("Error setting outlet %s name to %s: %s", outlet, name, e)
 
-        # Make sure this doesn't fail even if the device is unavailable
-        try:
-            _LOGGER.info("Setting outlet %s name to %s", outlet_number, name)
-            await device.set_outlet_name(outlet_number, name)
-            await coordinator.async_refresh()
-        except Exception as e:
-            _LOGGER.error("Error setting outlet %s name: %s", outlet_number, e)
+    hass.services.async_register(DOMAIN, "set_outlet_name", async_set_outlet_name)
 
+    # Register set_pdu_name service
     async def async_set_pdu_name(call):
         """Set the name of the PDU."""
         name = call.data.get("name")
-        if not name:
-            _LOGGER.error("Name is required for set_pdu_name service")
-            return
+        if name is not None:
+            try:
+                await asyncio.wait_for(controller.set_pdu_name(name), timeout=5)
+                # Force refresh of coordinator after name change
+                await coordinator.async_request_refresh()
+            except asyncio.TimeoutError:
+                _LOGGER.error("Setting PDU name timed out")
+            except Exception as e:
+                _LOGGER.error("Error setting PDU name to %s: %s", name, e)
 
-        # Make sure this doesn't fail even if the device is unavailable
-        try:
-            _LOGGER.info("Setting PDU name to %s", name)
-            await device.set_pdu_name(name)
-            await coordinator.async_refresh()
-        except Exception as e:
-            _LOGGER.error("Error setting PDU name: %s", e)
-
-    # Register services with Home Assistant
-    hass.services.async_register(DOMAIN, "cycle_all_outlets", async_cycle_all_outlets)
-    hass.services.async_register(DOMAIN, "cycle_outlet", async_cycle_outlet)
-    hass.services.async_register(DOMAIN, "set_outlet_name", async_set_outlet_name)
     hass.services.async_register(DOMAIN, "set_pdu_name", async_set_pdu_name)
 
-    # Register shutdown function
+    # Register handler to cleanly close connection on shutdown
     async def async_stop_controller(event):
         """Stop the controller when Home Assistant stops."""
-        _LOGGER.debug("Shutting down Middle Atlantic Racklink controller")
-
+        _LOGGER.debug("Shutting down Racklink controller for %s", host)
         try:
-            await device.shutdown()
+            await asyncio.wait_for(controller.shutdown(), timeout=5)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Controller shutdown timed out")
         except Exception as e:
-            _LOGGER.error("Error stopping controller: %s", e)
+            _LOGGER.warning("Error during controller shutdown: %s", e)
 
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_stop_controller)
-
-    # Set up all the platform entities
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_stop_controller)
+    )
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    # Unload platforms
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    _LOGGER.debug(
+        "Unloading Middle Atlantic Racklink integration for %s", entry.data["host"]
+    )
 
-    # Shutdown device gracefully
-    if unload_ok and entry.entry_id in hass.data[DOMAIN]:
-        device = hass.data[DOMAIN][entry.entry_id]
-
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        controller = hass.data[DOMAIN].pop(entry.entry_id)
+        # Use the new shutdown method to properly clean up resources
         try:
-            await device.shutdown()
+            await asyncio.wait_for(controller.shutdown(), timeout=5)
+            _LOGGER.info(
+                "Disconnected from Middle Atlantic Racklink at %s", entry.data["host"]
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Controller shutdown timed out during unload")
         except Exception as e:
-            _LOGGER.error("Error shutting down device: %s", e)
-
-        # Remove entry from hass.data
-        hass.data[DOMAIN].pop(entry.entry_id)
-        if entry.entry_id + "_coordinator" in hass.data[DOMAIN]:
-            hass.data[DOMAIN].pop(entry.entry_id + "_coordinator")
-
-        # If domain data is empty, remove the domain
-        if not hass.data[DOMAIN]:
-            hass.data.pop(DOMAIN)
+            _LOGGER.warning("Error during controller shutdown: %s", e)
 
     return unload_ok
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
+    _LOGGER.debug(
+        "Reloading Middle Atlantic Racklink integration for %s", entry.data["host"]
+    )
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)

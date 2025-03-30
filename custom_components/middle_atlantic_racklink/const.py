@@ -13,14 +13,14 @@ DEFAULT_NAME = "Middle Atlantic Racklink"
 DEFAULT_SCAN_INTERVAL = timedelta(
     seconds=30
 )  # Reduced frequency to prevent overloading
-DEFAULT_TIMEOUT = 10
+DEFAULT_TIMEOUT = 15  # Increased from 10 to 15 seconds
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
-DEFAULT_TELNET_TIMEOUT = 5  # seconds
+DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
 
 # Connection parameters
 MAX_RECONNECT_ATTEMPTS = 3
-CONNECTION_TIMEOUT = 15  # seconds
-COMMAND_TIMEOUT = 10  # seconds
+CONNECTION_TIMEOUT = 20  # Increased from 15 to 20 seconds
+COMMAND_TIMEOUT = 15  # Increased from 10 to 15 seconds
 
 # Configuration options
 CONF_SCAN_INTERVAL = "scan_interval"
@@ -47,43 +47,6 @@ MODEL_DESCRIPTIONS = {
     "RLNK-P920R": "RackLink P920R (9 outlets, 20A)",
     "RLNK-P920R-SP": "RackLink P920R-SP (9 outlets, 20A, Surge Protected)",
     "AUTO_DETECT": "Auto-detect model (recommended)",
-}
-
-# Model capabilities dictionary
-MODEL_CAPABILITIES = {
-    # RackLink Power Management
-    "RLNK-415": {"num_outlets": 4, "has_current_sensing": False},
-    "RLNK-415R": {"num_outlets": 4, "has_current_sensing": False},
-    "RLNK-520": {"num_outlets": 5, "has_current_sensing": False},
-    "RLNK-520L": {"num_outlets": 5, "has_current_sensing": False},
-    "RLNK-615": {"num_outlets": 6, "has_current_sensing": False},
-    "RLNK-615L": {"num_outlets": 6, "has_current_sensing": False},
-    "RLNK-920": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-920L": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-215": {"num_outlets": 2, "has_current_sensing": False},
-    "RLNK-P915": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-P920": {"num_outlets": 9, "has_current_sensing": False},
-    # RackLink Select Power Management
-    "RLNK-SL415": {"num_outlets": 4, "has_current_sensing": False},
-    "RLNK-SL520": {"num_outlets": 5, "has_current_sensing": False},
-    "RLNK-SL615": {"num_outlets": 6, "has_current_sensing": False},
-    "RLNK-SL920": {"num_outlets": 9, "has_current_sensing": False},
-    # RackLink Metered Power Management (with current sensing)
-    "RLM-15": {"num_outlets": 8, "has_current_sensing": True},
-    "RLM-15A": {"num_outlets": 8, "has_current_sensing": True},
-    "RLM-20": {"num_outlets": 8, "has_current_sensing": True},
-    "RLM-20A": {"num_outlets": 8, "has_current_sensing": True},
-    "RLM-20-1": {"num_outlets": 8, "has_current_sensing": True},
-    "RLM-20L": {"num_outlets": 8, "has_current_sensing": True},
-    # Models from SUPPORTED_MODELS
-    "RLNK-P415": {"num_outlets": 4, "has_current_sensing": False},
-    "RLNK-P420": {"num_outlets": 4, "has_current_sensing": False},
-    "RLNK-P915R": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-P915R-SP": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-P920R": {"num_outlets": 9, "has_current_sensing": False},
-    "RLNK-P920R-SP": {"num_outlets": 9, "has_current_sensing": False},
-    # Default if model not specified
-    "DEFAULT": {"num_outlets": 8, "has_current_sensing": False},
 }
 
 # Supported platforms

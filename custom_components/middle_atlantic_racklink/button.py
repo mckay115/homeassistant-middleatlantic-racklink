@@ -11,8 +11,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .device import RacklinkDevice
-from .coordinator import RacklinkDataUpdateCoordinator
+from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ class RacklinkButtonBase(ButtonEntity):
     """Base class for Racklink button entities."""
 
     def __init__(
-        self, controller: RacklinkDevice, name: str, unique_id_suffix: str
+        self, controller: RacklinkController, name: str, unique_id_suffix: str
     ) -> None:
         """Initialize the button."""
         self._controller = controller
@@ -78,7 +77,7 @@ class RacklinkButtonBase(ButtonEntity):
 class RacklinkAllOnButton(RacklinkButtonBase):
     """Button to turn all outlets on."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the all on button."""
         super().__init__(controller, "All Outlets On", "all_on_button")
 
@@ -96,7 +95,7 @@ class RacklinkAllOnButton(RacklinkButtonBase):
 class RacklinkAllOffButton(RacklinkButtonBase):
     """Button to turn all outlets off."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the all off button."""
         super().__init__(controller, "All Outlets Off", "all_off_button")
 
@@ -114,7 +113,7 @@ class RacklinkAllOffButton(RacklinkButtonBase):
 class RacklinkCycleAllButton(RacklinkButtonBase):
     """Button to cycle all outlets."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the cycle all button."""
         super().__init__(controller, "Cycle All Outlets", "cycle_all_button")
 
@@ -132,7 +131,7 @@ class RacklinkCycleAllButton(RacklinkButtonBase):
 class RacklinkOutletCycleButton(RacklinkButtonBase):
     """Button to cycle a specific outlet."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet cycle button."""
         super().__init__(
             controller, f"Cycle Outlet {outlet}", f"cycle_outlet_{outlet}_button"

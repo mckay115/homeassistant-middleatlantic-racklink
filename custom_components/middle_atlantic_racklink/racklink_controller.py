@@ -703,158 +703,174 @@ class RacklinkController:
         return capabilities
 
     async def update(self) -> bool:
-        """Update all data from the device."""
-        if not self._connected:
-            _LOGGER.debug("Not connected during update, attempting reconnect")
-            await self.reconnect()
-            if not self._connected:
-                _LOGGER.warning("Still not connected after reconnect attempt")
-                return False
-
-        _LOGGER.debug("Updating all data from PDU")
+        """Update PDU state - this is called periodically by the coordinator."""
         try:
-            # Get basic device info if needed
-            if not self._model:
-                await self.get_device_info()
+            if not self._connected:
+                _LOGGER.debug("Not connected during update, attempting to connect")
+                if not await self.reconnect():
+                    _LOGGER.warning("Failed to connect during update")
+                    return False
 
-            # Update outlet states efficiently first (this is lightweight)
-            states_success = await self.get_all_outlet_states(force_refresh=True)
+            # Update all outlet states efficiently with a single command
+            _LOGGER.debug("Updating all outlet states with 'show outlets all'")
+            try:
+                all_outlets_response = await self.send_command("show outlets all")
+                if all_outlets_response:
+                    # Parse the response to extract all outlet states
+                    outlet_pattern = r"Outlet (\d+):[^\n]*\n\s+(\w+)"
+                    matches = re.findall(outlet_pattern, all_outlets_response)
 
-            # Then update power data for a subset of outlets (to avoid overwhelming device)
-            # This is more detailed and heavier on the device
-            power_success = await self.get_all_power_data(sample_size=3)
+                    for match in matches:
+                        outlet_num = int(match[0])
+                        state = match[1].lower() == "on"
+                        self._outlet_states[outlet_num] = state
 
-            # Update main sensor values if needed
-            sensor_success = await self.get_sensor_values()
+                        # Extract outlet name if available
+                        name_match = re.search(
+                            rf"Outlet {outlet_num}: ([^\n]+)", all_outlets_response
+                        )
+                        if name_match:
+                            self._outlet_names[outlet_num] = name_match.group(1).strip()
 
-            # Update timestamp
-            self._last_update = time.time()
+                    _LOGGER.debug(
+                        "Updated %d outlet states from 'show outlets all'", len(matches)
+                    )
+                else:
+                    _LOGGER.warning("No response from 'show outlets all' command")
+            except Exception as e:
+                _LOGGER.error("Error updating outlet states: %s", e)
+
+            # If we have power data collection enabled, update detailed metrics
+            # This still needs individual commands but we can limit frequency
+            if hasattr(self, "_collect_power_data") and self._collect_power_data:
+                # Get detailed power data for a subset of outlets each time
+                # to spread the load and avoid too many commands at once
+                await self.get_all_power_data(
+                    sample_size=3
+                )  # Get power data for 3 outlets per update
+
+            # Mark as available since we could communicate
             self._available = True
+            self._last_update = time.time()
 
-            return states_success
+            return True
 
         except Exception as e:
-            _LOGGER.error("Error during update: %s", e)
+            _LOGGER.error("Error in update: %s", e)
+            self._available = False
             return False
 
     def _parse_outlet_details(self, response: str, outlet_num: int) -> dict:
-        """Parse outlet details from response text."""
-        data = {}
+        """
+        Parse outlet details response to extract power metrics.
 
-        # Extract state (ON/OFF)
+        Based on improvements from diagnostic script.
+        """
+        outlet_data = {"outlet_number": outlet_num}
+
+        # Parse power state (for switch entities)
+        # Example line: "Power state:        On"
         state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
         if state_match:
-            state = state_match.group(1).lower()
-            self._outlet_states[outlet_num] = state == "on"
-            data["state"] = state == "on"
+            state = state_match.group(1)
+            outlet_data["state"] = state.lower()
+            self._outlet_states[outlet_num] = state.lower() == "on"
+            _LOGGER.debug("Parsed outlet %s state: %s", outlet_num, state)
+        else:
+            _LOGGER.debug("Could not find outlet state in response")
 
-        # Extract current (A)
+        # Parse current (for current sensor)
+        # Example line: "RMS Current:        0.114 A"
         current_match = re.search(
             r"RMS Current:\s*([\d.]+)\s*A", response, re.IGNORECASE
         )
         if current_match:
             try:
                 current = float(current_match.group(1))
-                self._outlet_power_data[outlet_num] = current
-                data["current"] = current
+                outlet_data["current"] = current
+                self._outlet_current[outlet_num] = current
+                _LOGGER.debug("Parsed outlet %s current: %s A", outlet_num, current)
             except ValueError:
                 _LOGGER.error(
-                    "Failed to parse current value: %s", current_match.group(1)
+                    "Could not convert current value: %s", current_match.group(1)
                 )
 
-        # Extract voltage (V)
+        # Parse voltage (for voltage sensor)
+        # Example line: "RMS Voltage:        122.1 V"
         voltage_match = re.search(
             r"RMS Voltage:\s*([\d.]+)\s*V", response, re.IGNORECASE
         )
         if voltage_match:
             try:
                 voltage = float(voltage_match.group(1))
-                self._outlet_power_data[outlet_num] = voltage
-                data["voltage"] = voltage
+                outlet_data["voltage"] = voltage
+                self._outlet_voltage[outlet_num] = voltage
+                _LOGGER.debug("Parsed outlet %s voltage: %s V", outlet_num, voltage)
             except ValueError:
                 _LOGGER.error(
-                    "Failed to parse voltage value: %s", voltage_match.group(1)
+                    "Could not convert voltage value: %s", voltage_match.group(1)
                 )
 
-        # Extract active power (W)
+        # Parse power (for power sensor)
+        # Example line: "Active Power:        7 W"
         power_match = re.search(
             r"Active Power:\s*([\d.]+)\s*W", response, re.IGNORECASE
         )
         if power_match:
             try:
                 power = float(power_match.group(1))
-                self._outlet_power_data[outlet_num] = power
-                data["power"] = power
+                outlet_data["power"] = power
+                self._outlet_power[outlet_num] = power
+                _LOGGER.debug("Parsed outlet %s power: %s W", outlet_num, power)
             except ValueError:
-                _LOGGER.error("Failed to parse power value: %s", power_match.group(1))
+                _LOGGER.error("Could not convert power value: %s", power_match.group(1))
 
-        # Extract energy consumption (Wh)
+        # Parse energy (for energy sensor)
+        # Example line: "Active Energy:        632210 Wh"
         energy_match = re.search(
             r"Active Energy:\s*([\d.]+)\s*Wh", response, re.IGNORECASE
         )
         if energy_match:
             try:
                 energy = float(energy_match.group(1))
-                self._outlet_power_data[outlet_num] = energy
-                data["energy"] = energy
+                outlet_data["energy"] = energy
+                self._outlet_energy[outlet_num] = energy
+                _LOGGER.debug("Parsed outlet %s energy: %s Wh", outlet_num, energy)
             except ValueError:
-                _LOGGER.error("Failed to parse energy value: %s", energy_match.group(1))
+                _LOGGER.error(
+                    "Could not convert energy value: %s", energy_match.group(1)
+                )
 
-        # Extract power factor
+        # Parse power factor
+        # Example line: "Power Factor:        0.53"
         pf_match = re.search(r"Power Factor:\s*([\d.]+)", response, re.IGNORECASE)
-        if pf_match and pf_match.group(1) != "---":
+        if pf_match:
             try:
                 power_factor = float(pf_match.group(1))
-                self._outlet_power_data[outlet_num] = power_factor
-                data["power_factor"] = power_factor
-            except ValueError:
-                _LOGGER.error(
-                    "Failed to parse power factor value: %s", pf_match.group(1)
+                outlet_data["power_factor"] = power_factor
+                self._outlet_power_factor[outlet_num] = power_factor
+                _LOGGER.debug(
+                    "Parsed outlet %s power factor: %s", outlet_num, power_factor
                 )
-
-        # Extract apparent power (VA)
-        apparent_match = re.search(
-            r"Apparent Power:\s*([\d.]+)\s*VA", response, re.IGNORECASE
-        )
-        if apparent_match:
-            try:
-                apparent_power = float(apparent_match.group(1))
-                self._outlet_power_data[outlet_num] = apparent_power
-                data["apparent_power"] = apparent_power
             except ValueError:
-                _LOGGER.error(
-                    "Failed to parse apparent power value: %s", apparent_match.group(1)
-                )
+                _LOGGER.error("Could not convert power factor: %s", pf_match.group(1))
 
-        # Extract line frequency (Hz)
+        # Parse line frequency
+        # Example line: "Line Frequency:        60.0 Hz"
         freq_match = re.search(
             r"Line Frequency:\s*([\d.]+)\s*Hz", response, re.IGNORECASE
         )
         if freq_match:
             try:
                 frequency = float(freq_match.group(1))
-                self._outlet_power_data[outlet_num] = frequency
-                data["frequency"] = frequency
-            except ValueError:
-                _LOGGER.error(
-                    "Failed to parse frequency value: %s", freq_match.group(1)
+                outlet_data["frequency"] = frequency
+                _LOGGER.debug(
+                    "Parsed outlet %s frequency: %s Hz", outlet_num, frequency
                 )
+            except ValueError:
+                _LOGGER.error("Could not convert frequency: %s", freq_match.group(1))
 
-        # Extract outlet name if present
-        name_match = re.search(r"Outlet\s+\d+\s*-\s*([^:]+):", response)
-        if name_match:
-            outlet_name = name_match.group(1).strip()
-            if outlet_name:
-                self._outlet_names[outlet_num] = outlet_name
-                data["name"] = outlet_name
-
-        # Extract non-critical flag
-        nc_match = re.search(r"Non critical:\s*(\w+)", response, re.IGNORECASE)
-        if nc_match:
-            non_critical = nc_match.group(1).lower() == "true"
-            data["non_critical"] = non_critical
-
-        return data
+        return outlet_data
 
     async def get_outlet_power_data(self, outlet_num: int) -> dict:
         """Get detailed power metrics for a specific outlet."""
@@ -990,118 +1006,73 @@ class RacklinkController:
                 _LOGGER.error("Cannot login: no socket connection")
                 return False
 
-            # Try different prompt patterns the device might use
-            prompt_patterns = [b">", b"#", b"$", b":", b"RackLink>", b"admin>"]
+            _LOGGER.debug("Starting login sequence for %s", self._host)
 
-            # Read initial welcome or prompt
-            _LOGGER.debug("Reading initial data from device")
-            initial_data = None
-
+            # Step 1: Wait for username prompt
+            _LOGGER.debug("Waiting for username prompt...")
             try:
-                # First just try to read whatever data is available
-                def socket_read():
-                    try:
-                        self._socket.settimeout(3.0)
-                        return self._socket.recv(4096)
-                    except socket.timeout:
-                        _LOGGER.debug("Initial read timed out, which might be normal")
-                        return b""
-                    except Exception as e:
-                        _LOGGER.error("Socket read error: %s", e)
-                        return b""
-
-                initial_data = await asyncio.to_thread(socket_read)
-                _LOGGER.debug(
-                    "Initial data received (%d bytes): %s",
-                    len(initial_data),
-                    initial_data[:100] if initial_data else "None",
+                username_response = await self._socket_read_until(
+                    b"Username:", timeout=self._login_timeout
                 )
-
-                # If we got data and it contains a prompt, we might already be connected
-                if initial_data:
-                    for prompt in prompt_patterns:
-                        if prompt in initial_data:
-                            _LOGGER.debug(
-                                "Detected prompt '%s' in initial data", prompt
-                            )
-                            self._buffer = initial_data  # Store remaining data
-                            return True
-
+                if not username_response:
+                    _LOGGER.error("Username prompt not detected")
+                    return False
+                _LOGGER.debug("Username prompt detected")
             except Exception as e:
-                _LOGGER.warning("Error reading initial data: %s", e)
-                # Continue with login attempts even if initial read fails
+                _LOGGER.error("Error waiting for username prompt: %s", e)
+                return False
 
-            # Try sending various login commands
-            login_attempts = [
-                (b"\r\n", 2),  # Empty line
-                (b"admin\r\n", 2),  # Try admin username
-                (self._username.encode() + b"\r\n", 2),  # Try configured username
-                (self._password.encode() + b"\r\n", 2),  # Try password
-                (b"enable\r\n", 2),  # Try enable command
-            ]
+            # Step 2: Send username
+            _LOGGER.debug("Sending username: %s", self._username)
+            try:
+                await self._socket_write(f"{self._username}\r\n".encode())
+                # Give device time to process
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                _LOGGER.error("Error sending username: %s", e)
+                return False
 
-            # Try each login command
-            for cmd, timeout in login_attempts:
-                _LOGGER.debug("Sending login sequence: %s", cmd)
-                try:
-                    # Send command
-                    def send_cmd(sock, data):
-                        try:
-                            sock.sendall(data)
-                            return True
-                        except Exception as e:
-                            _LOGGER.error("Error sending login command: %s", e)
-                            return False
-
-                    await asyncio.to_thread(send_cmd, self._socket, cmd)
-
-                    # Read response
-                    def read_response():
-                        try:
-                            self._socket.settimeout(timeout)
-                            return self._socket.recv(4096)
-                        except socket.timeout:
-                            return b""
-                        except Exception as e:
-                            _LOGGER.error("Socket read error during login: %s", e)
-                            return b""
-
-                    response = await asyncio.to_thread(read_response)
-
-                    # Check if we got a prompt in the response
-                    if response:
-                        _LOGGER.debug(
-                            "Got response (%d bytes): %s",
-                            len(response),
-                            response[:100] if response else "None",
-                        )
-
-                        # Check if any prompt is found
-                        for prompt in prompt_patterns:
-                            if prompt in response:
-                                _LOGGER.info(
-                                    "Successfully logged in, found prompt: %s", prompt
-                                )
-                                self._buffer = response  # Store remaining data
-                                return True
-
-                except Exception as e:
-                    _LOGGER.warning("Login attempt failed: %s", e)
-                    await asyncio.sleep(0.5)  # Brief delay before next attempt
-
-            # As a last resort, just assume we're connected if we got any response at all
-            if initial_data or response:
-                _LOGGER.warning(
-                    "Did not find expected prompt, but received data. Assuming connected."
+            # Step 3: Wait for password prompt
+            _LOGGER.debug("Waiting for password prompt...")
+            try:
+                password_response = await self._socket_read_until(
+                    b"Password:", timeout=self._login_timeout
                 )
-                if response:  # Save last response to buffer
-                    self._buffer = response
-                elif initial_data:
-                    self._buffer = initial_data
-                return True
+                if not password_response:
+                    _LOGGER.error("Password prompt not detected")
+                    return False
+                _LOGGER.debug("Password prompt detected")
+            except Exception as e:
+                _LOGGER.error("Error waiting for password prompt: %s", e)
+                return False
 
-            _LOGGER.error("Failed to login - could not detect any valid prompt")
-            return False
+            # Step 4: Send password
+            _LOGGER.debug("Sending password...")
+            try:
+                await self._socket_write(f"{self._password}\r\n".encode())
+                # Give device time to process
+                await asyncio.sleep(1)
+            except Exception as e:
+                _LOGGER.error("Error sending password: %s", e)
+                return False
+
+            # Step 5: Wait for command prompt
+            _LOGGER.debug("Waiting for command prompt...")
+            try:
+                # Look specifically for the # prompt (most common for this device)
+                command_response = await self._socket_read_until(
+                    b"#", timeout=self._login_timeout
+                )
+                if not command_response:
+                    _LOGGER.error("Command prompt not detected")
+                    return False
+                _LOGGER.debug("Command prompt detected - login successful")
+            except Exception as e:
+                _LOGGER.error("Error waiting for command prompt: %s", e)
+                return False
+
+            _LOGGER.info("Successfully logged in to %s", self._host)
+            return True
 
         except Exception as e:
             _LOGGER.error("Unexpected error during login: %s", e)
@@ -1150,8 +1121,16 @@ class RacklinkController:
 
         _LOGGER.info("Controller for %s has been shut down", self._host)
 
-    async def send_command(self, command: str, timeout: int = None) -> str:
-        """Send a command to the device and wait for the response."""
+    async def send_command(
+        self, command: str, timeout: int = None, wait_time: float = 0.5
+    ) -> str:
+        """Send a command to the device and wait for the response.
+
+        Args:
+            command: The command to send
+            timeout: Command timeout in seconds
+            wait_time: Time to wait after sending command before reading response
+        """
         if not command:
             return ""
 
@@ -1176,92 +1155,38 @@ class RacklinkController:
                 )
                 self._buffer = b""
 
-            # Send the command directly
-            try:
-                await self._socket_write(command_with_newline.encode())
-            except Exception as e:
-                _LOGGER.error("Failed to send command: %s", e)
-                # Try to reconnect and retry once
-                if await self.reconnect():
-                    _LOGGER.debug("Reconnected, retrying command: %s", command)
-                    await self._socket_write(command_with_newline.encode())
-                else:
-                    return ""
+            # Send the command
+            await self._socket_write(command_with_newline.encode())
 
-            # Use a longer timeout for the first read to account for slow devices
-            initial_timeout = min(command_timeout, 5)
-
-            # Wait for the prompt to return, which indicates command completion
-            try:
-                response = await self._socket_read(timeout=command_timeout)
-            except Exception as e:
-                _LOGGER.warning(
-                    "Error reading response, trying direct socket read: %s", e
-                )
-                # Fallback to direct socket read
-                try:
-
-                    def direct_read():
-                        try:
-                            self._socket.settimeout(command_timeout)
-                            chunks = []
-                            start_time = time.time()
-                            while time.time() - start_time < command_timeout:
-                                try:
-                                    chunk = self._socket.recv(1024)
-                                    if not chunk:
-                                        break
-                                    chunks.append(chunk)
-                                    # If we see what looks like a prompt, we can stop
-                                    if any(
-                                        prompt in chunk
-                                        for prompt in [b">", b"#", b"$", b":"]
-                                    ):
-                                        break
-                                except socket.timeout:
-                                    break
-                            return b"".join(chunks)
-                        except Exception as e:
-                            _LOGGER.error("Direct socket read error: %s", e)
-                            return b""
-
-                    response = await asyncio.to_thread(direct_read)
-                except Exception as fallback_e:
-                    _LOGGER.error("Fallback read also failed: %s", fallback_e)
-                    return ""
-
-            # Clean up the response
-            if response:
-                # Convert to string
-                response_str = response.decode(errors="ignore")
-
-                # Remove echo of the command itself from the beginning
-                lines = response_str.splitlines()
-                if len(lines) > 0 and (
-                    command in lines[0] or command.lower() in lines[0].lower()
-                ):
-                    response_str = "\n".join(lines[1:])
-
-                # Remove ANSI escape sequences
-                response_str = re.sub(r"\x1b\[[0-9;]*[mK]", "", response_str)
-
-                # Remove trailing prompt characters common on network devices
-                response_str = re.sub(r"[>#\$\:]$", "", response_str).strip()
-
-                _LOGGER.debug(
-                    "Command response (truncated): %s",
-                    response_str[:100] + ("..." if len(response_str) > 100 else ""),
-                )
-                return response_str
+            # Wait for device to process the command
+            # Some commands need more time, especially power control commands
+            if "power outlets" in command:
+                # Power commands need more time
+                await asyncio.sleep(wait_time * 2)
             else:
-                _LOGGER.warning("Empty response for command: %s", command)
-                return ""
+                await asyncio.sleep(wait_time)
 
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Command timed out: %s", command)
-            return ""
+            # Read response until we get the command prompt
+            response = await self._socket_read_until(b"#", timeout=command_timeout)
+
+            # Convert to string for parsing
+            response_text = response.decode("utf-8", errors="ignore")
+
+            # Debug log the response
+            if len(response_text) < 200:  # Only log small responses
+                _LOGGER.debug("Response for '%s': %s", command, response_text)
+            else:
+                _LOGGER.debug(
+                    "Response for '%s': %d bytes (showing first 100): %s...",
+                    command,
+                    len(response_text),
+                    response_text[:100],
+                )
+
+            return response_text
+
         except Exception as e:
-            _LOGGER.error("Error sending command: %s - %s", command, e)
+            _LOGGER.error("Error sending command '%s': %s", command, e)
             return ""
 
     async def _process_command_queue(self):
@@ -1352,71 +1277,71 @@ class RacklinkController:
                 if port != self._port:
                     _LOGGER.info("Trying alternative port %s for %s", port, self._host)
 
-                # Save the current port we're trying
-                current_port = self._port
-                self._port = port
+                    # Save the current port we're trying
+                    current_port = self._port
+                    self._port = port
 
-                try:
-                    # Create socket with a reasonable timeout
-                    self._socket = await asyncio.wait_for(
-                        self._create_socket_connection(), timeout=5
-                    )
+                    try:
+                        # Create socket with a reasonable timeout
+                        self._socket = await asyncio.wait_for(
+                            self._create_socket_connection(), timeout=5
+                        )
 
-                    if not self._socket:
+                        if not self._socket:
+                            _LOGGER.debug(
+                                "Failed to reconnect on port %s - socket creation failed",
+                                port,
+                            )
+                            continue  # Try next port
+
+                        # Try to log in
+                        login_success = await asyncio.wait_for(self._login(), timeout=5)
+
+                        if login_success:
+                            self._connected = True
+                            self._available = True
+
+                            # If this was an alternative port, log that we found a working port
+                            if port != current_port:
+                                _LOGGER.warning(
+                                    "Successfully connected to %s using alternative port %s instead of %s",
+                                    self._host,
+                                    port,
+                                    current_port,
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "Successfully reconnected to %s on port %s",
+                                    self._host,
+                                    port,
+                                )
+
+                            # Ensure command processor is running
+                            self._ensure_command_processor_running()
+
+                            # Update device info
+                            await self.get_device_info()
+
+                            return True
+                        else:
+                            _LOGGER.debug("Failed to log in on port %s", port)
+                            await self._close_socket()
+
+                    except asyncio.TimeoutError:
                         _LOGGER.debug(
-                            "Failed to reconnect on port %s - socket creation failed",
+                            "Connection attempt to %s on port %s timed out",
+                            self._host,
                             port,
                         )
-                        continue  # Try next port
-
-                    # Try to log in
-                    login_success = await asyncio.wait_for(self._login(), timeout=5)
-
-                    if login_success:
-                        self._connected = True
-                        self._available = True
-
-                        # If this was an alternative port, log that we found a working port
-                        if port != current_port:
-                            _LOGGER.warning(
-                                "Successfully connected to %s using alternative port %s instead of %s",
-                                self._host,
-                                port,
-                                current_port,
-                            )
-                        else:
-                            _LOGGER.info(
-                                "Successfully reconnected to %s on port %s",
-                                self._host,
-                                port,
-                            )
-
-                        # Ensure command processor is running
-                        self._ensure_command_processor_running()
-
-                        # Update device info
-                        await self.get_device_info()
-
-                        return True
-                    else:
-                        _LOGGER.debug("Failed to log in on port %s", port)
                         await self._close_socket()
-
-                except asyncio.TimeoutError:
-                    _LOGGER.debug(
-                        "Connection attempt to %s on port %s timed out",
-                        self._host,
-                        port,
-                    )
-                    await self._close_socket()
-                except Exception as e:
-                    _LOGGER.debug(
-                        "Error during reconnection to %s on port %s: %s",
-                        self._host,
-                        port,
-                        e,
-                    )
-                    await self._close_socket()
+                    except Exception as e:
+                        _LOGGER.debug(
+                            "Error during reconnection to %s on port %s: %s",
+                            self._host,
+                            port,
+                            e,
+                        )
+                        await self._close_socket()
 
             # If we get here, we failed to connect on any port
             _LOGGER.error("Failed to reconnect to %s on any port", self._host)
@@ -1434,16 +1359,20 @@ class RacklinkController:
             return b""
 
         if pattern is None:
-            pattern = b">"  # Default to common prompt character
+            pattern = b"#"  # Change default prompt to # which is what the device uses
 
         timeout = timeout or self._socket_timeout
         start_time = time.time()
 
-        # Support multiple prompt patterns
+        # Support specific RackLink prompt patterns based on diagnostic script findings
         patterns = [pattern]
-        if pattern == b">":
+        if pattern == b"#":
             # Add common alternative prompts if searching for default
-            patterns.extend([b"#", b"$", b":", b"RackLink>", b"admin>"])
+            patterns.extend([b">", b"$", b":", b"RackLink>", b"admin>"])
+        elif pattern == b"Username:":
+            patterns = [b"Username:", b"login:"]  # Username prompts
+        elif pattern == b"Password:":
+            patterns = [b"Password:", b"password:"]  # Password prompts
 
         # Use existing buffer or create a new one
         buffer = self._buffer
@@ -1483,10 +1412,15 @@ class RacklinkController:
                 # Append new data to buffer
                 buffer += data
                 _LOGGER.debug(
-                    "Read %d bytes from socket, buffer now %d bytes",
+                    "Read %d bytes from socket, buffer now %d bytes, looking for %s",
                     len(data),
                     len(buffer),
+                    pattern,
                 )
+
+                # Debug output for raw data to help debug connection issues
+                if len(buffer) < 200:  # Only log small buffers to avoid flooding
+                    _LOGGER.debug("Buffer content: %s", buffer)
 
             except Exception as e:
                 _LOGGER.error("Error reading until pattern: %s", e)

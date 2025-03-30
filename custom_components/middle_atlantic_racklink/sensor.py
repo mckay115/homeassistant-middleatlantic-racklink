@@ -1,42 +1,43 @@
 """Sensor platform for Middle Atlantic Racklink."""
 
-import logging
-from typing import Any, Optional
+from __future__ import annotations
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorStateClass,
-)
+import logging
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
-    UnitOfFrequency,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfFrequency,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     ATTR_MANUFACTURER,
     ATTR_MODEL,
     DOMAIN,
-    SENSOR_PDU_CURRENT,
-    SENSOR_PDU_ENERGY,
-    SENSOR_PDU_FREQUENCY,
-    SENSOR_PDU_POWER,
-    SENSOR_PDU_POWER_FACTOR,
     SENSOR_PDU_TEMPERATURE,
+    SENSOR_PDU_CURRENT,
     SENSOR_PDU_VOLTAGE,
+    SENSOR_PDU_POWER,
+    SENSOR_PDU_ENERGY,
+    SENSOR_PDU_POWER_FACTOR,
+    SENSOR_PDU_FREQUENCY,
+    OUTLET_METRIC_CURRENT,
+    OUTLET_METRIC_VOLTAGE,
+    OUTLET_METRIC_POWER,
+    OUTLET_METRIC_ENERGY,
+    OUTLET_METRIC_POWER_FACTOR,
+    OUTLET_METRIC_FREQUENCY,
+    OUTLET_METRIC_APPARENT_POWER,
 )
-from .device import RacklinkDevice
-from .coordinator import RacklinkDataUpdateCoordinator
+from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class RacklinkSensor(Entity):
 
     def __init__(
         self,
-        controller: RacklinkDevice,
+        controller: RacklinkController,
         name: str,
         unit: str,
         sensor_type: str,
@@ -154,7 +155,7 @@ class RacklinkSensor(Entity):
 class RacklinkVoltage(RacklinkSensor):
     """Voltage sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the voltage sensor."""
         super().__init__(
             controller,
@@ -189,7 +190,7 @@ class RacklinkVoltage(RacklinkSensor):
 class RacklinkCurrent(RacklinkSensor):
     """Current sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the current sensor."""
         super().__init__(
             controller,
@@ -220,7 +221,7 @@ class RacklinkCurrent(RacklinkSensor):
 class RacklinkPower(RacklinkSensor):
     """Power sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the power sensor."""
         super().__init__(
             controller,
@@ -251,7 +252,7 @@ class RacklinkPower(RacklinkSensor):
 class RacklinkEnergy(RacklinkSensor):
     """Energy sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the energy sensor."""
         super().__init__(
             controller,
@@ -293,7 +294,7 @@ class RacklinkEnergy(RacklinkSensor):
 class RacklinkTemperature(RacklinkSensor):
     """Temperature sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the temperature sensor."""
         super().__init__(
             controller,
@@ -324,12 +325,12 @@ class RacklinkTemperature(RacklinkSensor):
 class RacklinkFrequency(RacklinkSensor):
     """Frequency sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the frequency sensor."""
         super().__init__(
             controller,
             "Racklink Frequency",
-            UnitOfFrequency.HERTZ,
+            "Hz",
             "frequency",
             SensorDeviceClass.FREQUENCY,
             SensorStateClass.MEASUREMENT,
@@ -355,14 +356,14 @@ class RacklinkFrequency(RacklinkSensor):
 class RacklinkPowerFactor(RacklinkSensor):
     """Power factor sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller) -> None:
         """Initialize the power factor sensor."""
         super().__init__(
             controller,
             "Racklink Power Factor",
             "%",
             "power_factor",
-            None,  # No specific device class for power factor
+            SensorDeviceClass.POWER_FACTOR,
             SensorStateClass.MEASUREMENT,
         )
 
@@ -386,7 +387,7 @@ class RacklinkPowerFactor(RacklinkSensor):
 class RacklinkOutletPower(RacklinkSensor):
     """Outlet power sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
@@ -443,7 +444,7 @@ class RacklinkOutletPower(RacklinkSensor):
 class RacklinkOutletCurrent(RacklinkSensor):
     """Outlet current sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet current sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
@@ -500,7 +501,7 @@ class RacklinkOutletCurrent(RacklinkSensor):
 class RacklinkOutletEnergy(RacklinkSensor):
     """Outlet energy sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet energy sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
@@ -567,7 +568,7 @@ class RacklinkOutletEnergy(RacklinkSensor):
 class RacklinkOutletPowerFactor(RacklinkSensor):
     """Outlet power factor sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power factor sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
@@ -577,7 +578,7 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
             f"{outlet_name} Power Factor",
             "%",
             f"outlet_{outlet}_power_factor",
-            None,  # No specific device class for power factor
+            SensorDeviceClass.POWER_FACTOR,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
@@ -625,8 +626,8 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
 class RacklinkOutletApparentPower(RacklinkSensor):
     """Outlet apparent power sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
-        """Initialize the outlet apparent power sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the apparent power sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
@@ -684,8 +685,8 @@ class RacklinkOutletApparentPower(RacklinkSensor):
 class RacklinkOutletVoltage(RacklinkSensor):
     """Outlet voltage sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
-        """Initialize the outlet voltage sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the voltage sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
@@ -743,8 +744,8 @@ class RacklinkOutletVoltage(RacklinkSensor):
 class RacklinkOutletLineFrequency(RacklinkSensor):
     """Outlet line frequency sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
-        """Initialize the outlet line frequency sensor."""
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the line frequency sensor."""
         # Get outlet name from controller if it exists
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
@@ -754,7 +755,7 @@ class RacklinkOutletLineFrequency(RacklinkSensor):
             controller,
             f"{outlet_name} Line Frequency",
             UnitOfFrequency.HERTZ,
-            f"outlet_{outlet}_line_frequency",
+            f"outlet_{outlet}_frequency",
             SensorDeviceClass.FREQUENCY,
             SensorStateClass.MEASUREMENT,
         )

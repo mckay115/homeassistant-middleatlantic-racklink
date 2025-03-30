@@ -1,0 +1,31 @@
+COMMAND: show outlets 8 details
+TIMESTAMP: 2025-03-30T01:09:57.432709
+RAW RESPONSE:
+--------------------------------------------------
+show outlets 8 details
+Outlet 8 - Internal Rack Power:
+Power state: On
+
+RMS Current:        0.000 A (normal)
+RMS Voltage:        119 V (normal)
+Line Frequency:     60.0 Hz (normal)
+Active Power:       0 W (normal)
+Apparent Power:     0 VA (normal)
+Power Factor:       --- (no reading)
+Active Energy:      413682 Wh (normal)
+
+Cycling power off period: PDU defined (5 s)
+Non critical:             False
+
+Receptacle type:   NEMA 5-20R
+Rated current:     16 A
+Operating voltage: 100-150 V
+
+[LiskoLabs Rack] # 
+--------------------------------------------------
+
+PARSING GUIDE FOR OUTLET DETAILS:
+- Power state: Use regex r"Power state:\s*(\w+)"
+- Current: Use regex r"RMS Current:\s*([\d.]+)\s*A"
+- Power: Use regex r"Active Power:\s*([\d.]+)\s*W"
+- Suggested HA entity: sensor.outlet_X_power with device_class power

@@ -1,21 +1,20 @@
 """Binary sensor platform for Middle Atlantic Racklink."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Optional
 
 from homeassistant.components.binary_sensor import (
-    BinarySensorEntity,
     BinarySensorDeviceClass,
+    BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .device import RacklinkDevice
-from .coordinator import RacklinkDataUpdateCoordinator
+from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +50,7 @@ class RacklinkBinarySensor(BinarySensorEntity):
 
     def __init__(
         self,
-        controller: RacklinkDevice,
+        controller: RacklinkController,
         name: str,
         device_class: str | None,
         sensor_type: str,
@@ -95,7 +94,7 @@ class RacklinkBinarySensor(BinarySensorEntity):
 class RacklinkSurgeProtection(RacklinkBinarySensor):
     """Surge protection binary sensor."""
 
-    def __init__(self, controller: RacklinkDevice) -> None:
+    def __init__(self, controller: RacklinkController) -> None:
         """Initialize the surge protection sensor."""
         super().__init__(
             controller,
@@ -120,7 +119,7 @@ class RacklinkSurgeProtection(RacklinkBinarySensor):
 class RacklinkOutletNonCritical(RacklinkBinarySensor):
     """Outlet non-critical flag binary sensor."""
 
-    def __init__(self, controller: RacklinkDevice, outlet: int) -> None:
+    def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet non-critical sensor."""
         self._outlet = outlet
         super().__init__(

@@ -20,7 +20,7 @@ from .const import (
     MODEL_DESCRIPTIONS,
     SUPPORTED_MODELS,
 )
-from .device import RacklinkDevice
+from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 15  # Timeout in seconds for connection validation
@@ -44,7 +44,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors["base"] = "cannot_connect"
             return errors, device_info
 
-        device = RacklinkDevice(
+        controller = RacklinkController(
             user_input[CONF_HOST],
             user_input[CONF_PORT],
             user_input[CONF_USERNAME],
@@ -61,7 +61,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             try:
                 connect_success = await asyncio.wait_for(
-                    device.connect(), timeout=CONNECTION_TIMEOUT
+                    controller.connect(), timeout=CONNECTION_TIMEOUT
                 )
                 if not connect_success:
                     _LOGGER.error(
@@ -80,7 +80,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return errors, device_info
 
             # Try to get device info
-            device_info = await device.get_device_info()
+            device_info = await controller.get_device_info()
 
             # We allow minimal device info
             if not device_info:
@@ -96,7 +96,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Verify model selection if not on auto-detect
             if user_input.get(CONF_MODEL) != "AUTO_DETECT":
-                detected_model = device.pdu_model or ""
+                detected_model = controller.pdu_model or ""
                 selected_model = user_input.get(CONF_MODEL)
 
                 if (
@@ -119,7 +119,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Use timeout for disconnect as well
             try:
-                await asyncio.wait_for(device.disconnect(), timeout=5)
+                await asyncio.wait_for(controller.disconnect(), timeout=5)
             except asyncio.TimeoutError:
                 _LOGGER.warning("Disconnect timed out, but validation succeeded")
 
