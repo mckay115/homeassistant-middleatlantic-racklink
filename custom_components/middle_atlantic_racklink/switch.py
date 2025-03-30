@@ -66,13 +66,16 @@ async def async_setup_entry(
 class RacklinkOutlet(SwitchEntity):
     """Representation of a Racklink outlet switch."""
 
+    _attr_has_entity_name = True
+    entity_category = None
+
     def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet switch."""
         self._controller = controller
         self._outlet = outlet
         # Get the outlet name from the controller if available
         self._outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
-        self._attr_name = self._outlet_name
+        self._attr_name = f"Outlet {outlet}"
         self._attr_unique_id = f"{controller.pdu_serial}_outlet_{outlet}"
         # Set available as False initially until we confirm connection
         self._attr_available = False
@@ -360,28 +363,50 @@ class RacklinkOutlet(SwitchEntity):
         """Return additional outlet information."""
         attrs = {
             "outlet_number": self._outlet,
-            "can_cycle": True,
+            "outlet_name": self._outlet_name,
+            "outlet_can_cycle": True,
         }
 
         # Add all available power and metrics data
         if power := self._controller.outlet_power.get(self._outlet):
-            attrs["power"] = f"{power:.1f} W"
+            attrs["power_w"] = power
         if current := self._controller.outlet_current.get(self._outlet):
-            attrs["current"] = f"{current:.2f} A"
+            attrs["current_a"] = current
         if energy := self._controller.outlet_energy.get(self._outlet):
-            attrs["energy"] = f"{energy:.1f} Wh"
+            attrs["energy_wh"] = energy
         if power_factor := self._controller.outlet_power_factor.get(self._outlet):
-            attrs["power_factor"] = f"{power_factor:.2f}"
+            attrs["power_factor"] = power_factor
+        if voltage := self._controller.outlet_voltage.get(self._outlet):
+            attrs["voltage_v"] = voltage
+        if frequency := self._controller.outlet_line_frequency.get(self._outlet):
+            attrs["frequency_hz"] = frequency
 
         return attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks when entity is added."""
+        # Listen for entity updates from the dispatcher signal
+        self.async_on_remove(
+            self.hass.helpers.dispatcher.async_dispatcher_connect(
+                f"{DOMAIN}_entity_update", self.async_write_ha_state
+            )
+        )
 
     async def async_cycle(self) -> None:
         """Cycle the outlet power."""
         try:
+            _LOGGER.debug("Cycling outlet %d (%s)", self._outlet, self._outlet_name)
             await asyncio.wait_for(
                 self._controller.cycle_outlet(self._outlet), timeout=10
             )
+            # Schedule a refresh to confirm state after a short delay
+            async_call_later(self.hass, 5, self._async_refresh_state)
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout cycling outlet %s", self._outlet)
         except Exception as err:
             _LOGGER.error("Error cycling outlet %s: %s", self._outlet, err)
+
+    @property
+    def assumed_state(self) -> bool:
+        """Return True if we do real-time state from the device."""
+        return True
