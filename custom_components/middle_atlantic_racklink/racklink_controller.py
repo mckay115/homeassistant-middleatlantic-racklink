@@ -1592,11 +1592,14 @@ class RacklinkController:
         timeout = timeout or self._socket_timeout
         start_time = time.time()
 
-        # Support specific RackLink prompt patterns based on diagnostic script findings
+        # Import parser for command prompt detection
+        from .parser import is_command_prompt
+
+        # Support specific RackLink prompt patterns based on the response samples
         patterns = [pattern]
         if pattern == b"#":
-            # Add common alternative prompts if searching for default
-            patterns.extend([b">", b"$", b":", b"RackLink>", b"admin>"])
+            # Add command prompt pattern with bracket: [DeviceName] #
+            patterns.extend([b"]\s+#", b">", b"$", b":", b"RackLink>", b"admin>"])
         elif pattern == b"Username:":
             patterns = [b"Username:", b"login:"]  # Username prompts
         elif pattern == b"Password:":
@@ -1615,11 +1618,44 @@ class RacklinkController:
             # Check if any pattern is already in buffer
             for ptn in patterns:
                 if ptn in buffer:
-                    pattern_index = buffer.find(ptn) + len(ptn)
-                    result = buffer[:pattern_index]
-                    # Save remaining data for next read
-                    self._buffer = buffer[pattern_index:]
-                    return result
+                    # Special check for bracket pattern
+                    if ptn == b"]\s+#":
+                        # Look for complete prompt pattern [DeviceName] #
+                        prompt_matches = re.findall(rb"\[.+?\]\s+#", buffer)
+                        if prompt_matches:
+                            # Find last occurrence (most recent prompt)
+                            last_prompt = prompt_matches[-1]
+                            prompt_index = buffer.rfind(last_prompt) + len(last_prompt)
+                            result = buffer[:prompt_index]
+                            # Save remaining data for next read
+                            self._buffer = buffer[prompt_index:]
+                            return result
+                    else:
+                        pattern_index = buffer.find(ptn) + len(ptn)
+                        result = buffer[:pattern_index]
+                        # Save remaining data for next read
+                        self._buffer = buffer[pattern_index:]
+                        return result
+
+            # Check for complete command prompt using regex
+            if b"#" in buffer:
+                # Convert buffer to string for line-by-line checking
+                buffer_str = buffer.decode("utf-8", errors="ignore")
+                lines = buffer_str.splitlines()
+
+                # Check if any line is a command prompt
+                for i, line in enumerate(lines):
+                    if is_command_prompt(line):
+                        # Calculate how many bytes to include
+                        included_lines = "\n".join(lines[: i + 1])
+                        bytes_to_include = len(
+                            included_lines.encode("utf-8", errors="ignore")
+                        )
+
+                        result = buffer[:bytes_to_include]
+                        # Save remaining data for next read
+                        self._buffer = buffer[bytes_to_include:]
+                        return result
 
             # Check for data timeout - if we haven't received data in a while
             # but the overall timeout hasn't been reached yet
@@ -1673,6 +1709,20 @@ class RacklinkController:
                 # we might be stuck in a loop without receiving the prompt
                 if len(buffer) - last_buffer_size < 2 and attempt_count > 5:
                     _LOGGER.debug("Buffer size not increasing, may be missing prompt")
+                    # Look for potential command prompts
+                    if b"#" in buffer or b">" in buffer:
+                        _LOGGER.debug("Found potential prompt character in buffer")
+                        # Just before timeout, check if buffer looks complete
+                        buffer_str = buffer.decode("utf-8", errors="ignore")
+                        if re.search(r"\[[^\]]+\]\s+#", buffer_str):
+                            _LOGGER.debug(
+                                "Found command prompt pattern, returning data"
+                            )
+                            # Return the buffer and let the caller parse it
+                            result = buffer
+                            self._buffer = b""
+                            return result
+
                     # Force return what we have if content seems substantial
                     if len(buffer) > 20:
                         break

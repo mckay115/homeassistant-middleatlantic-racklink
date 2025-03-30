@@ -95,10 +95,9 @@ def parse_all_outlet_states(response: str) -> Dict[int, bool]:
 
     outlet_states = {}
 
-    # Parse outlet status blocks
-    # Format: "Outlet X - Name:\nPower state: On/Off"
+    # More robust regex that handles formatting variations
     outlet_blocks = re.findall(
-        r"Outlet (\d+)(?: - ([^:]*))?:\s*\r?\nPower state:\s*(\w+)",
+        r"Outlet (\d+)[^\n]*\n\s*Power state:\s*(\w+)",
         response,
         re.MULTILINE,
     )
@@ -107,20 +106,14 @@ def parse_all_outlet_states(response: str) -> Dict[int, bool]:
     for match in outlet_blocks:
         try:
             outlet_num = int(match[0])
-            outlet_name = (
-                match[1].strip()
-                if len(match) > 1 and match[1]
-                else f"Outlet {outlet_num}"
-            )
-            state = match[2].lower() == "on"
+            state = match[1].lower() == "on"
 
             # Store the state
             outlet_states[outlet_num] = state
 
             _LOGGER.debug(
-                "Found outlet %d (%s): %s",
+                "Found outlet %d state: %s",
                 outlet_num,
-                outlet_name,
                 "ON" if state else "OFF",
             )
         except (ValueError, IndexError) as e:
@@ -136,10 +129,12 @@ def parse_outlet_names(response: str) -> Dict[int, str]:
 
     outlet_names = {}
 
-    # Parse outlet status blocks
-    # Format: "Outlet X - Name:\nPower state: On/Off"
+    # Parse outlet names from headers
+    # Format examples:
+    # "Outlet 1 - Firewall:"
+    # "Outlet 2:"
     outlet_blocks = re.findall(
-        r"Outlet (\d+)(?: - ([^:]*))?:",
+        r"Outlet (\d+)(?:\s+-\s+([^:\r\n]+))?:",
         response,
         re.MULTILINE,
     )
@@ -193,9 +188,28 @@ def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
         )
         return state
 
+    # Dump response content for debugging failed cases
+    _LOGGER.debug(
+        "Response content for failed outlet state parsing: %s", response[:300]
+    )
     _LOGGER.warning(
         "Could not parse outlet state from response for outlet %s", outlet_num
     )
+    return None
+
+
+def parse_power_factor(value_str: str) -> Optional[float]:
+    """Parse power factor which might be '---' or a numeric value."""
+    if not value_str or value_str.strip() == "---" or "no reading" in value_str.lower():
+        return None
+
+    # Extract numeric part
+    match = re.search(r"([\d.]+)", value_str)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
     return None
 
 
@@ -258,23 +272,16 @@ def parse_outlet_details(response: str, outlet_num: int) -> Dict[str, Any]:
                 apparent_power_match.group(1),
             )
 
-    # Parse power factor
-    power_factor_match = re.search(r"Power Factor:\s*([\d.]+)", response, re.IGNORECASE)
-    if power_factor_match:
-        try:
-            # Handle "---" or other non-numeric values
-            if power_factor_match.group(1) == "---":
-                outlet_data["power_factor"] = None
-            else:
-                power_factor = float(power_factor_match.group(1))
-                outlet_data["power_factor"] = power_factor
-                _LOGGER.debug(
-                    "Parsed outlet %s power factor: %s", outlet_num, power_factor
-                )
-        except ValueError:
-            _LOGGER.error(
-                "Could not convert power factor value: %s", power_factor_match.group(1)
-            )
+    # Parse power factor - handle "---" or "(no reading)" cases
+    pf_match = re.search(r"Power Factor:\s*([^(\r\n]+)", response, re.IGNORECASE)
+    if pf_match:
+        power_factor = parse_power_factor(pf_match.group(1))
+        if power_factor is not None:
+            outlet_data["power_factor"] = power_factor
+            _LOGGER.debug("Parsed outlet %s power factor: %s", outlet_num, power_factor)
+        else:
+            outlet_data["power_factor"] = None
+            _LOGGER.debug("Power factor has no reading for outlet %s", outlet_num)
 
     # Parse energy (for energy sensor)
     energy_match = re.search(r"Active Energy:\s*([\d.]+)\s*Wh", response, re.IGNORECASE)
@@ -299,6 +306,15 @@ def parse_outlet_details(response: str, outlet_num: int) -> Dict[str, Any]:
             _LOGGER.error(
                 "Could not convert frequency value: %s", frequency_match.group(1)
             )
+
+    # Parse non-critical flag
+    non_critical_match = re.search(
+        r"Non critical:\s*(True|False)", response, re.IGNORECASE
+    )
+    if non_critical_match:
+        non_critical = non_critical_match.group(1).lower() == "true"
+        outlet_data["non_critical"] = non_critical
+        _LOGGER.debug("Parsed outlet %s non-critical: %s", outlet_num, non_critical)
 
     return outlet_data
 
@@ -403,3 +419,19 @@ def normalize_model_name(model_string: str) -> str:
         return f"RLNK-{model}"
 
     return model
+
+
+def is_command_prompt(line: str) -> bool:
+    """
+    Check if a line is a command prompt.
+    The format is typically: [DeviceName] #
+    """
+    return bool(re.search(r"^\[.+\]\s+#\s*$", line.strip()))
+
+
+def extract_device_name_from_prompt(prompt: str) -> Optional[str]:
+    """Extract device name from a command prompt."""
+    match = re.search(r"^\[(.+)\]\s+#\s*$", prompt.strip())
+    if match:
+        return match.group(1)
+    return None
