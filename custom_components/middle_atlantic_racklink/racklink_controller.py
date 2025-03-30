@@ -379,8 +379,8 @@ class RacklinkController:
             _LOGGER.error("Error in delayed reconnection: %s", e)
             self._schedule_reconnect()  # Try again with increased backoff
 
-    async def _connect(self) -> bool:
-        """Connect to the PDU - used by config_flow for validation."""
+    async def connect(self) -> bool:
+        """Connect to the PDU."""
         try:
             if self._connected and self._socket:
                 _LOGGER.debug("Already connected to %s", self._host)
@@ -764,6 +764,7 @@ class RacklinkController:
             # Try to select outlets that don't have power data yet
             missing_power_data = [o for o in all_outlets if o not in self.outlet_power]
 
+            # Decide which outlets to sample
             if len(missing_power_data) > 0:
                 # Prioritize outlets missing data
                 sample_outlets = missing_power_data[:sample_size]
@@ -861,7 +862,6 @@ class RacklinkController:
                 if initial_data.endswith(b">"):
                     _LOGGER.debug("Already at prompt, no need to login")
                     return True
-
             except Exception as e:
                 _LOGGER.error("Error reading initial prompt: %s", e)
                 return False
