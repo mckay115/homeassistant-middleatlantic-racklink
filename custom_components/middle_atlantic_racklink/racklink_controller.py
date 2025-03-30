@@ -582,6 +582,21 @@ class RacklinkController:
             "First 100 chars of response: %s", response[:100].replace("\r\n", " ")
         )
 
+        # Add more diagnostic logging - if we have serious issues, log the full response
+        if len(response) < 500:  # Only log full response if it's reasonably sized
+            _LOGGER.debug(
+                "Full outlet states response: %s", response.replace("\r\n", " ")
+            )
+        else:
+            # Log each outlet section separately for better diagnosis
+            outlet_sections = re.findall(
+                r"Outlet \d+:.*?(?=Outlet \d+:|$)", response, re.DOTALL
+            )
+            for section in outlet_sections[
+                :3
+            ]:  # Log first few outlets only to avoid excessive logs
+                _LOGGER.debug("Outlet section: %s", section.replace("\r\n", " "))
+
         # Using a pattern inspired by the Q-Sys Lua implementation
         # Looking for patterns like:
         # Outlet 1:
@@ -620,12 +635,27 @@ class RacklinkController:
 
                         # Extract state - more flexible pattern to match various formats
                         state_match = re.search(
-                            r"Power state:\s*(On|Off)", section, re.IGNORECASE
+                            r"Power state:\s*(\w+)", section, re.IGNORECASE
                         )
                         if state_match:
-                            state = state_match.group(1).lower() == "on"
+                            raw_state = state_match.group(1)
+                            _LOGGER.debug("Raw outlet state text: '%s'", raw_state)
+
+                            # More permissive checking - any variant of "on" is considered on
+                            state = raw_state.lower() in [
+                                "on",
+                                "1",
+                                "true",
+                                "yes",
+                                "active",
+                            ]
                             self.outlet_states[outlet] = state
-                            _LOGGER.debug("Outlet %d state: %s", outlet, state)
+                            _LOGGER.debug(
+                                "Outlet %d state: %s (raw: %s)",
+                                outlet,
+                                state,
+                                raw_state,
+                            )
                         else:
                             _LOGGER.warning(
                                 "No power state found for outlet %d", outlet
@@ -721,8 +751,47 @@ class RacklinkController:
     async def set_outlet_state(self, outlet: int, state: bool):
         """Set an outlet's power state."""
         cmd = f"power outlets {outlet} {'on' if state else 'off'} /y"
-        await self.send_command(cmd)
-        self.outlet_states[outlet] = state
+        _LOGGER.debug(
+            "Setting outlet %d to state: %s", outlet, "ON" if state else "OFF"
+        )
+
+        response = await self.send_command(cmd)
+        if not response:
+            _LOGGER.error(
+                "No response when setting outlet %d state to %s", outlet, state
+            )
+            return False
+
+        # Check if the command was acknowledged
+        success_patterns = [
+            r"outlet.*powered\s+on",  # For powering on
+            r"outlet.*powered\s+off",  # For powering off
+            r"Success",  # Generic success message
+            r"OK",  # Generic success message
+        ]
+
+        command_successful = False
+        for pattern in success_patterns:
+            if re.search(pattern, response, re.IGNORECASE):
+                command_successful = True
+                break
+
+        if command_successful:
+            _LOGGER.debug(
+                "Successfully set outlet %d to %s", outlet, "ON" if state else "OFF"
+            )
+            # Update our local state cache
+            self.outlet_states[outlet] = state
+            return True
+        else:
+            # Command might have failed
+            _LOGGER.warning(
+                "Uncertain if outlet %d state change to %s was successful: %s",
+                outlet,
+                "ON" if state else "OFF",
+                response[:100].replace("\r\n", " "),
+            )
+            return False
 
     async def cycle_outlet(self, outlet: int):
         """Cycle an outlet's power."""
