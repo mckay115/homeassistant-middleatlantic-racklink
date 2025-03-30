@@ -65,8 +65,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Get sensor values
                 await controller.get_sensor_values(force_refresh=True)
 
-        # Add update method to controller
-        controller.update = update_wrapper
+            # Add update method to controller
+            controller.update = update_wrapper
 
         # Wait for background connection to establish
         await asyncio.sleep(5)
@@ -84,25 +84,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = controller
 
-    # Set up all platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     # Create update coordinator to refresh the data
     async def async_update_data():
         """Fetch data from the controller."""
         try:
             # Check if controller is connected, if not, attempt reconnection
             if not controller.connected:
+                _LOGGER.debug("Controller not connected, attempting to connect")
                 await controller.connect()
 
             # Update all data from device
             if controller.connected:
+                _LOGGER.debug("Updating controller data from device")
                 await controller.update()
 
-            # Signal entities to update
-            async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
-
-            return True
+                # Return the data for entities to use
+                return {
+                    "outlet_states": controller.outlet_states,
+                    "outlet_names": controller.outlet_names,
+                    "outlet_power": controller.outlet_power,
+                    "outlet_current": controller.outlet_current,
+                    "outlet_energy": controller.outlet_energy,
+                    "outlet_power_factor": controller.outlet_power_factor,
+                    "outlet_apparent_power": controller.outlet_apparent_power,
+                    "outlet_voltage": controller.outlet_voltage,
+                    "outlet_line_frequency": controller.outlet_line_frequency,
+                    "outlet_cycling_period": controller.outlet_cycling_period,
+                    "outlet_non_critical": controller.outlet_non_critical,
+                    "sensors": controller.sensors,
+                    "last_update": controller._last_update,
+                }
+            return None
         except Exception as e:
             _LOGGER.error("Error updating from device: %s", e)
             # Convert exception into update failure for coordinator
@@ -123,12 +135,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store coordinator in the data dict
     hass.data[DOMAIN][entry.entry_id + "_coordinator"] = coordinator
 
+    # Set up all platforms
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
     # Set up services
     async def async_cycle_all_outlets(call):
         """Cycle power for all outlets."""
-        await controller.cycle_all_outlets()
+        try:
+            _LOGGER.info("Cycling all outlets on %s", controller.pdu_name)
+            await controller.cycle_all_outlets()
+            # Force a refresh to update the states after cycling
+            await coordinator.async_request_refresh()
+        except Exception as e:
+            _LOGGER.error("Error cycling all outlets: %s", e)
 
     hass.services.async_register(DOMAIN, "cycle_all_outlets", async_cycle_all_outlets)
+
+    # Register cycle_outlet service
+    async def async_cycle_outlet(call):
+        """Cycle power for a specific outlet."""
+        outlet = call.data.get("outlet")
+        if outlet is None:
+            _LOGGER.error("Outlet number is required for cycle_outlet service")
+            return
+
+        try:
+            _LOGGER.info("Cycling outlet %s on %s", outlet, controller.pdu_name)
+            await asyncio.wait_for(controller.cycle_outlet(outlet), timeout=10)
+            # Force a refresh to update the states after cycling
+            await coordinator.async_request_refresh()
+        except asyncio.TimeoutError:
+            _LOGGER.error("Outlet cycle operation timed out")
+        except Exception as e:
+            _LOGGER.error("Error cycling outlet %s: %s", outlet, e)
+
+    hass.services.async_register(DOMAIN, "cycle_outlet", async_cycle_outlet)
 
     # Register set_outlet_name service
     async def async_set_outlet_name(call):
@@ -136,9 +177,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         outlet = call.data.get("outlet")
         name = call.data.get("name")
         if outlet is not None and name is not None:
-            await controller.set_outlet_name(outlet, name)
-            # Force refresh of coordinator after name change
-            await coordinator.async_request_refresh()
+            try:
+                await controller.set_outlet_name(outlet, name)
+                # Force refresh of coordinator after name change
+                await coordinator.async_request_refresh()
+            except Exception as e:
+                _LOGGER.error("Error setting outlet %s name to %s: %s", outlet, name, e)
 
     hass.services.async_register(DOMAIN, "set_outlet_name", async_set_outlet_name)
 
@@ -147,9 +191,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Set the name of the PDU."""
         name = call.data.get("name")
         if name is not None:
-            await controller.set_pdu_name(name)
-            # Force refresh of coordinator after name change
-            await coordinator.async_request_refresh()
+            try:
+                await controller.set_pdu_name(name)
+                # Force refresh of coordinator after name change
+                await coordinator.async_request_refresh()
+            except Exception as e:
+                _LOGGER.error("Error setting PDU name to %s: %s", name, e)
 
     hass.services.async_register(DOMAIN, "set_pdu_name", async_set_pdu_name)
 
