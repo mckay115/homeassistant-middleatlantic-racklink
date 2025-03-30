@@ -6,11 +6,41 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, List
 
 from .const import COMMAND_TIMEOUT, SUPPORTED_MODELS
 
 _LOGGER = logging.getLogger(__name__)
+
+# Model capabilities dictionary
+MODEL_CAPABILITIES = {
+    # RackLink Power Management
+    "RLNK-415": {"num_outlets": 4, "has_current_sensing": False},
+    "RLNK-415R": {"num_outlets": 4, "has_current_sensing": False},
+    "RLNK-520": {"num_outlets": 5, "has_current_sensing": False},
+    "RLNK-520L": {"num_outlets": 5, "has_current_sensing": False},
+    "RLNK-615": {"num_outlets": 6, "has_current_sensing": False},
+    "RLNK-615L": {"num_outlets": 6, "has_current_sensing": False},
+    "RLNK-920": {"num_outlets": 9, "has_current_sensing": False},
+    "RLNK-920L": {"num_outlets": 9, "has_current_sensing": False},
+    "RLNK-215": {"num_outlets": 2, "has_current_sensing": False},
+    "RLNK-P915": {"num_outlets": 9, "has_current_sensing": False},
+    "RLNK-P920": {"num_outlets": 9, "has_current_sensing": False},
+    # RackLink Select Power Management
+    "RLNK-SL415": {"num_outlets": 4, "has_current_sensing": False},
+    "RLNK-SL520": {"num_outlets": 5, "has_current_sensing": False},
+    "RLNK-SL615": {"num_outlets": 6, "has_current_sensing": False},
+    "RLNK-SL920": {"num_outlets": 9, "has_current_sensing": False},
+    # RackLink Metered Power Management (with current sensing)
+    "RLM-15": {"num_outlets": 8, "has_current_sensing": True},
+    "RLM-15A": {"num_outlets": 8, "has_current_sensing": True},
+    "RLM-20": {"num_outlets": 8, "has_current_sensing": True},
+    "RLM-20A": {"num_outlets": 8, "has_current_sensing": True},
+    "RLM-20-1": {"num_outlets": 8, "has_current_sensing": True},
+    "RLM-20L": {"num_outlets": 8, "has_current_sensing": True},
+    # Default if model not specified
+    "DEFAULT": {"num_outlets": 8, "has_current_sensing": False},
+}
 
 
 class RacklinkController:
@@ -19,67 +49,63 @@ class RacklinkController:
     def __init__(
         self,
         host: str,
-        port: int,
-        username: str,
-        password: str,
-        model: str = "AUTO_DETECT",
+        port: int = 23,
+        username: str = None,
+        password: str = None,
+        model: str = None,
+        socket_timeout: int = 5,
+        command_timeout: int = 10,
     ):
         """Initialize the controller."""
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
-        self.specified_model = model  # Store the user-specified model
-        self.socket = None
-        self.response_cache = ""
-        self.last_cmd = ""
-        self.context = ""
-        self.pdu_name = f"Racklink PDU ({host})"  # Default name until we get real one
-        self.pdu_firmware = ""
-        self.pdu_serial = f"{host}_{port}"  # Default identifier until we get real one
-        self.pdu_mac = ""
-        self.pdu_model = "Racklink PDU"  # Default model until we get real one
-        self.outlet_states: Dict[int, bool] = {}
-        self.outlet_names: Dict[int, str] = {}
-        self.outlet_power: Dict[int, float] = {}
-        self.outlet_current: Dict[int, float] = {}
-        self.outlet_energy: Dict[int, float] = {}
-        self.outlet_power_factor: Dict[int, float] = {}
-        self.outlet_apparent_power: Dict[int, float] = {}
-        self.outlet_voltage: Dict[int, float] = {}
-        self.outlet_line_frequency: Dict[int, float] = {}
-        self.outlet_cycling_period: Dict[int, int] = {}
-        self.outlet_non_critical: Dict[int, bool] = {}
-        self.outlet_receptacle_type: Dict[int, str] = {}
-        self.outlet_rated_current: Dict[int, float] = {}
-        self.outlet_operating_voltage: Dict[int, str] = {}
-        self.sensors: Dict[str, float] = {}
+        self._host = host
+        self._port = port
+        self._username = username or ""
+        self._password = password or ""
+        self._model = model
+        self._socket_timeout = socket_timeout
+        self._command_timeout = command_timeout
+
+        # Socket connection
+        self._socket = None
+        self._reader = None
+        self._writer = None
         self._connected = False
+        self._available = False
+        self._reconnect_tries = 0
+
+        # Command queue
+        self._command_queue = []
+        self._processing_commands = False
+
+        # Device info
+        self.pdu_info = {
+            "model": None,
+            "firmware": None,
+            "serial": None,
+            "num_outlets": None,
+        }
+
+        # Data storage
+        self.outlet_states = {}  # outlet_num -> bool
+        self.outlet_names = {}  # outlet_num -> str
+        self.outlet_current = {}  # outlet_num -> float (A)
+        self.outlet_power = {}  # outlet_num -> float (W)
+        self.outlet_energy = {}  # outlet_num -> float (Wh)
+        self.outlet_voltage = {}  # outlet_num -> float (V)
+        self.outlet_power_factor = {}  # outlet_num -> float (decimal)
+
+        # Status tracking
         self._last_update = 0
-        self._update_interval = 60  # seconds
-        self._last_error: Optional[str] = None
-        self._last_error_time: Optional[datetime] = None
-        self._available = True
-        self._connection_lock = asyncio.Lock()
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 3
-        self._socket_timeout = 5  # Shorter timeout for better responsiveness
-        self._command_timeout = 15  # Longer timeout for commands
-        self._connection_timeout = 20  # Longer timeout for initial connection
-        self._command_delay = 1.0  # Delay between commands to avoid overwhelming device
-        self._last_command_time = 0  # Timestamp of last command sent
-        self._command_queue = asyncio.Queue()  # Queue for commands
-        self._command_lock = asyncio.Lock()  # Lock for command processing
-        self._command_processor_task = None  # Task for processing commands
-        self._connection_task = None
         self._shutdown_requested = False
-        self._read_buffer = b""  # Buffer for socket reads
+
+        # Start connection in background
+        self._connection_task = asyncio.create_task(self._background_connect())
 
     @property
     def connected(self) -> bool:
         """Return if we are connected to the device."""
         # Only consider truly connected if we have a socket object and _connected flag
-        return self._connected and self.socket is not None
+        return self._connected and self._socket is not None
 
     @property
     def available(self) -> bool:
@@ -107,13 +133,13 @@ class RacklinkController:
         """Create a socket connection in a separate thread to avoid blocking."""
         try:
             # Create socket connection in a separate thread
-            _LOGGER.debug("Creating socket connection to %s:%s", self.host, self.port)
+            _LOGGER.debug("Creating socket connection to %s:%s", self._host, self._port)
 
             def connect_socket():
                 try:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(self._socket_timeout)
-                    sock.connect((self.host, self.port))
+                    sock.connect((self._host, self._port))
                     return sock
                 except Exception as e:
                     _LOGGER.error("Socket connection error: %s", e)
@@ -132,7 +158,7 @@ class RacklinkController:
 
     async def _socket_read_until(self, pattern: bytes, timeout: int = None) -> bytes:
         """Read from socket connection until pattern is found."""
-        if not self.socket:
+        if not self._socket:
             raise ConnectionError("No socket connection available")
 
         if pattern is None:
@@ -155,13 +181,13 @@ class RacklinkController:
                     return result
 
                 # Set socket timeout
-                self.socket.settimeout(min(0.5, timeout - (time.time() - start_time)))
+                self._socket.settimeout(min(0.5, timeout - (time.time() - start_time)))
 
                 try:
                     # Read more data from socket
                     def read_socket():
                         try:
-                            return self.socket.recv(1024)
+                            return self._socket.recv(1024)
                         except socket.timeout:
                             return b""
                         except Exception as e:
@@ -202,7 +228,7 @@ class RacklinkController:
 
     async def _socket_write(self, data: bytes) -> None:
         """Write to socket connection in a non-blocking way."""
-        if not self.socket:
+        if not self._socket:
             _LOGGER.error("Cannot write to socket: connection is None")
             raise ConnectionError("No socket connection available")
 
@@ -211,8 +237,8 @@ class RacklinkController:
 
         try:
             _LOGGER.debug("Writing %d bytes to socket", len(data))
-            # Safety check - don't use a direct reference to self.socket that could become None
-            socket_connection = self.socket
+            # Safety check - don't use a direct reference to self._socket that could become None
+            socket_connection = self._socket
             if socket_connection is None:
                 raise ConnectionError("Socket connection became None")
 
@@ -248,53 +274,234 @@ class RacklinkController:
             _LOGGER.debug("Background connection task already running")
             return
 
-        _LOGGER.debug("Starting background connection for %s", self.host)
+        _LOGGER.debug("Starting background connection for %s", self._host)
         self._connection_task = asyncio.create_task(self._background_connect())
 
-    async def _background_connect(self) -> None:
-        """Connect in background to avoid blocking Home Assistant."""
+    async def _background_connect(self):
+        """Connect to the PDU in the background."""
         try:
-            # Attempt connection with a timeout but don't load initial status
-            # This will be handled separately to prevent blocking
-            await asyncio.wait_for(
-                self._connect_only(), timeout=self._socket_timeout * 2
+            await self._connect()
+            if self._socket:
+                self._connected = True
+                _LOGGER.info("Connected to %s", self._host)
+                self._reconnect_tries = 0
+                await self._load_initial_data()
+                await self._send_queued_commands()
+        except Exception as e:
+            _LOGGER.error("Error connecting to %s: %s", self._host, e)
+            self._connected = False
+            self._reconnect_tries += 1
+            # Exponential backoff up to a max of 5 minutes
+            delay = min(300, 2 ** min(self._reconnect_tries, 8))
+            _LOGGER.info("Will retry in %s seconds", delay)
+            # Schedule reconnection
+            asyncio.create_task(self._delayed_reconnect(delay))
+
+    async def _connect(self):
+        """Connect to the PDU."""
+        if self._socket and not self._socket.closed:
+            _LOGGER.debug("Already connected to %s", self._host)
+            return
+
+        _LOGGER.debug("Connecting to %s:%s", self._host, self._port)
+        try:
+            # Clear the existing socket if any
+            if self._socket and not self._socket.closed:
+                self._socket.close()
+                self._socket = None
+
+            # Create a new socket connection
+            self._socket = asyncio.open_connection(
+                self._host,
+                self._port,
+                limit=65536,  # Increase buffer size for large responses
+            )
+            self._reader, self._writer = await asyncio.wait_for(
+                self._socket, timeout=self._socket_timeout
+            )
+            self._connected = True
+
+            # Read the welcome message
+            welcome = await asyncio.wait_for(
+                self._reader.read(4096), timeout=self._command_timeout
+            )
+            welcome_text = welcome.decode(errors="ignore")
+
+            # Check if login prompt is present
+            if "Username:" in welcome_text:
+                _LOGGER.debug("Logging in with username: %s", self._username)
+                self._writer.write(f"{self._username}\r\n".encode())
+                await self._writer.drain()
+
+                # Wait for password prompt
+                auth1 = await asyncio.wait_for(
+                    self._reader.read(1024), timeout=self._command_timeout
+                )
+                auth1_text = auth1.decode(errors="ignore")
+
+                if "Password:" in auth1_text:
+                    _LOGGER.debug("Sending password")
+                    self._writer.write(f"{self._password}\r\n".encode())
+                    await self._writer.drain()
+
+                    # Wait for login confirmation
+                    auth2 = await asyncio.wait_for(
+                        self._reader.read(1024), timeout=self._command_timeout
+                    )
+                    auth2_text = auth2.decode(errors="ignore")
+
+                    if "Login failed" in auth2_text:
+                        raise ConnectionError("Login failed - incorrect credentials")
+
+            # Set terminal width to avoid paging
+            _LOGGER.debug("Setting terminal width to avoid paging")
+            self._writer.write("term width 511\r\n".encode())
+            await self._writer.drain()
+
+            # Clear any pending output
+            term_response = await asyncio.wait_for(
+                self._reader.read(1024), timeout=self._command_timeout
             )
 
-            # Once connected, start loading data in separate tasks
-            if self._connected:
-                asyncio.create_task(self._load_initial_data())
+            _LOGGER.debug("Successfully connected to %s", self._host)
+            self._available = True
+            return True
 
         except asyncio.TimeoutError:
-            _LOGGER.error(
-                "Background connection to %s timed out, will retry on first update",
-                self.host,
-            )
-        except Exception as err:
-            _LOGGER.error("Error in background connection to %s: %s", self.host, err)
+            _LOGGER.error("Connection to %s timed out", self._host)
+            self._connected = False
+            self._available = False
+            if self._writer:
+                self._writer.close()
+                try:
+                    await self._writer.wait_closed()
+                except Exception:
+                    pass
+            self._reader = None
+            self._writer = None
+            raise
+
+        except Exception as e:
+            _LOGGER.error("Failed to connect to %s: %s", self._host, e)
+            self._connected = False
+            self._available = False
+            if self._writer:
+                self._writer.close()
+                try:
+                    await self._writer.wait_closed()
+                except Exception:
+                    pass
+            self._reader = None
+            self._writer = None
+            raise
+
+    async def _delayed_reconnect(self, delay):
+        """Reconnect after a delay."""
+        _LOGGER.debug("Scheduling reconnection in %s seconds", delay)
+        try:
+            await asyncio.sleep(delay)
+            _LOGGER.debug("Attempting reconnection to %s", self._host)
+            await self._background_connect()
+        except Exception as e:
+            _LOGGER.error("Error in delayed reconnection: %s", e)
+
+    async def _load_initial_data(self):
+        """Load initial data from the PDU."""
+        _LOGGER.debug("Loading initial PDU data")
+        try:
+            # Get PDU model information
+            await self._get_pdu_info()
+
+            # Initialize outlet states
+            await self.get_all_outlet_states()
+        except Exception as e:
+            _LOGGER.error("Error loading initial PDU data: %s", e)
+
+    async def _get_pdu_info(self):
+        """Get PDU model and system information."""
+        _LOGGER.debug("Getting PDU model information")
+        self.pdu_info = {
+            "model": None,
+            "firmware": None,
+            "serial": None,
+            "num_outlets": None,
+        }
+
+        # Get system information
+        system_info = await self.send_command("show system")
+        if system_info:
+            # Extract model
+            model_match = re.search(r"Model Name:\s*([^\r\n]+)", system_info)
+            if model_match:
+                self.pdu_info["model"] = model_match.group(1).strip()
+                _LOGGER.info("PDU Model: %s", self.pdu_info["model"])
+
+            # Extract firmware
+            firmware_match = re.search(r"Firmware Version:\s*([^\r\n]+)", system_info)
+            if firmware_match:
+                self.pdu_info["firmware"] = firmware_match.group(1).strip()
+                _LOGGER.info("PDU Firmware: %s", self.pdu_info["firmware"])
+
+            # Extract serial number
+            serial_match = re.search(r"Serial Number:\s*([^\r\n]+)", system_info)
+            if serial_match:
+                self.pdu_info["serial"] = serial_match.group(1).strip()
+                _LOGGER.debug("PDU Serial: %s", self.pdu_info["serial"])
+
+        # Get outlet count
+        outlets_info = await self.send_command("show outlets")
+        if outlets_info:
+            # Count the number of outlets by counting the outlet rows
+            outlet_rows = re.findall(r"^\s*\d+\s+\|", outlets_info, re.MULTILINE)
+            if outlet_rows:
+                self.pdu_info["num_outlets"] = len(outlet_rows)
+                _LOGGER.info("PDU Outlets: %s", self.pdu_info["num_outlets"])
+
+        return self.pdu_info
+
+    def get_model_capabilities(self):
+        """Get capabilities for the current PDU model."""
+        # Use actual data if available
+        if hasattr(self, "pdu_info") and self.pdu_info.get("num_outlets"):
+            return {
+                "num_outlets": self.pdu_info["num_outlets"],
+                "model": self.pdu_info.get("model", "Unknown"),
+                "has_current_sensing": "RLM" in str(self.pdu_info.get("model", "")),
+            }
+
+        # Fallback to known models
+        if self._model in MODEL_CAPABILITIES:
+            return MODEL_CAPABILITIES[self._model]
+        # Default to RLNK-215 if model not specified or not found
+        return MODEL_CAPABILITIES["RLNK-215"]
 
     async def _connect_only(self) -> None:
         """Connect to the device but skip loading initial status."""
         if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not connecting to %s", self.host)
+            _LOGGER.debug("Shutdown requested, not connecting to %s", self._host)
             return
 
         async with self._connection_lock:
             if self._connected:
-                _LOGGER.debug("Already connected to %s, skipping connection", self.host)
+                _LOGGER.debug(
+                    "Already connected to %s, skipping connection", self._host
+                )
                 return
 
             _LOGGER.info(
-                "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
+                "Connecting to Middle Atlantic Racklink at %s:%s",
+                self._host,
+                self._port,
             )
             try:
                 # Create socket connection with timeout
-                self.socket = await asyncio.wait_for(
+                self._socket = await asyncio.wait_for(
                     self._create_socket_connection(), timeout=self._socket_timeout
                 )
 
-                if not self.socket:
+                if not self._socket:
                     raise ConnectionError(
-                        f"Failed to connect to {self.host}:{self.port}"
+                        f"Failed to connect to {self._host}:{self._port}"
                     )
 
                 await self.login()
@@ -302,14 +509,14 @@ class RacklinkController:
                 self._available = True
                 self._last_error = None
                 self._last_error_time = None
-                self._reconnect_attempts = 0
+                self._reconnect_tries = 0
                 self._read_buffer = b""  # Clear read buffer on new connection
                 _LOGGER.info(
                     "Successfully connected to Middle Atlantic Racklink at %s (basic connection)",
-                    self.host,
+                    self._host,
                 )
             except (asyncio.TimeoutError, ConnectionError) as e:
-                if self.socket:
+                if self._socket:
                     # Close socket in a thread
                     def close_socket(sock):
                         try:
@@ -317,13 +524,13 @@ class RacklinkController:
                         except Exception as close_err:
                             _LOGGER.debug("Error closing socket: %s", close_err)
 
-                    await asyncio.to_thread(close_socket, self.socket)
-                    self.socket = None
+                    await asyncio.to_thread(close_socket, self._socket)
+                    self._socket = None
                 self._connected = False
                 self._handle_error(f"Connection failed: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
-                if self.socket:
+                if self._socket:
                     # Close socket in a thread
                     def close_socket(sock):
                         try:
@@ -331,8 +538,8 @@ class RacklinkController:
                         except Exception as close_err:
                             _LOGGER.debug("Error closing socket: %s", close_err)
 
-                    await asyncio.to_thread(close_socket, self.socket)
-                    self.socket = None
+                    await asyncio.to_thread(close_socket, self._socket)
+                    self._socket = None
                 self._connected = False
                 self._handle_error(f"Unexpected error during connection: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
@@ -349,7 +556,7 @@ class RacklinkController:
             _LOGGER.debug("Got Username prompt, sending username")
 
             # Send username with CRLF
-            await self._socket_write(f"{self.username}\r\n".encode())
+            await self._socket_write(f"{self._username}\r\n".encode())
 
             # Wait for password prompt with timeout
             _LOGGER.debug("Waiting for Password prompt")
@@ -360,7 +567,7 @@ class RacklinkController:
             _LOGGER.debug("Got Password prompt, sending password")
 
             # Send password with CRLF
-            await self._socket_write(f"{self.password}\r\n".encode())
+            await self._socket_write(f"{self._password}\r\n".encode())
 
             # Wait for command prompt with timeout
             _LOGGER.debug("Waiting for command prompt")
@@ -392,16 +599,18 @@ class RacklinkController:
         """Connect to the RackLink device."""
         # Don't connect if shutdown was requested
         if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not connecting to %s", self.host)
+            _LOGGER.debug("Shutdown requested, not connecting to %s", self._host)
             return
 
         async with self._connection_lock:
-            if self._connected and self.socket is not None:
-                _LOGGER.debug("Already connected to %s, skipping connection", self.host)
+            if self._connected and self._socket is not None:
+                _LOGGER.debug(
+                    "Already connected to %s, skipping connection", self._host
+                )
                 return
 
             # Clean up any existing broken connection
-            if self.socket is not None:
+            if self._socket is not None:
                 _LOGGER.debug("Cleaning up existing broken socket connection")
                 try:
                     # Close socket in a thread
@@ -411,25 +620,27 @@ class RacklinkController:
                         except Exception as close_err:
                             _LOGGER.debug("Error closing socket: %s", close_err)
 
-                    await asyncio.to_thread(close_socket, self.socket)
+                    await asyncio.to_thread(close_socket, self._socket)
                 except Exception as e:
                     _LOGGER.debug("Error closing existing socket connection: %s", e)
                 finally:
-                    self.socket = None
+                    self._socket = None
                     self._connected = False
 
             _LOGGER.info(
-                "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
+                "Connecting to Middle Atlantic Racklink at %s:%s",
+                self._host,
+                self._port,
             )
             try:
                 # Create socket connection with timeout
-                self.socket = await asyncio.wait_for(
+                self._socket = await asyncio.wait_for(
                     self._create_socket_connection(), timeout=self._connection_timeout
                 )
 
-                if not self.socket:
+                if not self._socket:
                     raise ConnectionError(
-                        f"Failed to connect to {self.host}:{self.port}"
+                        f"Failed to connect to {self._host}:{self._port}"
                     )
 
                 # Login with timeout
@@ -439,7 +650,7 @@ class RacklinkController:
                 self._available = True
                 self._last_error = None
                 self._last_error_time = None
-                self._reconnect_attempts = 0
+                self._reconnect_tries = 0
                 self._read_buffer = b""  # Clear read buffer on new connection
 
                 # Start command queue processing task if not running
@@ -454,10 +665,10 @@ class RacklinkController:
 
                 _LOGGER.info(
                     "Successfully connected to Middle Atlantic Racklink at %s",
-                    self.host,
+                    self._host,
                 )
             except (asyncio.TimeoutError, ConnectionError) as e:
-                if self.socket:
+                if self._socket:
                     try:
                         # Close socket in a thread
                         def close_socket(sock):
@@ -466,19 +677,19 @@ class RacklinkController:
                             except Exception as close_err:
                                 _LOGGER.debug("Error closing socket: %s", close_err)
 
-                        await asyncio.to_thread(close_socket, self.socket)
+                        await asyncio.to_thread(close_socket, self._socket)
                     except Exception as close_err:
                         _LOGGER.debug(
                             "Error closing socket during connection failure: %s",
                             close_err,
                         )
-                    self.socket = None
+                    self._socket = None
                 self._connected = False
                 self._available = False
                 self._handle_error(f"Connection failed: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
-                if self.socket:
+                if self._socket:
                     try:
                         # Close socket in a thread
                         def close_socket(sock):
@@ -487,13 +698,13 @@ class RacklinkController:
                             except Exception as close_err:
                                 _LOGGER.debug("Error closing socket: %s", close_err)
 
-                        await asyncio.to_thread(close_socket, self.socket)
+                        await asyncio.to_thread(close_socket, self._socket)
                     except Exception as close_err:
                         _LOGGER.debug(
                             "Error closing socket during connection failure: %s",
                             close_err,
                         )
-                    self.socket = None
+                    self._socket = None
                 self._connected = False
                 self._available = False
                 self._handle_error(f"Unexpected error during connection: {e}")
@@ -643,242 +854,183 @@ class RacklinkController:
                 self._connected = False
                 self._available = False
 
-    async def send_command(self, cmd: str) -> str:
-        """Queue a command to be sent to the device and return the response."""
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not sending command to %s", self.host)
-            return ""
+    async def send_command(self, command):
+        """Send a command to the PDU and return the response."""
+        if not self._connected:
+            _LOGGER.warning("Cannot send command, not connected: %s", command)
+            # Queue commands if not connected
+            self._command_queue.append(command)
+            _LOGGER.debug("Queued command for later: %s", command)
+            return None
 
-        if not self.connected:
-            _LOGGER.debug("Not connected, attempting to connect before sending command")
-            try:
-                # Use a longer timeout for connection attempts
-                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Connection attempt timed out")
-                return ""
-            except Exception as err:
-                _LOGGER.error("Connection attempt failed: %s", err)
-                return ""
+        if not command:
+            _LOGGER.warning("Attempted to send empty command")
+            return None
 
-            if not self.connected:
-                _LOGGER.error("Still not connected after connection attempt")
-                return ""
+        # Add command to queue to ensure serialized execution
+        future = asyncio.Future()
+        self._command_queue.append((command, future))
 
-        # Create a future to get the result
-        future = asyncio.get_running_loop().create_future()
+        # Process the command queue if we're not already processing
+        if not self._processing_commands:
+            asyncio.create_task(self._send_queued_commands())
 
-        # Add the command to the queue
-        await self._command_queue.put((cmd, future))
-
-        # Wait for the result
         try:
-            response = await asyncio.wait_for(future, timeout=self._command_timeout)
-            return response
+            # Wait for the command to be processed with a timeout
+            return await asyncio.wait_for(future, timeout=self._command_timeout)
         except asyncio.TimeoutError:
-            _LOGGER.error("Command timed out waiting for result: %s", cmd)
-            return ""
+            _LOGGER.error("Timeout waiting for command response: %s", command)
+            return None
         except Exception as e:
-            _LOGGER.error("Error waiting for command result: %s - %s", cmd, e)
-            return ""
+            _LOGGER.error("Error waiting for command response: %s - %s", command, e)
+            return None
 
-    async def _process_command_queue(self):
-        """Process commands from the queue with rate limiting."""
-        while not self._shutdown_requested:
-            try:
-                # Get the next command from the queue with timeout to allow periodic checks
-                try:
-                    cmd, future = await asyncio.wait_for(
-                        self._command_queue.get(), timeout=1.0
-                    )
-                except asyncio.TimeoutError:
-                    # No commands in the queue, just continue the loop
-                    continue
+    async def _send_queued_commands(self):
+        """Process queued commands one at a time."""
+        if self._processing_commands:
+            return
 
-                # Check if the future was already cancelled or done
-                if future.done() or future.cancelled():
-                    _LOGGER.debug("Future already done or cancelled, skipping command")
-                    self._command_queue.task_done()
-                    continue
-
-                try:
-                    # Enforce delay between commands
-                    now = asyncio.get_event_loop().time()
-                    time_since_last = now - self._last_command_time
-                    if time_since_last < self._command_delay:
-                        delay = self._command_delay - time_since_last
-                        _LOGGER.debug(
-                            "Rate limiting: Waiting %.2f seconds before next command",
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-
-                    # Verify connection before sending command
-                    if not self.connected or self.socket is None:
-                        _LOGGER.debug(
-                            "Not connected, attempting to reconnect before processing command"
-                        )
-                        try:
-                            # Use a shorter timeout for reconnection
-                            await asyncio.wait_for(self.connect(), timeout=5)
-                        except (asyncio.TimeoutError, Exception) as err:
-                            if not future.done():
-                                future.set_result(
-                                    ""
-                                )  # Return empty string on connection failure
-                            _LOGGER.error("Failed to reconnect: %s", err)
-                            self._command_queue.task_done()
-                            continue
-
-                    # Process the command
-                    result = await self._send_command_internal(cmd)
-                    self._last_command_time = asyncio.get_event_loop().time()
-
-                    # Set the result in the future if it's not already done
-                    if not future.done():
-                        future.set_result(result)
-
-                except asyncio.CancelledError:
-                    _LOGGER.debug("Command processing was cancelled")
-                    # Mark the task as done even if cancelled
-                    if not future.done():
-                        future.cancel()
-                    raise  # Re-raise to exit the loop
-                except Exception as e:
-                    _LOGGER.error("Error processing command: %s - %s", cmd, e)
-                    if not future.done():
-                        # Return empty string instead of raising exception to avoid crashing HA
-                        future.set_result("")
-                finally:
-                    # Always mark the task as done
-                    try:
-                        self._command_queue.task_done()
-                    except Exception as e:
-                        _LOGGER.error("Error marking task as done: %s", e)
-
-            except asyncio.CancelledError:
-                _LOGGER.debug("Command processor task cancelled")
-                break
-            except Exception as e:
-                _LOGGER.error("Error in command processor: %s", e)
-                await asyncio.sleep(1)  # Prevent tight loop if there's an error
-
-        _LOGGER.debug("Command processor task exiting")
-
-    async def _send_command_internal(self, cmd: str) -> str:
-        """Send a command to the device and return the response."""
-        # Early return if we're shutting down
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not sending command")
-            return ""
+        self._processing_commands = True
 
         try:
-            _LOGGER.debug("Sending command: %s", cmd)
-            # Make sure we have a valid socket connection
-            if not self.socket:
-                _LOGGER.warning(
-                    "No socket connection available, attempting to reconnect"
-                )
+            while self._command_queue and self._connected:
+                item = self._command_queue.pop(0)
+
+                # Handle simple string commands (no future)
+                if isinstance(item, str):
+                    command = item
+                    _LOGGER.debug("Processing queued command (no future): %s", command)
+                    try:
+                        await self._send_command_direct(command)
+                    except Exception as e:
+                        _LOGGER.error(
+                            "Error sending queued command: %s - %s", command, e
+                        )
+                    continue
+
+                # Handle command with future
+                command, future = item
+
+                _LOGGER.debug("Processing queued command: %s", command)
                 try:
-                    await asyncio.wait_for(self.reconnect(), timeout=5)
-                except asyncio.TimeoutError:
-                    _LOGGER.error("Reconnection timed out")
-                    return ""
+                    response = await self._send_command_direct(command)
+                    if not future.done():
+                        future.set_result(response)
+                except Exception as e:
+                    _LOGGER.error("Error sending command: %s - %s", command, e)
+                    if not future.done():
+                        future.set_exception(e)
 
-                # Double-check we actually have a connection after reconnect
-                if not self.connected or not self.socket:
-                    _LOGGER.error(
-                        "Still no socket connection after reconnection attempt"
-                    )
-                    return ""
+                # Small delay between commands to avoid overwhelming the device
+                await asyncio.sleep(0.1)
 
-            # Verify socket is still valid before writing
-            if not self.socket:
-                _LOGGER.error("Socket connection lost just before sending command")
-                return ""
+        except Exception as e:
+            _LOGGER.error("Error processing command queue: %s", e)
+        finally:
+            self._processing_commands = False
 
-            # Make sure to include CRLF - this is critical for the protocol
+            # If there are still commands in the queue, process them
+            if self._command_queue and self._connected:
+                asyncio.create_task(self._send_queued_commands())
+
+    async def _send_command_direct(self, command):
+        """Send a command directly to the PDU and get the response."""
+        if not self._connected or not self._writer or not self._reader:
+            _LOGGER.warning("Cannot send command, connection not ready: %s", command)
+            raise ConnectionError("Not connected")
+
+        try:
+            # Send the command
+            _LOGGER.debug("Sending command: %s", command)
+            self._writer.write(f"{command}\r\n".encode())
+            await self._writer.drain()
+
+            # Read the response with a timeout
+            response_bytes = await asyncio.wait_for(
+                self._read_response(), timeout=self._command_timeout
+            )
+
+            # Decode the response
+            response = response_bytes.decode(errors="ignore")
+
+            # Check for error messages
+            if "error" in response.lower() or "invalid" in response.lower():
+                _LOGGER.warning(
+                    "Command error: %s - Response: %s", command, response.strip()
+                )
+
+            # Check if we got a prompt at the end (command completed)
+            if not response.strip().endswith(("#", ">")):
+                _LOGGER.debug("Response doesn't end with prompt, may be incomplete")
+
+            return response
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("Timeout reading response for command: %s", command)
+            # Don't close connection on timeout, just return None
+            raise TimeoutError(f"Command timed out: {command}")
+
+        except Exception as e:
+            _LOGGER.error("Error sending command: %s - %s", command, e)
+            # If connection seems broken, mark as disconnected
+            if isinstance(e, (ConnectionError, OSError)):
+                _LOGGER.warning("Connection seems broken, marking as disconnected")
+                self._connected = False
+                # Close the connection
+                if self._writer:
+                    try:
+                        self._writer.close()
+                        await self._writer.wait_closed()
+                    except Exception:
+                        pass
+                self._reader = None
+                self._writer = None
+                # Schedule reconnection
+                asyncio.create_task(self._delayed_reconnect(5))
+            raise
+
+    async def _read_response(self):
+        """Read response from the device until prompt or timeout."""
+        buffer = b""
+        start_time = time.time()
+        prompt_patterns = [b"#", b">"]
+
+        while time.time() - start_time < self._command_timeout:
             try:
-                await asyncio.wait_for(
-                    self._socket_write(f"{cmd}\r\n".encode()),
-                    timeout=self._socket_timeout,
+                # Try to read a chunk
+                chunk = await asyncio.wait_for(
+                    self._reader.read(4096), timeout=1.0  # Short timeout for each read
                 )
-            except asyncio.TimeoutError:
-                _LOGGER.error("Timeout while writing command to socket")
-                await self.reconnect()
-                return ""
-            except Exception as e:
-                _LOGGER.error("Error writing to socket: %s", e)
-                await self.reconnect()
-                return ""
 
-            self.last_cmd = cmd
-            self.context = cmd.replace(" ", "")
+                if not chunk:
+                    # Connection closed
+                    _LOGGER.warning("Connection closed while reading response")
+                    self._connected = False
+                    break
 
-            # Read until prompt character
-            _LOGGER.debug("Waiting for response to command: %s", cmd)
-            try:
-                response = await asyncio.wait_for(
-                    self._socket_read_until(b"#", self._socket_timeout),
-                    timeout=self._command_timeout,  # Use a longer timeout for commands
-                )
+                buffer += chunk
+
+                # Check if we've reached a prompt (end of response)
+                if any(buffer.rstrip().endswith(prompt) for prompt in prompt_patterns):
+                    break
+
+                # Continue reading if we haven't reached a prompt yet
+
             except asyncio.TimeoutError:
-                _LOGGER.error(
-                    "Timed out waiting for response to command: %s",
-                    cmd,
-                )
-                return ""
+                # No more data available within timeout
+                if buffer:
+                    # We have some data, so return it
+                    break
+                # Otherwise, continue waiting for more data
+
             except Exception as e:
                 _LOGGER.error("Error reading response: %s", e)
-                await self.reconnect()
-                return ""
+                if buffer:
+                    # Return what we have so far
+                    break
+                raise
 
-            if response:
-                # Decode and clean up the response
-                self.response_cache = response.decode("utf-8", errors="ignore")
-                _LOGGER.debug(
-                    "Response (first 100 chars): %s",
-                    self.response_cache[:100].replace("\r\n", " "),
-                )
-
-                # Add a small delay after receiving response to make sure device is ready for next command
-                await asyncio.sleep(0.2)
-
-                return self.response_cache
-            else:
-                _LOGGER.warning("Empty response for command: %s", cmd)
-                return ""
-
-        except asyncio.TimeoutError:
-            _LOGGER.error(
-                "Command timed out after %s seconds: %s",
-                self._command_timeout,
-                cmd,
-            )
-            self._handle_error(f"Command timed out: {cmd}")
-            # Attempt to reconnect on timeout
-            try:
-                await asyncio.wait_for(self.reconnect(), timeout=5)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Reconnection timed out after command timeout")
-            # Don't attempt reconnect immediately on timeout, just return empty
-            return ""
-        except ConnectionError as e:
-            _LOGGER.error("Connection error while sending command: %s", e)
-            self._handle_error(f"Connection error while sending command: {e}")
-            try:
-                await asyncio.wait_for(self.reconnect(), timeout=5)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Reconnection timed out after connection error")
-            return ""
-        except Exception as e:
-            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
-            self._handle_error(f"Error sending command: {e}")
-            try:
-                await asyncio.wait_for(self.reconnect(), timeout=5)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Reconnection timed out after unexpected error")
-            return ""
+        return buffer
 
     async def shutdown(self) -> None:
         """Shut down the controller and release resources."""
@@ -1044,390 +1196,111 @@ class RacklinkController:
                 self.pdu_model = "Racklink PDU"
             self.pdu_firmware = self.pdu_firmware or "Unknown"
 
-    async def get_all_outlet_states(self, force_refresh=False):
-        """Get all outlet states and details."""
-        _LOGGER.debug(
-            "Getting all outlet states%s", " (forced refresh)" if force_refresh else ""
-        )
+    async def get_all_outlet_states(self):
+        """Get all outlet states."""
+        _LOGGER.debug("Getting states for all outlets")
+
+        if not self._connected:
+            _LOGGER.warning("Not connected, cannot get outlet states")
+            return False
+
         try:
-            response = await self.send_command("show outlets all details")
-            if not response:
-                _LOGGER.error("No response when getting outlet states")
-                # Fallback: maintain existing state data rather than clearing it
-                return
+            # Use the number of outlets from the detected or specified model
+            capabilities = self.get_model_capabilities()
+            num_outlets = capabilities.get(
+                "num_outlets", 8
+            )  # Default to 8 if not specified
+            has_current = capabilities.get("has_current_sensing", False)
 
-            _LOGGER.debug("Outlet states response length: %d", len(response))
-            _LOGGER.debug(
-                "First 100 chars of response: %s", response[:100].replace("\r\n", " ")
-            )
+            success_count = 0
 
-            # Add more diagnostic logging - if we have serious issues, log the full response
-            _LOGGER.debug(
-                "Full outlet states response: %s", response.replace("\r\n", " ")
-            )
+            for outlet_num in range(1, num_outlets + 1):
+                # Get detailed info for this outlet
+                cmd = f"show outlets {outlet_num} details"
+                response = await self.send_command(cmd)
 
-            # Try direct approach first - look for each outlet individually
-            for outlet_num in range(1, 10):  # Try outlets 1-9
-                outlet_pattern = re.compile(
-                    f"Outlet {outlet_num}.*?Power state:\\s*(\\w+)",
-                    re.DOTALL | re.IGNORECASE,
+                if not response:
+                    _LOGGER.warning("No response for outlet %d details", outlet_num)
+                    continue
+
+                # Parse power state
+                state_match = re.search(
+                    r"Power state:\s*(\w+)", response, re.IGNORECASE
                 )
-                outlet_match = outlet_pattern.search(response)
-                if outlet_match:
-                    raw_state = outlet_match.group(1)
-                    state = raw_state.lower() in ["on", "1", "true", "yes", "active"]
-                    self.outlet_states[outlet_num] = state
+                if state_match:
+                    raw_state = state_match.group(1)
+                    is_on = raw_state.lower() in ["on", "1", "true", "yes", "active"]
+                    self.outlet_states[outlet_num] = is_on
+                    success_count += 1
                     _LOGGER.debug(
-                        "Direct match - Outlet %d state: %s (raw: %s)",
+                        "Outlet %d state: %s (raw: %s)",
                         outlet_num,
-                        state,
+                        "ON" if is_on else "OFF",
                         raw_state,
                     )
-
-            # If we found any outlets using the direct approach, skip the complex parsing
-            if self.outlet_states:
-                _LOGGER.debug(
-                    "Found %d outlets using direct pattern matching",
-                    len(self.outlet_states),
-                )
-                # Now get the names using a simpler approach too
-                for outlet_num in range(1, 10):
-                    if outlet_num in self.outlet_states:
-                        name_pattern = re.compile(
-                            f"Outlet {outlet_num}[^\\n]*\\n(.*?)\\n", re.DOTALL
-                        )
-                        name_match = name_pattern.search(response)
-                        if name_match:
-                            name = name_match.group(1).strip()
-                            # Sometimes the name contains the outlet number like "1 - Name"
-                            if " - " in name:
-                                name = name.split(" - ", 1)[1].strip()
-                            if name:
-                                self.outlet_names[outlet_num] = name
-                                _LOGGER.debug(
-                                    "Found outlet %d name: %s", outlet_num, name
-                                )
-                            else:
-                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-                        else:
-                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-
-                # Return early if we got the states using the direct approach
-                return
-
-            # Using a pattern inspired by the Q-Sys Lua implementation
-            # Looking for patterns like:
-            # Outlet 1:
-            # 1 - Outlet Name
-            # Power state: On
-            # RMS Current: 0.00A
-            # Active Power: 0W
-            # Active Energy: 0Wh
-            # Power Factor: 0%
-
-            # First, we'll split the response into sections by outlet
-            try:
-                # Pattern to match outlet headers and capture the number
-                outlet_headers = re.findall(r"Outlet (\d+):", response)
-                _LOGGER.debug(
-                    "Found %d outlet headers: %s", len(outlet_headers), outlet_headers
-                )
-
-                if not outlet_headers:
-                    _LOGGER.warning("No outlet headers found in response")
-                    return
-
-                # Split the response by "Outlet X:" patterns
-                sections = re.split(r"Outlet \d+:", response)
-
-                # Skip the first section (before the first outlet)
-                if sections and len(sections) > 1:
-                    sections = sections[1:]
-
-                    for i, (outlet_num, section) in enumerate(
-                        zip(outlet_headers, sections)
-                    ):
-                        try:
-                            outlet = int(outlet_num)
-                            _LOGGER.debug("Processing outlet %d data", outlet)
-
-                            # Extract state - more flexible pattern to match various formats
-                            state_match = re.search(
-                                r"Power state:\s*(\w+)", section, re.IGNORECASE
-                            )
-                            if state_match:
-                                raw_state = state_match.group(1)
-                                _LOGGER.debug("Raw outlet state text: '%s'", raw_state)
-
-                                # More permissive checking - any variant of "on" is considered on
-                                state = raw_state.lower() in [
-                                    "on",
-                                    "1",
-                                    "true",
-                                    "yes",
-                                    "active",
-                                ]
-                                self.outlet_states[outlet] = state
-                                _LOGGER.debug(
-                                    "Outlet %d state: %s (raw: %s)",
-                                    outlet,
-                                    state,
-                                    raw_state,
-                                )
-                            else:
-                                _LOGGER.warning(
-                                    "No power state found for outlet %d", outlet
-                                )
-
-                            # Extract name - looking for patterns like "1 - Office Equipment"
-                            name_match = re.search(r"(\d+)\s*-\s*(.+?)[\r\n]", section)
-                            if name_match and int(name_match.group(1)) == outlet:
-                                name = name_match.group(2).strip()
-                                self.outlet_names[outlet] = name
-                                _LOGGER.debug("Outlet %d name: %s", outlet, name)
-                            else:
-                                # Fallback - just use generic name if we can't find one
-                                if outlet not in self.outlet_names:
-                                    self.outlet_names[outlet] = f"Outlet {outlet}"
-
-                            # Extract current - including '0.00A' or '0 A' formats
-                            current_match = re.search(
-                                r"RMS Current:\s*([\d.]+)\s*A", section, re.IGNORECASE
-                            )
-                            if current_match:
-                                try:
-                                    current = float(current_match.group(1).strip())
-                                    self.outlet_current[outlet] = current
-                                    _LOGGER.debug(
-                                        "Outlet %d current: %.2f A", outlet, current
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid current value for outlet %d", outlet
-                                    )
-
-                            # Extract power - including '0W' or '0 W' formats
-                            power_match = re.search(
-                                r"Active Power:\s*([\d.]+)\s*W", section, re.IGNORECASE
-                            )
-                            if power_match:
-                                try:
-                                    power = float(power_match.group(1).strip())
-                                    self.outlet_power[outlet] = power
-                                    _LOGGER.debug(
-                                        "Outlet %d power: %.2f W", outlet, power
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid power value for outlet %d", outlet
-                                    )
-
-                            # Extract energy - including '0Wh' or '0 Wh' formats
-                            energy_match = re.search(
-                                r"Active Energy:\s*([\d.]+)\s*Wh",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if energy_match:
-                                try:
-                                    energy = float(energy_match.group(1).strip())
-                                    self.outlet_energy[outlet] = energy
-                                    _LOGGER.debug(
-                                        "Outlet %d energy: %.2f Wh", outlet, energy
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid energy value for outlet %d", outlet
-                                    )
-
-                            # Extract power factor - including '0%' format
-                            pf_match = re.search(
-                                r"Power Factor:\s*([\d.]+)\s*%", section, re.IGNORECASE
-                            )
-                            if pf_match:
-                                try:
-                                    power_factor = float(pf_match.group(1).strip())
-                                    self.outlet_power_factor[outlet] = (
-                                        power_factor / 100.0
-                                    )  # Convert to decimal
-                                    _LOGGER.debug(
-                                        "Outlet %d power factor: %.2f",
-                                        outlet,
-                                        self.outlet_power_factor[outlet],
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid power factor value for outlet %d",
-                                        outlet,
-                                    )
-
-                            # Extract apparent power (VA)
-                            apparent_power_match = re.search(
-                                r"Apparent Power:\s*([\d.]+)\s*VA",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if apparent_power_match:
-                                try:
-                                    apparent_power = float(
-                                        apparent_power_match.group(1).strip()
-                                    )
-                                    self.outlet_apparent_power[outlet] = apparent_power
-                                    _LOGGER.debug(
-                                        "Outlet %d apparent power: %.2f VA",
-                                        outlet,
-                                        apparent_power,
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid apparent power value for outlet %d",
-                                        outlet,
-                                    )
-
-                            # Extract RMS Voltage
-                            voltage_match = re.search(
-                                r"RMS Voltage:\s*([\d.]+)\s*V", section, re.IGNORECASE
-                            )
-                            if voltage_match:
-                                try:
-                                    voltage = float(voltage_match.group(1).strip())
-                                    self.outlet_voltage[outlet] = voltage
-                                    _LOGGER.debug(
-                                        "Outlet %d voltage: %.1f V", outlet, voltage
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid voltage value for outlet %d", outlet
-                                    )
-
-                            # Extract Line Frequency
-                            freq_match = re.search(
-                                r"Line Frequency:\s*([\d.]+)\s*Hz",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if freq_match:
-                                try:
-                                    frequency = float(freq_match.group(1).strip())
-                                    self.outlet_line_frequency[outlet] = frequency
-                                    _LOGGER.debug(
-                                        "Outlet %d frequency: %.1f Hz",
-                                        outlet,
-                                        frequency,
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid frequency value for outlet %d", outlet
-                                    )
-
-                            # Extract Cycling power off period
-                            cycle_match = re.search(
-                                r"Cycling power off period:.*?(\d+)\s*s",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if cycle_match:
-                                try:
-                                    cycling_period = int(cycle_match.group(1).strip())
-                                    self.outlet_cycling_period[outlet] = cycling_period
-                                    _LOGGER.debug(
-                                        "Outlet %d cycling period: %d s",
-                                        outlet,
-                                        cycling_period,
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid cycling period value for outlet %d",
-                                        outlet,
-                                    )
-
-                            # Extract Non-critical flag
-                            non_critical_match = re.search(
-                                r"Non critical:\s*(True|False|Yes|No)",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if non_critical_match:
-                                non_critical_value = (
-                                    non_critical_match.group(1).strip().lower()
-                                )
-                                is_non_critical = non_critical_value in ["true", "yes"]
-                                self.outlet_non_critical[outlet] = is_non_critical
-                                _LOGGER.debug(
-                                    "Outlet %d non-critical: %s",
-                                    outlet,
-                                    is_non_critical,
-                                )
-
-                            # Extract Receptacle type
-                            receptacle_match = re.search(
-                                r"Receptacle type:\s*(.+?)[\r\n]",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if receptacle_match:
-                                receptacle_type = receptacle_match.group(1).strip()
-                                self.outlet_receptacle_type[outlet] = receptacle_type
-                                _LOGGER.debug(
-                                    "Outlet %d receptacle type: %s",
-                                    outlet,
-                                    receptacle_type,
-                                )
-
-                            # Extract Rated current
-                            rated_current_match = re.search(
-                                r"Rated current:\s*([\d.]+)\s*A", section, re.IGNORECASE
-                            )
-                            if rated_current_match:
-                                try:
-                                    rated_current = float(
-                                        rated_current_match.group(1).strip()
-                                    )
-                                    self.outlet_rated_current[outlet] = rated_current
-                                    _LOGGER.debug(
-                                        "Outlet %d rated current: %.1f A",
-                                        outlet,
-                                        rated_current,
-                                    )
-                                except ValueError:
-                                    _LOGGER.warning(
-                                        "Invalid rated current value for outlet %d",
-                                        outlet,
-                                    )
-
-                            # Extract Operating voltage
-                            op_voltage_match = re.search(
-                                r"Operating voltage:\s*(.+?)[\r\n]",
-                                section,
-                                re.IGNORECASE,
-                            )
-                            if op_voltage_match:
-                                operating_voltage = op_voltage_match.group(1).strip()
-                                self.outlet_operating_voltage[outlet] = (
-                                    operating_voltage
-                                )
-                                _LOGGER.debug(
-                                    "Outlet %d operating voltage: %s",
-                                    outlet,
-                                    operating_voltage,
-                                )
-
-                        except Exception as err:
-                            _LOGGER.error("Error parsing outlet %d: %s", outlet, err)
-                            _LOGGER.debug(
-                                "Section causing parse error: %s", section[:100]
-                            )
                 else:
-                    _LOGGER.warning("No valid outlet sections found in response")
+                    _LOGGER.warning(
+                        "No power state found in response for outlet %d: %s",
+                        outlet_num,
+                        response[:100].replace("\r\n", " "),
+                    )
 
-            except Exception as e:
-                _LOGGER.error("Failed to parse outlet details: %s", e)
-                _LOGGER.debug("Response causing parse failure: %s", response[:200])
+                # Parse name if available
+                name_match = re.search(r"Name:\s*([^\r\n]+)", response, re.IGNORECASE)
+                if name_match and name_match.group(1).strip():
+                    name = name_match.group(1).strip()
+                    self.outlet_names[outlet_num] = name
+                    _LOGGER.debug("Outlet %d name: %s", outlet_num, name)
+                else:
+                    # Set default name if not found
+                    if outlet_num not in self.outlet_names:
+                        self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+
+                # If this model has current sensing, parse current and power
+                if has_current:
+                    # Extract current
+                    current_match = re.search(
+                        r"RMS Current:\s*([\d.]+)\s*A", response, re.IGNORECASE
+                    )
+                    if current_match:
+                        try:
+                            current = float(current_match.group(1).strip())
+                            self.outlet_current[outlet_num] = current
+                            _LOGGER.debug(
+                                "Outlet %d current: %.2f A", outlet_num, current
+                            )
+                        except (ValueError, TypeError):
+                            _LOGGER.warning(
+                                "Invalid current value for outlet %d", outlet_num
+                            )
+
+                    # Extract power
+                    power_match = re.search(
+                        r"Active Power:\s*([\d.]+)\s*W", response, re.IGNORECASE
+                    )
+                    if power_match:
+                        try:
+                            power = float(power_match.group(1).strip())
+                            self.outlet_power[outlet_num] = power
+                            _LOGGER.debug("Outlet %d power: %.2f W", outlet_num, power)
+                        except (ValueError, TypeError):
+                            _LOGGER.warning(
+                                "Invalid power value for outlet %d", outlet_num
+                            )
+
+                # Brief delay to avoid overwhelming the device
+                await asyncio.sleep(0.2)
+
+            _LOGGER.info(
+                "Successfully retrieved %d of %d outlet states",
+                success_count,
+                num_outlets,
+            )
+            return success_count > 0
 
         except Exception as e:
-            _LOGGER.error("Failed to get outlet states: %s", e)
-            # Don't clear existing states on error - maintain last known good values
-            return
+            _LOGGER.error("Error getting all outlet states: %s", e)
+            return False
 
     async def set_outlet_state(self, outlet: int, state: bool):
         """Set an outlet's power state."""
@@ -1508,8 +1381,89 @@ class RacklinkController:
 
     async def cycle_outlet(self, outlet: int):
         """Cycle an outlet's power."""
+        _LOGGER.debug("Cycling outlet %d", outlet)
         cmd = f"power outlets {outlet} cycle /y"
-        await self.send_command(cmd)
+        response = await self.send_command(cmd)
+
+        if not response:
+            _LOGGER.error("No response when cycling outlet %d", outlet)
+            return False
+
+        # Check if the command was acknowledged
+        success_patterns = [
+            r"outlet.*cycling",  # Cycling confirmation
+            r"Success",  # Generic success message
+            r"OK",  # Generic success message
+        ]
+
+        command_successful = False
+        for pattern in success_patterns:
+            if re.search(pattern, response, re.IGNORECASE):
+                command_successful = True
+                break
+
+        if not command_successful:
+            _LOGGER.warning(
+                "Uncertain if outlet %d cycle was initiated: %s",
+                outlet,
+                response[:100].replace("\r\n", " "),
+            )
+
+        # Wait for the cycle to complete (typical cycle time is 5 seconds)
+        _LOGGER.debug("Waiting for outlet %d cycle to complete", outlet)
+        await asyncio.sleep(5)
+
+        # Verify outlet state after cycling (should be ON)
+        try:
+            cmd = f"show outlets {outlet} details"
+            verify_response = await self.send_command(cmd)
+
+            if verify_response:
+                state_match = re.search(
+                    r"Power state:\s*(\w+)", verify_response, re.IGNORECASE
+                )
+                if state_match:
+                    current_state = state_match.group(1)
+                    is_on = current_state.lower() in [
+                        "on",
+                        "1",
+                        "true",
+                        "yes",
+                        "active",
+                    ]
+
+                    # Update our stored state
+                    self.outlet_states[outlet] = is_on
+
+                    _LOGGER.debug(
+                        "After cycling, outlet %d state is: %s",
+                        outlet,
+                        "ON" if is_on else "OFF",
+                    )
+
+                    # Cycling should result in the outlet being ON
+                    if not is_on:
+                        _LOGGER.warning(
+                            "Outlet %d is OFF after cycling - expected ON", outlet
+                        )
+                        return False
+
+                    return True
+                else:
+                    _LOGGER.warning(
+                        "Could not determine outlet %d state after cycling", outlet
+                    )
+            else:
+                _LOGGER.warning(
+                    "No response when verifying outlet %d state after cycling", outlet
+                )
+        except Exception as e:
+            _LOGGER.error(
+                "Error verifying outlet %d state after cycling: %s", outlet, e
+            )
+
+        # Return the success of the command if we couldn't verify
+        return command_successful
 
     async def set_outlet_name(self, outlet: int, name: str):
         """Set an outlet's name."""
@@ -1530,8 +1484,115 @@ class RacklinkController:
 
     async def cycle_all_outlets(self):
         """Cycle all outlets."""
+        _LOGGER.debug("Cycling all outlets")
         cmd = "power outlets all cycle /y"
-        await self.send_command(cmd)
+        response = await self.send_command(cmd)
+
+        if not response:
+            _LOGGER.error("No response when cycling all outlets")
+            return False
+
+        # Check if the command was acknowledged
+        success_patterns = [
+            r"outlet.*cycling",  # Cycling confirmation
+            r"Success",  # Generic success message
+            r"OK",  # Generic success message
+        ]
+
+        command_successful = False
+        for pattern in success_patterns:
+            if re.search(pattern, response, re.IGNORECASE):
+                command_successful = True
+                break
+
+        if not command_successful:
+            _LOGGER.warning(
+                "Uncertain if all outlets cycle was initiated: %s",
+                response[:100].replace("\r\n", " "),
+            )
+
+        # Wait for the cycle to complete (typical cycle time is 5 seconds)
+        _LOGGER.debug("Waiting for all outlets cycle to complete")
+        await asyncio.sleep(7)  # Slight longer wait for all outlets
+
+        # Verify outlet states after cycling (should be ON)
+        try:
+            # Use the number of outlets from the detected or specified model
+            capabilities = self.get_model_capabilities()
+            num_outlets = capabilities.get(
+                "num_outlets", 8
+            )  # Default to 8 if not specified
+
+            all_on = True
+            # Check a few outlets as a sample (checking all would be too much traffic)
+            sample_outlets = [1, num_outlets]  # First and last outlet
+            if num_outlets > 4:
+                sample_outlets.append(
+                    num_outlets // 2
+                )  # Add middle outlet if there are many
+
+            for outlet in sample_outlets:
+                cmd = f"show outlets {outlet} details"
+                verify_response = await self.send_command(cmd)
+
+                if verify_response:
+                    state_match = re.search(
+                        r"Power state:\s*(\w+)", verify_response, re.IGNORECASE
+                    )
+                    if state_match:
+                        current_state = state_match.group(1)
+                        is_on = current_state.lower() in [
+                            "on",
+                            "1",
+                            "true",
+                            "yes",
+                            "active",
+                        ]
+
+                        # Update our stored state
+                        self.outlet_states[outlet] = is_on
+
+                        _LOGGER.debug(
+                            "After cycling all, outlet %d state is: %s",
+                            outlet,
+                            "ON" if is_on else "OFF",
+                        )
+
+                        # Cycling should result in the outlet being ON
+                        if not is_on:
+                            _LOGGER.warning(
+                                "Outlet %d is OFF after cycling all - expected ON",
+                                outlet,
+                            )
+                            all_on = False
+                    else:
+                        _LOGGER.warning(
+                            "Could not determine outlet %d state after cycling all",
+                            outlet,
+                        )
+                        all_on = False
+                else:
+                    _LOGGER.warning(
+                        "No response when verifying outlet %d state after cycling all",
+                        outlet,
+                    )
+                    all_on = False
+
+                # Brief delay before checking next outlet
+                await asyncio.sleep(0.2)
+
+            # Set remaining outlet states to ON (optimistic)
+            for outlet in range(1, num_outlets + 1):
+                if outlet not in sample_outlets:
+                    self.outlet_states[outlet] = True
+
+            return all_on and command_successful
+
+        except Exception as e:
+            _LOGGER.error("Error verifying outlet states after cycling all: %s", e)
+
+        # Return the success of the command if we couldn't verify
+        return command_successful
 
     async def set_pdu_name(self, name: str):
         """Set the PDU name."""
@@ -1762,101 +1823,36 @@ class RacklinkController:
         return capabilities
 
     async def update(self):
-        """Update all device data."""
-        _LOGGER.debug("Running update for %s", self.host)
-        if not self.connected:
-            _LOGGER.debug("Not connected, attempting to connect before update")
+        """Update outlet states and other data."""
+        if not self._connected:
+            _LOGGER.warning("Not connected, attempting to reconnect before update")
             try:
-                # Use longer timeout for connection during update
-                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Connection attempt during update timed out")
-                return
-            except Exception as err:
-                _LOGGER.error("Connection attempt during update failed: %s", err)
-                return
-
-        # Get PDU details if we don't have them yet
-        if not self.pdu_serial or self.pdu_serial == f"{self.host}_{self.port}":
-            try:
-                await asyncio.wait_for(
-                    self.get_pdu_details(), timeout=self._command_timeout
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Timeout getting PDU details, continuing with defaults")
+                await self._background_connect()
+                # If connection fails, the error will be logged in _background_connect
+                if not self._connected:
+                    return False
             except Exception as e:
-                _LOGGER.warning(
-                    "Error getting PDU details: %s, continuing with defaults", e
-                )
+                _LOGGER.error("Failed to reconnect during update: %s", e)
+                return False
 
-        # Get outlet states (this will also update outlet metrics)
-        _LOGGER.debug("Updating outlet states for %s", self.host)
+        _LOGGER.debug("Updating PDU data")
+
         try:
-            await asyncio.wait_for(
-                self.get_all_outlet_states(force_refresh=True),
-                timeout=self._command_timeout,
-            )
-            _LOGGER.debug(
-                "After update, found %d outlet states", len(self.outlet_states)
-            )
-            for outlet, state in self.outlet_states.items():
-                _LOGGER.debug("  Outlet %d: %s", outlet, "ON" if state else "OFF")
-        except Exception as err:
-            _LOGGER.error("Failed to update outlet states: %s", err)
+            # Get all outlet states - this has been improved to query each outlet individually
+            update_success = await self.get_all_outlet_states()
 
-        # If outlet states are still empty, try the individual approach
-        if not self.outlet_states:
-            _LOGGER.debug("No outlet states found, trying individual outlet queries")
-            for outlet_num in range(1, 10):  # Try outlets 1-9
-                try:
-                    response = await self.send_command(
-                        f"show outlets {outlet_num} details"
-                    )
-                    if response:
-                        state_match = re.search(
-                            r"Power state:\s*(\w+)", response, re.IGNORECASE
-                        )
-                        if state_match:
-                            raw_state = state_match.group(1)
-                            state = raw_state.lower() in [
-                                "on",
-                                "1",
-                                "true",
-                                "yes",
-                                "active",
-                            ]
-                            self.outlet_states[outlet_num] = state
-                            _LOGGER.debug(
-                                "Individual query - Outlet %d state: %s (raw: %s)",
-                                outlet_num,
-                                state,
-                                raw_state,
-                            )
+            # Only update timestamp if we actually got some data
+            if update_success:
+                self._last_update = time.time()
+                self._available = True
+                _LOGGER.debug("Update completed successfully")
+                return True
+            else:
+                _LOGGER.warning("Update failed - couldn't get outlet states")
+                # Don't mark as unavailable on a single failure
+                return False
 
-                            # Also extract the name while we're here
-                            name_match = re.search(
-                                r"Outlet \d+ - (.+?)[\r\n]", response
-                            )
-                            if name_match:
-                                name = name_match.group(1).strip()
-                                self.outlet_names[outlet_num] = name
-                                _LOGGER.debug(
-                                    "Found outlet %d name: %s", outlet_num, name
-                                )
-                            else:
-                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-                except Exception as err:
-                    _LOGGER.debug("Error querying outlet %d: %s", outlet_num, err)
-
-        # Get sensor values
-        try:
-            await asyncio.wait_for(
-                self.get_sensor_values(force_refresh=True),
-                timeout=self._command_timeout,
-            )
-            _LOGGER.debug("After update, sensors: %s", self.sensors)
-        except Exception as err:
-            _LOGGER.error("Failed to update sensor values: %s", err)
-
-        self._last_update = asyncio.get_event_loop().time()
-        self._available = True  # Mark as available even if some data is missing
+        except Exception as e:
+            _LOGGER.error("Error during update: %s", e)
+            # Don't mark as unavailable on a single error
+            return False
