@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import re
-import telnetlib
+import socket
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -29,7 +30,7 @@ class RacklinkController:
         self.username = username
         self.password = password
         self.specified_model = model  # Store the user-specified model
-        self.telnet: Optional[telnetlib.Telnet] = None
+        self.socket = None
         self.response_cache = ""
         self.last_cmd = ""
         self.context = ""
@@ -62,7 +63,7 @@ class RacklinkController:
         self._connection_lock = asyncio.Lock()
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 3
-        self._telnet_timeout = 5  # Shorter timeout for better responsiveness
+        self._socket_timeout = 5  # Shorter timeout for better responsiveness
         self._command_timeout = 15  # Longer timeout for commands
         self._connection_timeout = 20  # Longer timeout for initial connection
         self._command_delay = 1.0  # Delay between commands to avoid overwhelming device
@@ -72,12 +73,13 @@ class RacklinkController:
         self._command_processor_task = None  # Task for processing commands
         self._connection_task = None
         self._shutdown_requested = False
+        self._read_buffer = b""  # Buffer for socket reads
 
     @property
     def connected(self) -> bool:
         """Return if we are connected to the device."""
-        # Only consider truly connected if we have a telnet object and _connected flag
-        return self._connected and self.telnet is not None
+        # Only consider truly connected if we have a socket object and _connected flag
+        return self._connected and self.socket is not None
 
     @property
     def available(self) -> bool:
@@ -101,77 +103,144 @@ class RacklinkController:
         self._available = False
         _LOGGER.error("Racklink error: %s", error)
 
-    async def _create_telnet_connection(self):
-        """Create a telnet connection in a separate thread to avoid blocking."""
+    async def _create_socket_connection(self):
+        """Create a socket connection in a separate thread to avoid blocking."""
         try:
-            # Create telnet connection in a separate thread
-            _LOGGER.debug("Creating telnet connection to %s:%s", self.host, self.port)
-            result = await asyncio.to_thread(
-                telnetlib.Telnet, self.host, self.port, self._telnet_timeout
-            )
+            # Create socket connection in a separate thread
+            _LOGGER.debug("Creating socket connection to %s:%s", self.host, self.port)
+
+            def connect_socket():
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(self._socket_timeout)
+                    sock.connect((self.host, self.port))
+                    return sock
+                except Exception as e:
+                    _LOGGER.error("Socket connection error: %s", e)
+                    return None
+
+            result = await asyncio.to_thread(connect_socket)
+
             if result:
-                _LOGGER.debug("Successfully created telnet connection")
+                _LOGGER.debug("Successfully created socket connection")
             else:
-                _LOGGER.error("Failed to create telnet connection - returned None")
+                _LOGGER.error("Failed to create socket connection - returned None")
             return result
         except Exception as e:
-            _LOGGER.error("Failed to create telnet connection: %s", e)
+            _LOGGER.error("Failed to create socket connection: %s", e)
             return None
 
-    async def _telnet_read_until(self, pattern: bytes, timeout: int = None) -> bytes:
-        """Read from telnet connection in a non-blocking way."""
-        if not self.telnet:
-            raise ConnectionError("No telnet connection available")
+    async def _socket_read_until(self, pattern: bytes, timeout: int = None) -> bytes:
+        """Read from socket connection until pattern is found."""
+        if not self.socket:
+            raise ConnectionError("No socket connection available")
 
         if pattern is None:
             raise ValueError("Pattern cannot be None")
 
-        timeout = timeout or self._telnet_timeout
-        try:
-            _LOGGER.debug("Reading from telnet until pattern: %s", pattern)
-            return await asyncio.to_thread(self.telnet.read_until, pattern, timeout)
-        except EOFError as exc:
-            self._connected = False
-            raise ConnectionError("Connection closed by remote host") from exc
-        except asyncio.CancelledError:
-            _LOGGER.warning("Telnet read operation was cancelled")
-            raise
-        except Exception as exc:
-            self._connected = False
-            raise ConnectionError(f"Error reading from telnet: {exc}") from exc
+        timeout = timeout or self._socket_timeout
+        start_time = time.time()
 
-    async def _telnet_write(self, data: bytes) -> None:
-        """Write to telnet connection in a non-blocking way."""
-        if not self.telnet:
-            _LOGGER.error("Cannot write to telnet: connection is None")
-            raise ConnectionError("No telnet connection available")
+        try:
+            # Use existing buffer or create a new one
+            buffer = self._read_buffer
+
+            while time.time() - start_time < timeout:
+                # Check if pattern is already in buffer
+                if pattern in buffer:
+                    pattern_index = buffer.find(pattern) + len(pattern)
+                    result = buffer[:pattern_index]
+                    # Save remaining data for next read
+                    self._read_buffer = buffer[pattern_index:]
+                    return result
+
+                # Set socket timeout
+                self.socket.settimeout(min(0.5, timeout - (time.time() - start_time)))
+
+                try:
+                    # Read more data from socket
+                    def read_socket():
+                        try:
+                            return self.socket.recv(1024)
+                        except socket.timeout:
+                            return b""
+                        except Exception as e:
+                            _LOGGER.error("Socket read error: %s", e)
+                            raise
+
+                    data = await asyncio.to_thread(read_socket)
+
+                    if not data:
+                        # Connection closed or timeout
+                        if time.time() - start_time >= timeout:
+                            _LOGGER.warning("Socket read timeout")
+                            break
+                        await asyncio.sleep(0.1)  # Short sleep to prevent CPU spinning
+                        continue
+
+                    buffer += data
+                except asyncio.CancelledError:
+                    _LOGGER.warning("Socket read operation was cancelled")
+                    raise
+                except Exception as e:
+                    _LOGGER.error("Error reading from socket: %s", e)
+                    self._connected = False
+                    self._available = False
+                    raise ConnectionError(f"Error reading from socket: {e}")
+
+            # Timeout reached, return what we have so far
+            _LOGGER.warning("Socket read timed out, returning partial data")
+            # Don't clear the buffer - save it for next read
+            self._read_buffer = buffer
+            return buffer
+
+        except Exception as e:
+            _LOGGER.error("Error in _socket_read_until: %s", e)
+            self._connected = False
+            self._available = False
+            raise
+
+    async def _socket_write(self, data: bytes) -> None:
+        """Write to socket connection in a non-blocking way."""
+        if not self.socket:
+            _LOGGER.error("Cannot write to socket: connection is None")
+            raise ConnectionError("No socket connection available")
 
         if data is None:
             raise ValueError("Data cannot be None")
 
         try:
-            _LOGGER.debug("Writing %d bytes to telnet", len(data))
-            # Safety check - don't use a direct reference to self.telnet that could become None
-            telnet = self.telnet
-            if telnet is None:
-                raise ConnectionError("Telnet connection became None")
+            _LOGGER.debug("Writing %d bytes to socket", len(data))
+            # Safety check - don't use a direct reference to self.socket that could become None
+            socket_connection = self.socket
+            if socket_connection is None:
+                raise ConnectionError("Socket connection became None")
 
-            await asyncio.to_thread(telnet.write, data)
-        except EOFError as exc:
-            self._connected = False
-            self._available = False
-            raise ConnectionError("Connection closed while writing data") from exc
+            # Send data in a separate thread
+            def send_data(sock, data_to_send):
+                try:
+                    sock.sendall(data_to_send)
+                    return True
+                except Exception as e:
+                    _LOGGER.error("Socket send error: %s", e)
+                    return False
+
+            success = await asyncio.to_thread(send_data, socket_connection, data)
+
+            if not success:
+                raise ConnectionError("Failed to send data through socket")
+
         except asyncio.CancelledError:
-            _LOGGER.warning("Telnet write operation was cancelled")
+            _LOGGER.warning("Socket write operation was cancelled")
             raise
         except AttributeError as exc:
             self._connected = False
             self._available = False
-            raise ConnectionError(f"Telnet connection lost: {exc}") from exc
+            raise ConnectionError(f"Socket connection lost: {exc}") from exc
         except Exception as exc:
             self._connected = False
             self._available = False
-            raise ConnectionError(f"Error writing to telnet: {exc}") from exc
+            raise ConnectionError(f"Error writing to socket: {exc}") from exc
 
     async def start_background_connection(self) -> None:
         """Start background connection task that won't block Home Assistant startup."""
@@ -188,7 +257,7 @@ class RacklinkController:
             # Attempt connection with a timeout but don't load initial status
             # This will be handled separately to prevent blocking
             await asyncio.wait_for(
-                self._connect_only(), timeout=self._telnet_timeout * 2
+                self._connect_only(), timeout=self._socket_timeout * 2
             )
 
             # Once connected, start loading data in separate tasks
@@ -218,12 +287,12 @@ class RacklinkController:
                 "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
             )
             try:
-                # Create telnet connection with timeout
-                self.telnet = await asyncio.wait_for(
-                    self._create_telnet_connection(), timeout=self._telnet_timeout
+                # Create socket connection with timeout
+                self.socket = await asyncio.wait_for(
+                    self._create_socket_connection(), timeout=self._socket_timeout
                 )
 
-                if not self.telnet:
+                if not self.socket:
                     raise ConnectionError(
                         f"Failed to connect to {self.host}:{self.port}"
                     )
@@ -234,97 +303,90 @@ class RacklinkController:
                 self._last_error = None
                 self._last_error_time = None
                 self._reconnect_attempts = 0
+                self._read_buffer = b""  # Clear read buffer on new connection
                 _LOGGER.info(
                     "Successfully connected to Middle Atlantic Racklink at %s (basic connection)",
                     self.host,
                 )
             except (asyncio.TimeoutError, ConnectionError) as e:
-                if self.telnet:
-                    await asyncio.to_thread(self.telnet.close)
-                    self.telnet = None
+                if self.socket:
+                    # Close socket in a thread
+                    def close_socket(sock):
+                        try:
+                            sock.close()
+                        except Exception as close_err:
+                            _LOGGER.debug("Error closing socket: %s", close_err)
+
+                    await asyncio.to_thread(close_socket, self.socket)
+                    self.socket = None
                 self._connected = False
                 self._handle_error(f"Connection failed: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
-                if self.telnet:
-                    await asyncio.to_thread(self.telnet.close)
-                    self.telnet = None
+                if self.socket:
+                    # Close socket in a thread
+                    def close_socket(sock):
+                        try:
+                            sock.close()
+                        except Exception as close_err:
+                            _LOGGER.debug("Error closing socket: %s", close_err)
+
+                    await asyncio.to_thread(close_socket, self.socket)
+                    self.socket = None
                 self._connected = False
                 self._handle_error(f"Unexpected error during connection: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
 
-    async def _load_initial_data(self) -> None:
-        """Load initial data in a separate non-blocking task."""
-        if not self._connected:
-            _LOGGER.warning("Cannot load initial data, not connected")
-            return
-
-        _LOGGER.debug("Starting to load initial device data for %s", self.host)
-
-        # Try to load data with timeouts for each phase
+    async def login(self) -> None:
+        """Login to the device."""
         try:
-            # Phase 1: Get PDU details (needed for basic operation)
-            _LOGGER.debug("Loading PDU details for %s", self.host)
-            try:
-                await asyncio.wait_for(
-                    self.get_pdu_details(), timeout=self._command_timeout
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Timeout getting PDU details, continuing with defaults")
-            except Exception as e:
-                _LOGGER.warning(
-                    "Error getting PDU details: %s, continuing with defaults", e
-                )
+            # Wait for username prompt with timeout
+            _LOGGER.debug("Waiting for Username prompt")
+            response = await asyncio.wait_for(
+                self._socket_read_until(b"Username:", self._connection_timeout),
+                timeout=self._connection_timeout,
+            )
+            _LOGGER.debug("Got Username prompt, sending username")
 
-            # Phase 2: Get outlet states (after a short delay)
-            await asyncio.sleep(0.5)  # Small delay to not overload the device
-            if not self._connected:
-                return
+            # Send username with CRLF
+            await self._socket_write(f"{self.username}\r\n".encode())
 
-            _LOGGER.debug("Loading outlet states for %s", self.host)
-            try:
-                await asyncio.wait_for(
-                    self.get_all_outlet_states(), timeout=self._command_timeout
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning(
-                    "Timeout getting outlet states, will retry on next update"
-                )
-            except Exception as e:
-                _LOGGER.warning(
-                    "Error getting outlet states: %s, will retry on next update", e
-                )
+            # Wait for password prompt with timeout
+            _LOGGER.debug("Waiting for Password prompt")
+            response = await asyncio.wait_for(
+                self._socket_read_until(b"Password:", self._connection_timeout),
+                timeout=self._connection_timeout,
+            )
+            _LOGGER.debug("Got Password prompt, sending password")
 
-            # Phase 3: Get sensor values (after another delay)
-            await asyncio.sleep(0.5)  # Small delay to not overload the device
-            if not self._connected:
-                return
+            # Send password with CRLF
+            await self._socket_write(f"{self.password}\r\n".encode())
 
-            _LOGGER.debug("Loading sensor values for %s", self.host)
-            try:
-                await asyncio.wait_for(
-                    self.get_sensor_values(), timeout=self._command_timeout
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning(
-                    "Timeout getting sensor values, will retry on next update"
-                )
-            except Exception as e:
-                _LOGGER.warning(
-                    "Error getting sensor values: %s, will retry on next update", e
-                )
+            # Wait for command prompt with timeout
+            _LOGGER.debug("Waiting for command prompt")
+            response = await asyncio.wait_for(
+                self._socket_read_until(b"#", self._connection_timeout),
+                timeout=self._connection_timeout,
+            )
+            _LOGGER.debug("Got command prompt")
 
-            self._last_update = asyncio.get_event_loop().time()
-            _LOGGER.info("Successfully loaded all initial data for %s", self.host)
+            if b"#" not in response:
+                _LOGGER.error("Did not get command prompt after login")
+                raise ValueError("Login failed: Invalid credentials")
 
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout loading initial data for %s", self.host)
-            # Don't lose the connection just because initial load timed out
-            self._available = True  # Keep device available for commands
-        except Exception as err:
-            _LOGGER.error("Error loading initial data for %s: %s", self.host, err)
-            # Don't lose the connection just because of an error in initial load
-            self._available = True  # Keep device available for commands
+            # Add a short delay after login to ensure device is ready for commands
+            await asyncio.sleep(1)
+
+        except asyncio.TimeoutError as exc:
+            _LOGGER.error("Login timed out - no response from device")
+            raise ConnectionError("Login timed out") from exc
+        except ConnectionError as e:
+            _LOGGER.error("Connection error during login: %s", e)
+            raise ConnectionError(f"Login failed: {e}") from e
+        except Exception as e:
+            _LOGGER.error("Unexpected error during login: %s", e)
+            self._handle_error(f"Login failed: {e}")
+            raise ValueError(f"Login failed: {e}") from e
 
     async def connect(self) -> None:
         """Connect to the RackLink device."""
@@ -334,31 +396,38 @@ class RacklinkController:
             return
 
         async with self._connection_lock:
-            if self._connected and self.telnet is not None:
+            if self._connected and self.socket is not None:
                 _LOGGER.debug("Already connected to %s, skipping connection", self.host)
                 return
 
             # Clean up any existing broken connection
-            if self.telnet is not None:
-                _LOGGER.debug("Cleaning up existing broken telnet connection")
+            if self.socket is not None:
+                _LOGGER.debug("Cleaning up existing broken socket connection")
                 try:
-                    await asyncio.to_thread(self.telnet.close)
+                    # Close socket in a thread
+                    def close_socket(sock):
+                        try:
+                            sock.close()
+                        except Exception as close_err:
+                            _LOGGER.debug("Error closing socket: %s", close_err)
+
+                    await asyncio.to_thread(close_socket, self.socket)
                 except Exception as e:
-                    _LOGGER.debug("Error closing existing telnet connection: %s", e)
+                    _LOGGER.debug("Error closing existing socket connection: %s", e)
                 finally:
-                    self.telnet = None
+                    self.socket = None
                     self._connected = False
 
             _LOGGER.info(
                 "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
             )
             try:
-                # Create telnet connection with timeout
-                self.telnet = await asyncio.wait_for(
-                    self._create_telnet_connection(), timeout=self._connection_timeout
+                # Create socket connection with timeout
+                self.socket = await asyncio.wait_for(
+                    self._create_socket_connection(), timeout=self._connection_timeout
                 )
 
-                if not self.telnet:
+                if not self.socket:
                     raise ConnectionError(
                         f"Failed to connect to {self.host}:{self.port}"
                     )
@@ -371,6 +440,7 @@ class RacklinkController:
                 self._last_error = None
                 self._last_error_time = None
                 self._reconnect_attempts = 0
+                self._read_buffer = b""  # Clear read buffer on new connection
 
                 # Start command queue processing task if not running
                 if (
@@ -387,29 +457,43 @@ class RacklinkController:
                     self.host,
                 )
             except (asyncio.TimeoutError, ConnectionError) as e:
-                if self.telnet:
+                if self.socket:
                     try:
-                        await asyncio.to_thread(self.telnet.close)
+                        # Close socket in a thread
+                        def close_socket(sock):
+                            try:
+                                sock.close()
+                            except Exception as close_err:
+                                _LOGGER.debug("Error closing socket: %s", close_err)
+
+                        await asyncio.to_thread(close_socket, self.socket)
                     except Exception as close_err:
                         _LOGGER.debug(
-                            "Error closing telnet during connection failure: %s",
+                            "Error closing socket during connection failure: %s",
                             close_err,
                         )
-                    self.telnet = None
+                    self.socket = None
                 self._connected = False
                 self._available = False
                 self._handle_error(f"Connection failed: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
-                if self.telnet:
+                if self.socket:
                     try:
-                        await asyncio.to_thread(self.telnet.close)
+                        # Close socket in a thread
+                        def close_socket(sock):
+                            try:
+                                sock.close()
+                            except Exception as close_err:
+                                _LOGGER.debug("Error closing socket: %s", close_err)
+
+                        await asyncio.to_thread(close_socket, self.socket)
                     except Exception as close_err:
                         _LOGGER.debug(
-                            "Error closing telnet during connection failure: %s",
+                            "Error closing socket during connection failure: %s",
                             close_err,
                         )
-                    self.telnet = None
+                    self.socket = None
                 self._connected = False
                 self._available = False
                 self._handle_error(f"Unexpected error during connection: {e}")
@@ -441,29 +525,360 @@ class RacklinkController:
                 except Exception as e:
                     _LOGGER.debug("Error cancelling command processor task: %s", e)
 
-            # Close telnet connection
-            if self.telnet:
+            # Close socket connection
+            if self.socket:
                 try:
                     # Send terminal exit command if still connected
                     if self._connected:
                         try:
                             _LOGGER.debug("Sending exit command")
                             await asyncio.wait_for(
-                                self._telnet_write("exit\r\n".encode()), timeout=2
+                                self._socket_write("exit\r\n".encode()), timeout=2
                             )
                         except Exception as e:
                             _LOGGER.debug("Error sending exit command: %s", e)
 
                     # Close the connection
-                    _LOGGER.debug("Closing telnet connection")
-                    await asyncio.to_thread(self.telnet.close)
+                    _LOGGER.debug("Closing socket connection")
+
+                    # Close socket in a thread
+                    def close_socket(sock):
+                        try:
+                            sock.close()
+                        except Exception as close_err:
+                            _LOGGER.debug("Error closing socket: %s", close_err)
+
+                    await asyncio.to_thread(close_socket, self.socket)
                 except Exception as e:
-                    _LOGGER.debug("Error during telnet disconnect: %s", e)
+                    _LOGGER.debug("Error during socket disconnect: %s", e)
                 finally:
-                    self.telnet = None
+                    self.socket = None
+                    self._read_buffer = b""  # Clear buffer on disconnect
 
             self._connected = False
             _LOGGER.debug("Disconnected from %s", self.host)
+
+    async def reconnect(self) -> None:
+        """Attempt to reconnect to the device."""
+        # First check if we're already shut down
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not reconnecting")
+            return
+
+        # Prevent concurrent reconnections
+        async with self._connection_lock:
+            # Close and clean up any existing connection
+            if self.socket is not None:
+                _LOGGER.debug("Closing existing socket connection before reconnecting")
+                try:
+                    # Close socket in a thread
+                    def close_socket(sock):
+                        try:
+                            sock.close()
+                        except Exception as close_err:
+                            _LOGGER.debug("Error closing socket: %s", close_err)
+
+                    await asyncio.to_thread(close_socket, self.socket)
+                except Exception as e:
+                    _LOGGER.debug("Error closing socket connection: %s", e)
+                finally:
+                    self.socket = None
+                    self._connected = False
+                    self._read_buffer = b""  # Clear buffer on reconnect
+
+            # Rate limit reconnection attempts
+            if self._reconnect_attempts >= self._max_reconnect_attempts:
+                _LOGGER.warning(
+                    "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
+                    self._max_reconnect_attempts,
+                    self.host,
+                )
+                return
+
+            self._reconnect_attempts += 1
+            backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
+            _LOGGER.info(
+                "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
+                self.host,
+                self._reconnect_attempts,
+                self._max_reconnect_attempts,
+                backoff,
+            )
+
+            await asyncio.sleep(backoff)
+
+            try:
+                # Create fresh socket connection
+                _LOGGER.debug("Creating new socket connection during reconnect")
+                self.socket = await asyncio.wait_for(
+                    self._create_socket_connection(), timeout=self._socket_timeout
+                )
+
+                if not self.socket:
+                    _LOGGER.error("Failed to create socket connection during reconnect")
+                    return
+
+                await asyncio.wait_for(self.login(), timeout=self._socket_timeout)
+                self._connected = True
+                self._available = True
+                _LOGGER.info("Successfully reconnected to %s", self.host)
+            except (asyncio.TimeoutError, Exception) as e:
+                _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
+                if self.socket:
+                    try:
+                        # Close socket in a thread
+                        def close_socket(sock):
+                            try:
+                                sock.close()
+                            except Exception as close_err:
+                                _LOGGER.debug("Error closing socket: %s", close_err)
+
+                        await asyncio.to_thread(close_socket, self.socket)
+                    except Exception as close_err:
+                        _LOGGER.debug(
+                            "Error closing socket during reconnect failure: %s",
+                            close_err,
+                        )
+                    self.socket = None
+                self._connected = False
+                self._available = False
+
+    async def send_command(self, cmd: str) -> str:
+        """Queue a command to be sent to the device and return the response."""
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not sending command to %s", self.host)
+            return ""
+
+        if not self.connected:
+            _LOGGER.debug("Not connected, attempting to connect before sending command")
+            try:
+                # Use a longer timeout for connection attempts
+                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Connection attempt timed out")
+                return ""
+            except Exception as err:
+                _LOGGER.error("Connection attempt failed: %s", err)
+                return ""
+
+            if not self.connected:
+                _LOGGER.error("Still not connected after connection attempt")
+                return ""
+
+        # Create a future to get the result
+        future = asyncio.get_running_loop().create_future()
+
+        # Add the command to the queue
+        await self._command_queue.put((cmd, future))
+
+        # Wait for the result
+        try:
+            response = await asyncio.wait_for(future, timeout=self._command_timeout)
+            return response
+        except asyncio.TimeoutError:
+            _LOGGER.error("Command timed out waiting for result: %s", cmd)
+            return ""
+        except Exception as e:
+            _LOGGER.error("Error waiting for command result: %s - %s", cmd, e)
+            return ""
+
+    async def _process_command_queue(self):
+        """Process commands from the queue with rate limiting."""
+        while not self._shutdown_requested:
+            try:
+                # Get the next command from the queue with timeout to allow periodic checks
+                try:
+                    cmd, future = await asyncio.wait_for(
+                        self._command_queue.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    # No commands in the queue, just continue the loop
+                    continue
+
+                # Check if the future was already cancelled or done
+                if future.done() or future.cancelled():
+                    _LOGGER.debug("Future already done or cancelled, skipping command")
+                    self._command_queue.task_done()
+                    continue
+
+                try:
+                    # Enforce delay between commands
+                    now = asyncio.get_event_loop().time()
+                    time_since_last = now - self._last_command_time
+                    if time_since_last < self._command_delay:
+                        delay = self._command_delay - time_since_last
+                        _LOGGER.debug(
+                            "Rate limiting: Waiting %.2f seconds before next command",
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+
+                    # Verify connection before sending command
+                    if not self.connected or self.socket is None:
+                        _LOGGER.debug(
+                            "Not connected, attempting to reconnect before processing command"
+                        )
+                        try:
+                            # Use a shorter timeout for reconnection
+                            await asyncio.wait_for(self.connect(), timeout=5)
+                        except (asyncio.TimeoutError, Exception) as err:
+                            if not future.done():
+                                future.set_result(
+                                    ""
+                                )  # Return empty string on connection failure
+                            _LOGGER.error("Failed to reconnect: %s", err)
+                            self._command_queue.task_done()
+                            continue
+
+                    # Process the command
+                    result = await self._send_command_internal(cmd)
+                    self._last_command_time = asyncio.get_event_loop().time()
+
+                    # Set the result in the future if it's not already done
+                    if not future.done():
+                        future.set_result(result)
+
+                except asyncio.CancelledError:
+                    _LOGGER.debug("Command processing was cancelled")
+                    # Mark the task as done even if cancelled
+                    if not future.done():
+                        future.cancel()
+                    raise  # Re-raise to exit the loop
+                except Exception as e:
+                    _LOGGER.error("Error processing command: %s - %s", cmd, e)
+                    if not future.done():
+                        # Return empty string instead of raising exception to avoid crashing HA
+                        future.set_result("")
+                finally:
+                    # Always mark the task as done
+                    try:
+                        self._command_queue.task_done()
+                    except Exception as e:
+                        _LOGGER.error("Error marking task as done: %s", e)
+
+            except asyncio.CancelledError:
+                _LOGGER.debug("Command processor task cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error("Error in command processor: %s", e)
+                await asyncio.sleep(1)  # Prevent tight loop if there's an error
+
+        _LOGGER.debug("Command processor task exiting")
+
+    async def _send_command_internal(self, cmd: str) -> str:
+        """Send a command to the device and return the response."""
+        # Early return if we're shutting down
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not sending command")
+            return ""
+
+        try:
+            _LOGGER.debug("Sending command: %s", cmd)
+            # Make sure we have a valid socket connection
+            if not self.socket:
+                _LOGGER.warning(
+                    "No socket connection available, attempting to reconnect"
+                )
+                try:
+                    await asyncio.wait_for(self.reconnect(), timeout=5)
+                except asyncio.TimeoutError:
+                    _LOGGER.error("Reconnection timed out")
+                    return ""
+
+                # Double-check we actually have a connection after reconnect
+                if not self.connected or not self.socket:
+                    _LOGGER.error(
+                        "Still no socket connection after reconnection attempt"
+                    )
+                    return ""
+
+            # Verify socket is still valid before writing
+            if not self.socket:
+                _LOGGER.error("Socket connection lost just before sending command")
+                return ""
+
+            # Make sure to include CRLF - this is critical for the protocol
+            try:
+                await asyncio.wait_for(
+                    self._socket_write(f"{cmd}\r\n".encode()),
+                    timeout=self._socket_timeout,
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout while writing command to socket")
+                await self.reconnect()
+                return ""
+            except Exception as e:
+                _LOGGER.error("Error writing to socket: %s", e)
+                await self.reconnect()
+                return ""
+
+            self.last_cmd = cmd
+            self.context = cmd.replace(" ", "")
+
+            # Read until prompt character
+            _LOGGER.debug("Waiting for response to command: %s", cmd)
+            try:
+                response = await asyncio.wait_for(
+                    self._socket_read_until(b"#", self._socket_timeout),
+                    timeout=self._command_timeout,  # Use a longer timeout for commands
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    "Timed out waiting for response to command: %s",
+                    cmd,
+                )
+                return ""
+            except Exception as e:
+                _LOGGER.error("Error reading response: %s", e)
+                await self.reconnect()
+                return ""
+
+            if response:
+                # Decode and clean up the response
+                self.response_cache = response.decode("utf-8", errors="ignore")
+                _LOGGER.debug(
+                    "Response (first 100 chars): %s",
+                    self.response_cache[:100].replace("\r\n", " "),
+                )
+
+                # Add a small delay after receiving response to make sure device is ready for next command
+                await asyncio.sleep(0.2)
+
+                return self.response_cache
+            else:
+                _LOGGER.warning("Empty response for command: %s", cmd)
+                return ""
+
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Command timed out after %s seconds: %s",
+                self._command_timeout,
+                cmd,
+            )
+            self._handle_error(f"Command timed out: {cmd}")
+            # Attempt to reconnect on timeout
+            try:
+                await asyncio.wait_for(self.reconnect(), timeout=5)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Reconnection timed out after command timeout")
+            # Don't attempt reconnect immediately on timeout, just return empty
+            return ""
+        except ConnectionError as e:
+            _LOGGER.error("Connection error while sending command: %s", e)
+            self._handle_error(f"Connection error while sending command: {e}")
+            try:
+                await asyncio.wait_for(self.reconnect(), timeout=5)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Reconnection timed out after connection error")
+            return ""
+        except Exception as e:
+            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
+            self._handle_error(f"Error sending command: {e}")
+            try:
+                await asyncio.wait_for(self.reconnect(), timeout=5)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Reconnection timed out after unexpected error")
+            return ""
 
     async def shutdown(self) -> None:
         """Shut down the controller and release resources."""
