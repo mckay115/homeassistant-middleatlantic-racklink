@@ -60,7 +60,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                await asyncio.wait_for(controller.connect(), timeout=CONNECTION_TIMEOUT)
+                connect_success = await asyncio.wait_for(
+                    controller.connect(), timeout=CONNECTION_TIMEOUT
+                )
+                if not connect_success:
+                    _LOGGER.error(
+                        "Failed to connect to %s",
+                        user_input[CONF_HOST],
+                    )
+                    errors["base"] = "cannot_connect"
+                    return errors, device_info
             except asyncio.TimeoutError:
                 _LOGGER.error(
                     "Connection to %s timed out after %s seconds",
@@ -70,24 +79,31 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "timeout"
                 return errors, device_info
 
-            # Check if basic device info was retrieved
+            # Try to get device info
             device_info = await controller.get_device_info()
 
-            if not device_info.get("model") or not device_info.get("serial"):
-                _LOGGER.error(
-                    "Connected but failed to retrieve device information from %s",
-                    user_input[CONF_HOST],
+            # We allow minimal device info
+            if not device_info:
+                device_info = {
+                    "model": f"RackLink PDU ({user_input[CONF_HOST]})",
+                    "serial": f"RLNK_{user_input[CONF_HOST].replace('.', '_')}",
+                    "firmware": "Unknown",
+                    "name": f"RackLink PDU ({user_input[CONF_HOST]})",
+                }
+                _LOGGER.warning(
+                    "Using default device info for %s", user_input[CONF_HOST]
                 )
-                errors["base"] = "device_info_missing"
-                await controller.disconnect()
-                return errors, device_info
 
             # Verify model selection if not on auto-detect
             if user_input.get(CONF_MODEL) != "AUTO_DETECT":
                 detected_model = controller.pdu_model or ""
                 selected_model = user_input.get(CONF_MODEL)
 
-                if selected_model not in detected_model:
+                if (
+                    selected_model
+                    and detected_model
+                    and selected_model not in detected_model
+                ):
                     _LOGGER.warning(
                         "Selected model %s doesn't match detected model %s. User override accepted.",
                         selected_model,
