@@ -485,7 +485,7 @@ def parse_pdu_temperature(response: str) -> Dict[str, Any]:
 def normalize_model_name(model_string: str) -> str:
     """Normalize model name from various formats to a standard format."""
     if not model_string:
-        return "DEFAULT"
+        return "RLNK-P920R"  # Default to a supported model if none provided
 
     # Remove any whitespace and convert to uppercase
     model = model_string.strip().upper()
@@ -493,31 +493,55 @@ def normalize_model_name(model_string: str) -> str:
     # Check for common patterns in model numbers
     # If it's just "RLNK" or "RACKLINK", use default
     if model in ["RLNK", "RACKLINK"]:
-        return "RLNK-P920R"  # Default to common model
+        return "RLNK-P920R"  # Default to common Premium+ model
 
-    # Handle model variations
+    # Handle Premium+ series variations
     if "RLNK-P" in model:
-        # For Premium series PDUs
-        return model
-    elif "RLNK-" in model:
-        # For standard series, normalize the format
-        return model
-    elif "RLNK" in model:
-        # Some models might be reported as RLNKP920 instead of RLNK-P920
-        # Insert hyphen if missing
-        if "RLNKP" in model and "-" not in model:
-            return model.replace("RLNKP", "RLNK-P")
-        # Other normalization
-        return model
-    elif "P920" in model or "P915" in model:
-        # Sometimes just the model number is reported
-        return f"RLNK-{model}"
+        # For Premium+ series PDUs
+        # Support all variations from the lua file
+        if model in [
+            "RLNK-P415",
+            "RLNK-P420",
+            "RLNK-P915R",
+            "RLNK-P915R-SP",
+            "RLNK-P920R",
+            "RLNK-P920R-SP",
+        ]:
+            return model
+        # Try to match partial model numbers to supported models
+        elif "P415" in model:
+            return "RLNK-P415"
+        elif "P420" in model:
+            return "RLNK-P420"
+        elif "P915R-SP" in model:
+            return "RLNK-P915R-SP"
+        elif "P915R" in model:
+            return "RLNK-P915R"
+        elif "P920R-SP" in model:
+            return "RLNK-P920R-SP"
+        elif "P920R" in model:
+            return "RLNK-P920R"
+        else:
+            # Default to P920R as a safe fallback within Premium+ series
+            return "RLNK-P920R"
 
-    # If no match, return the original with RLNK- prefix
-    if not model.startswith("RLNK-"):
-        return f"RLNK-{model}"
+    # Handle cases where RLNK prefix might be missing
+    if model.startswith("P"):
+        if "415" in model:
+            return "RLNK-P415"
+        elif "420" in model:
+            return "RLNK-P420"
+        elif "915R-SP" in model:
+            return "RLNK-P915R-SP"
+        elif "915R" in model:
+            return "RLNK-P915R"
+        elif "920R-SP" in model:
+            return "RLNK-P920R-SP"
+        elif "920R" in model:
+            return "RLNK-P920R"
 
-    return model
+    # Default to P920R as the safest option
+    return "RLNK-P920R"
 
 
 def is_command_prompt(line: str) -> bool:
