@@ -50,7 +50,7 @@ MODEL_DESCRIPTIONS = {
 }
 
 # Supported platforms
-PLATFORMS = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.SWITCH, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 # Services
 SERVICE_CYCLE_ALL_OUTLETS = "cycle_all_outlets"

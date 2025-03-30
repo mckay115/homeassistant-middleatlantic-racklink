@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
 from .racklink_controller import RacklinkController
@@ -40,8 +41,6 @@ async def async_setup_entry(
     # They will show as unavailable until connection is established
     for outlet in range(1, outlet_count + 1):
         switches.append(RacklinkOutlet(controller, outlet))
-    switches.append(RacklinkAllOn(controller))
-    switches.append(RacklinkAllOff(controller))
 
     async_add_entities(switches)
 
@@ -75,6 +74,8 @@ class RacklinkOutlet(SwitchEntity):
         # Set available as False initially until we confirm connection
         self._attr_available = False
         self._state = None
+        self._last_commanded_state = None
+        self._pending_update = False
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -101,28 +102,81 @@ class RacklinkOutlet(SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the outlet on."""
         try:
+            self._last_commanded_state = True
+            self._pending_update = True
+
             await asyncio.wait_for(
                 self._controller.set_outlet_state(self._outlet, True), timeout=10
             )
+
+            # Optimistically update state
             self._state = True
             self.async_write_ha_state()
+
+            # Schedule a refresh to confirm state after a short delay
+            async_call_later(self.hass, 3, self._async_refresh_state)
+
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout turning on outlet %s", self._outlet)
+            self._pending_update = False
         except Exception as err:
             _LOGGER.error("Error turning on outlet %s: %s", self._outlet, err)
+            self._pending_update = False
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the outlet off."""
         try:
+            self._last_commanded_state = False
+            self._pending_update = True
+
             await asyncio.wait_for(
                 self._controller.set_outlet_state(self._outlet, False), timeout=10
             )
+
+            # Optimistically update state
             self._state = False
             self.async_write_ha_state()
+
+            # Schedule a refresh to confirm state after a short delay
+            async_call_later(self.hass, 3, self._async_refresh_state)
+
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout turning off outlet %s", self._outlet)
+            self._pending_update = False
         except Exception as err:
             _LOGGER.error("Error turning off outlet %s: %s", self._outlet, err)
+            self._pending_update = False
+
+    async def _async_refresh_state(self, _now=None):
+        """Refresh the outlet state to verify the command took effect."""
+        if not self._pending_update:
+            return
+
+        _LOGGER.debug("Refreshing outlet %d state to verify command", self._outlet)
+        try:
+            # Force refresh of outlet states
+            await asyncio.wait_for(
+                self._controller.get_all_outlet_states(force_refresh=True), timeout=10
+            )
+
+            # Update our state based on the refreshed data
+            actual_state = self._controller.outlet_states.get(self._outlet, None)
+            if actual_state is not None:
+                if actual_state != self._last_commanded_state:
+                    _LOGGER.warning(
+                        "Outlet %d state mismatch! Commanded: %s, Actual: %s",
+                        self._outlet,
+                        self._last_commanded_state,
+                        actual_state,
+                    )
+
+                self._state = actual_state
+                self.async_write_ha_state()
+
+        except Exception as err:
+            _LOGGER.error("Error refreshing outlet %d state: %s", self._outlet, err)
+        finally:
+            self._pending_update = False
 
     async def async_update(self) -> None:
         """Fetch new state data for this outlet."""
@@ -130,10 +184,20 @@ class RacklinkOutlet(SwitchEntity):
             self._attr_available = False
             return
 
+        # Skip update if we're waiting for a command to complete
+        if self._pending_update:
+            return
+
+        # Update state from controller's cached data
         self._state = self._controller.outlet_states.get(self._outlet, False)
-        self._attr_name = self._controller.outlet_names.get(
-            self._outlet, f"Outlet {self._outlet}"
-        )
+
+        # Update name from controller if available
+        outlet_name = self._controller.outlet_names.get(self._outlet)
+        if outlet_name and outlet_name.strip():
+            self._attr_name = outlet_name
+        else:
+            self._attr_name = f"Outlet {self._outlet}"
+
         self._attr_available = self._controller.available
 
     @property
@@ -149,6 +213,10 @@ class RacklinkOutlet(SwitchEntity):
             attrs["power"] = power
         if current := self._controller.outlet_current.get(self._outlet):
             attrs["current"] = current
+        if energy := self._controller.outlet_energy.get(self._outlet):
+            attrs["energy"] = energy
+        if power_factor := self._controller.outlet_power_factor.get(self._outlet):
+            attrs["power_factor"] = power_factor
 
         return attrs
 
@@ -162,109 +230,3 @@ class RacklinkOutlet(SwitchEntity):
             _LOGGER.error("Timeout cycling outlet %s", self._outlet)
         except Exception as err:
             _LOGGER.error("Error cycling outlet %s: %s", self._outlet, err)
-
-
-class RacklinkAllOn(SwitchEntity):
-    """Representation of a switch that turns all outlets on."""
-
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the all-on switch."""
-        self._controller = controller
-        self._attr_name = "All Outlets On"
-        self._attr_unique_id = f"{controller.pdu_serial}_all_on"
-        self._state = False
-        self._attr_available = False
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information about this entity."""
-        return {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
-            "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
-        }
-
-    @property
-    def is_on(self) -> bool:
-        """Return true if all outlets are on."""
-        return self._state
-
-    @property
-    def available(self) -> bool:
-        """Return if switch is available."""
-        return self._controller.connected and self._controller.available
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn all outlets on."""
-        try:
-            await asyncio.wait_for(self._controller.set_all_outlets(True), timeout=10)
-            self._state = True
-            self.async_write_ha_state()
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout turning on all outlets")
-        except Exception as err:
-            _LOGGER.error("Error turning on all outlets: %s", err)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Reset state."""
-        self._state = False
-        self.async_write_ha_state()
-
-    async def async_update(self) -> None:
-        """Update availability."""
-        self._attr_available = self._controller.connected and self._controller.available
-
-
-class RacklinkAllOff(SwitchEntity):
-    """Representation of a switch that turns all outlets off."""
-
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the all-off switch."""
-        self._controller = controller
-        self._attr_name = "All Outlets Off"
-        self._attr_unique_id = f"{controller.pdu_serial}_all_off"
-        self._state = False
-        self._attr_available = False
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information about this entity."""
-        return {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
-            "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
-        }
-
-    @property
-    def is_on(self) -> bool:
-        """Return true if active."""
-        return self._state
-
-    @property
-    def available(self) -> bool:
-        """Return if switch is available."""
-        return self._controller.connected and self._controller.available
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn all outlets off."""
-        try:
-            await asyncio.wait_for(self._controller.set_all_outlets(False), timeout=10)
-            self._state = True
-            self.async_write_ha_state()
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout turning off all outlets")
-        except Exception as err:
-            _LOGGER.error("Error turning off all outlets: %s", err)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Reset state."""
-        self._state = False
-        self.async_write_ha_state()
-
-    async def async_update(self) -> None:
-        """Update availability."""
-        self._attr_available = self._controller.connected and self._controller.available
