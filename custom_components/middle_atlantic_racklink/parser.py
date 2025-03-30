@@ -91,7 +91,11 @@ def parse_network_info(response: str) -> Dict[str, Any]:
 def parse_all_outlet_states(response: str) -> Dict[int, bool]:
     """Parse all outlet states from 'show outlets all' response."""
     if not response:
+        _LOGGER.warning("Empty response received for parsing all outlet states")
         return {}
+
+    # Log full response for debugging
+    _LOGGER.debug("Full response for parse_all_outlet_states:\n%s", response)
 
     outlet_states = {}
 
@@ -102,22 +106,76 @@ def parse_all_outlet_states(response: str) -> Dict[int, bool]:
         re.MULTILINE,
     )
 
+    # If standard pattern fails, try alternative patterns
+    if not outlet_blocks:
+        _LOGGER.debug("Standard outlet pattern failed, trying alternative patterns")
+
+        # Try alternative pattern with "Status" instead of "Power state"
+        outlet_blocks = re.findall(
+            r"Outlet (\d+)[^\n]*\n\s*Status:\s*(\w+)",
+            response,
+            re.MULTILINE,
+        )
+
+        # Try another pattern for different format
+        if not outlet_blocks:
+            outlet_blocks = re.findall(
+                r"Outlet\s+(\d+).*?state[^:]*:\s*(\w+)",
+                response,
+                re.IGNORECASE | re.DOTALL,
+            )
+
+            # Last resort pattern - try to find ON/OFF within proximity
+            if not outlet_blocks:
+                # Look for any outlet number followed by ON or OFF within a few lines
+                raw_blocks = re.findall(
+                    r"Outlet\s+(\d+).*?(?:\n.*?){0,3}(ON|OFF|On|Off)",
+                    response,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if raw_blocks:
+                    _LOGGER.debug(
+                        "Found %d outlets using proximity pattern", len(raw_blocks)
+                    )
+                    outlet_blocks = [(m[0], m[1]) for m in raw_blocks]
+
+    # Log if we found any outlet blocks
+    if outlet_blocks:
+        _LOGGER.debug("Found %d outlet blocks in response", len(outlet_blocks))
+    else:
+        _LOGGER.warning(
+            "No outlet blocks found in response - parser could not detect any outlets"
+        )
+        # Log a small excerpt to help diagnose the issue
+        _LOGGER.debug(
+            "First 200 chars of response: %s", response[:200].replace("\n", " ")
+        )
+        return {}
+
     # Process each found outlet
     for match in outlet_blocks:
         try:
             outlet_num = int(match[0])
-            state = match[1].lower() == "on"
+            state_text = match[1].lower()
+            state = state_text == "on"
 
             # Store the state
             outlet_states[outlet_num] = state
 
             _LOGGER.debug(
-                "Found outlet %d state: %s",
+                "Found outlet %d state: %s (from text: '%s')",
                 outlet_num,
                 "ON" if state else "OFF",
+                match[1],
             )
         except (ValueError, IndexError) as e:
             _LOGGER.error("Error parsing outlet block: %s - %s", match, e)
+
+    # Log summary
+    if outlet_states:
+        _LOGGER.debug("Successfully parsed %d outlet states", len(outlet_states))
+    else:
+        _LOGGER.warning("No outlet states could be parsed from the response")
 
     return outlet_states
 
@@ -162,7 +220,14 @@ def parse_outlet_names(response: str) -> Dict[int, str]:
 def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
     """Parse the state of a specific outlet from 'show outlets X details' response."""
     if not response:
+        _LOGGER.warning(
+            "Empty response received when parsing outlet state for outlet %s",
+            outlet_num,
+        )
         return None
+
+    # Log the entire response for debugging
+    _LOGGER.debug("Full response for outlet %s:\n%s", outlet_num, response)
 
     # First try the standard format
     state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
@@ -188,12 +253,46 @@ def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
         )
         return state
 
-    # Dump response content for debugging failed cases
-    _LOGGER.debug(
-        "Response content for failed outlet state parsing: %s", response[:300]
+    # Try another alternative format that might be used
+    alt_match2 = re.search(
+        r"Outlet\s+%d[^\n]*\n\s*Status:\s*(\w+)" % outlet_num,
+        response,
+        re.IGNORECASE | re.DOTALL,
     )
+    if alt_match2:
+        state = alt_match2.group(1).lower() == "on"
+        _LOGGER.debug(
+            "Parsed outlet %s state (Status field): %s",
+            outlet_num,
+            "ON" if state else "OFF",
+        )
+        return state
+
+    # Try to find any on/off within a reasonable proximity of the outlet number
+    proximity_match = re.search(
+        r"(?:Outlet|Port)\s+%d.*?(?:\n.*?){0,5}(?:ON|OFF|On|Off)" % outlet_num,
+        response,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if proximity_match:
+        state_text = proximity_match.group(0).lower()
+        _LOGGER.debug("Found potential state context: %s", state_text)
+        # Check which state was found (last occurrence)
+        if "off" in state_text.split()[-1].lower():
+            _LOGGER.debug("Parsed outlet %s state (proximity match): OFF", outlet_num)
+            return False
+        elif "on" in state_text.split()[-1].lower():
+            _LOGGER.debug("Parsed outlet %s state (proximity match): ON", outlet_num)
+            return True
+
+    # Dump response content for debugging failed cases
+    # Show more of the response to help diagnose issues
     _LOGGER.warning(
-        "Could not parse outlet state from response for outlet %s", outlet_num
+        "Could not parse outlet state from response for outlet %s. Response excerpt: %s",
+        outlet_num,
+        response.replace("\n", " ")[
+            :500
+        ],  # Show more content but with newlines removed
     )
     return None
 
