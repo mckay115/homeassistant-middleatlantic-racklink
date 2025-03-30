@@ -226,44 +226,84 @@ class SocketConnection:
             ConnectionError: If not connected
             TimeoutError: If the command times out
         """
-        if not self._connected or not self._writer or not self._reader:
-            # Try to reconnect
-            if not await self.connect():
-                raise ConnectionError("Not connected to device and reconnection failed")
+        max_retries = 2  # Maximum retries for a single command
+        retry_count = 0
 
-        try:
-            # Check if connection is still valid
-            if self._writer.is_closing():
+        while retry_count < max_retries:
+            if not self._connected or not self._writer or not self._reader:
                 # Try to reconnect
                 if not await self.connect():
                     raise ConnectionError(
-                        "Connection closed by remote device and reconnection failed"
+                        "Not connected to device and reconnection failed"
                     )
 
-            # Send the command
-            _LOGGER.debug("Sending command: %s", command)
-            await self._send_data(f"{command}\r\n")
+            try:
+                # Check if connection is still valid
+                if self._writer.is_closing():
+                    # Try to reconnect
+                    if not await self.connect():
+                        raise ConnectionError(
+                            "Connection closed by remote device and reconnection failed"
+                        )
 
-            # Update last activity time
-            self._last_activity = time.time()
+                # Send the command
+                _LOGGER.debug("Sending command: %s", command)
+                await self._send_data(f"{command}\r\n")
 
-            # Wait for and collect the response
-            response = await self._read_until_prompt()
+                # Update last activity time
+                self._last_activity = time.time()
 
-            # Clean up the response
-            # Remove the command echo and trailing prompt
-            cleaned_response = self._clean_response(response, command)
+                # Wait for and collect the response
+                response = await self._read_until_prompt()
 
-            _LOGGER.debug("Command response: %s", cleaned_response)
-            return cleaned_response
+                # Clean up the response
+                # Remove the command echo and trailing prompt
+                cleaned_response = self._clean_response(response, command)
 
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout sending command: %s", command)
-            raise TimeoutError(f"Command timed out: {command}")
+                _LOGGER.debug("Command response: %s", cleaned_response)
+                return cleaned_response
 
-        except Exception as err:
-            _LOGGER.error("Error sending command '%s': %s", command, err)
-            raise
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Timeout sending command: %s (attempt %d/%d)",
+                    command,
+                    retry_count + 1,
+                    max_retries,
+                )
+                retry_count += 1
+
+                # Try to clean up and reconnect
+                await self._cleanup_connection()
+                if retry_count < max_retries:
+                    await asyncio.sleep(2)  # Wait before retry
+                    continue
+                else:
+                    _LOGGER.error(
+                        "Command timed out after %d attempts: %s", max_retries, command
+                    )
+                    raise TimeoutError(f"Command timed out: {command}")
+
+            except (ConnectionError, OSError) as err:
+                _LOGGER.warning(
+                    "Connection error sending command '%s': %s (attempt %d/%d)",
+                    command,
+                    err,
+                    retry_count + 1,
+                    max_retries,
+                )
+                retry_count += 1
+
+                # Try to clean up and reconnect
+                await self._cleanup_connection()
+                if retry_count < max_retries:
+                    await asyncio.sleep(2)  # Wait before retry
+                    continue
+                else:
+                    raise
+
+            except Exception as err:
+                _LOGGER.error("Error sending command '%s': %s", command, err)
+                raise
 
     def _start_keepalive(self) -> None:
         """Start the keepalive task if needed."""
@@ -323,7 +363,28 @@ class SocketConnection:
 
         try:
             chunk = await self._reader.read(size)
+            # If the chunk is empty and we're at EOF, the connection is closed
+            if not chunk and self._reader.at_eof():
+                raise ConnectionError("Connection closed by remote")
+
             return chunk.decode("utf-8", errors="replace")
+
+        except ConnectionError:
+            # Re-raise connection errors directly
+            raise
+
+        except UnicodeDecodeError as err:
+            # Handle decode errors gracefully
+            _LOGGER.warning(
+                "Unicode decode error: %s, using replacement character", err
+            )
+            return chunk.decode("utf-8", errors="replace")
+
+        except (OSError, asyncio.IncompleteReadError) as err:
+            # Convert socket/stream errors to ConnectionError
+            _LOGGER.error("Socket/stream error reading data: %s", err)
+            raise ConnectionError(f"Connection error: {err}")
+
         except Exception as err:
             _LOGGER.error("Error reading data: %s", err)
             raise
@@ -333,6 +394,15 @@ class SocketConnection:
         response = ""
         timeout_counter = 0
         max_iterations = self.timeout * 2  # 500ms per iteration for timeout seconds
+
+        # Pattern that might indicate the end of output even without a prompt
+        end_patterns = [
+            r"\r\n\r\n$",  # Double blank line
+            r"Press any key to continue",
+            r"--More--",
+            r"Press ENTER to continue",
+        ]
+        end_regex = re.compile("|".join(end_patterns))
 
         while timeout_counter < max_iterations:
             try:
@@ -345,18 +415,45 @@ class SocketConnection:
                         _LOGGER.debug("Connection closed while reading response")
                         break
                     timeout_counter += 1
+
+                    # After 3 consecutive empty reads, assume we're waiting for nothing
+                    if timeout_counter >= 3:
+                        _LOGGER.debug(
+                            "Multiple empty reads, assuming response complete"
+                        )
+                        break
+
                     continue
 
+                # Reset timeout counter when we get data
+                timeout_counter = 0
                 response += chunk
 
                 # Check if we've reached a command prompt
                 if self._prompt_pattern.search(response):
+                    _LOGGER.debug("Found prompt, ending read")
+                    break
+
+                # Check for other patterns that might indicate end of output
+                if end_regex.search(response):
+                    _LOGGER.debug("Found end pattern, ending read")
                     break
 
             except asyncio.TimeoutError:
                 # Short timeout reached, increment counter and continue
                 timeout_counter += 1
+                # More detailed logging with counter
+                if timeout_counter % 4 == 0:  # Log every 2 seconds (4 * 0.5s timeout)
+                    _LOGGER.debug(
+                        "Waiting for response... (%d/%d)",
+                        timeout_counter,
+                        max_iterations,
+                    )
                 continue
+
+            except ConnectionError as err:
+                _LOGGER.error("Connection error while reading response: %s", err)
+                raise
 
             except Exception as err:
                 _LOGGER.error("Error reading response: %s", err)
@@ -364,6 +461,11 @@ class SocketConnection:
 
         if timeout_counter >= max_iterations:
             _LOGGER.warning("Timed out waiting for prompt, returning partial response")
+            # Log partial response for debugging
+            _LOGGER.debug(
+                "Partial response (first 100 chars): %s",
+                response[:100].replace("\n", "\\n").replace("\r", "\\r"),
+            )
 
         return response
 
