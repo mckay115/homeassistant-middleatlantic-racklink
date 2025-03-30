@@ -139,49 +139,188 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return errors, device_info
 
-    async def async_step_user(self, user_input=None) -> FlowResult:
+    async def async_step_user(self, user_input=None):
         """Handle the initial step."""
         errors = {}
-        device_info = {}
 
         if user_input is not None:
-            # Prevent duplicate entries
-            await self.async_set_unique_id(
-                f"{user_input[CONF_HOST]}_{user_input[CONF_PORT]}"
-            )
-            self._abort_if_unique_id_configured()
+            _LOGGER.debug("Config flow received user input: %s", user_input)
+            try:
+                # Validate connection
+                host = user_input[CONF_HOST]
+                port = int(user_input.get(CONF_PORT, DEFAULT_PORT))
+                username = user_input.get(CONF_USERNAME, "admin")
+                password = user_input[CONF_PASSWORD]
 
-            errors, device_info = await self.validate_input(user_input)
+                _LOGGER.debug("Testing connection to %s:%s", host, port)
 
-            if not errors:
-                title = device_info.get("name", user_input[CONF_HOST])
-                return self.async_create_entry(
-                    title=title,
-                    data=user_input,
-                    description=f"Model: {device_info.get('model', 'Unknown')} - SN: {device_info.get('serial', 'Unknown')}",
+                valid, info = await self._test_connection(
+                    host, port, username, password
                 )
 
-        # Create dropdown options from model descriptions
-        model_options = {model: MODEL_DESCRIPTIONS[model] for model in SUPPORTED_MODELS}
+                if valid:
+                    _LOGGER.info(
+                        "Successfully connected to Middle Atlantic Racklink at %s",
+                        host,
+                    )
 
+                    # Create entry
+                    return self.async_create_entry(
+                        title=f"Racklink PDU {host}",
+                        data={
+                            CONF_HOST: host,
+                            CONF_PORT: port,
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                            "model": info.get("model", "Unknown"),
+                        },
+                    )
+                else:
+                    # Connection failed with specific error
+                    _LOGGER.warning(
+                        "Connection test failed: %s", info.get("error", "Unknown error")
+                    )
+                    errors["base"] = info.get("error", "cannot_connect")
+            except ConnectionRefusedError:
+                _LOGGER.error("Connection refused by %s:%s", host, port)
+                errors["base"] = "connection_refused"
+            except asyncio.TimeoutError:
+                _LOGGER.error("Connection to %s:%s timed out", host, port)
+                errors["base"] = "timeout"
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception: %s", ex)
+                errors["base"] = "unknown"
+
+        # Prepare default values for form
+        default_port = DEFAULT_PORT
+        default_username = "admin"
+
+        # Fill in user input or defaults
         data_schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_HOST, description={"suggested_value": "192.168.1.100"}
-                ): cv.string,
+                    CONF_HOST,
+                    default=user_input.get(CONF_HOST, "") if user_input else "",
+                ): str,
                 vol.Required(
                     CONF_PORT,
-                    default=DEFAULT_PORT,
-                    description={"suggested_value": DEFAULT_PORT},
-                ): cv.port,
+                    default=(
+                        user_input.get(CONF_PORT, default_port)
+                        if user_input
+                        else default_port
+                    ),
+                ): int,
                 vol.Required(
-                    CONF_USERNAME, description={"suggested_value": "admin"}
-                ): cv.string,
-                vol.Required(CONF_PASSWORD): cv.string,
-                vol.Required(CONF_MODEL, default="AUTO_DETECT"): vol.In(model_options),
+                    CONF_USERNAME,
+                    default=(
+                        user_input.get(CONF_USERNAME, default_username)
+                        if user_input
+                        else default_username
+                    ),
+                ): str,
+                vol.Required(CONF_PASSWORD): str,
             }
         )
 
         return self.async_show_form(
             step_id="user", data_schema=data_schema, errors=errors
         )
+
+    async def _test_connection(self, host, port, username, password):
+        """Test if we can connect to the PDU."""
+        _LOGGER.debug(
+            "Testing connection to %s:%s with username '%s'", host, port, username
+        )
+
+        # Initialize controller
+        controller = RacklinkController(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            socket_timeout=15.0,  # Increased timeout for initial connection
+            login_timeout=20.0,  # Increased login timeout
+            command_timeout=15.0,  # Increased command timeout
+        )
+
+        try:
+            # Start background connection with longer timeout for setup
+            _LOGGER.debug("Starting background connection...")
+            connection_task = controller.start_background_connection()
+
+            try:
+                _LOGGER.debug("Waiting for initial connection (25 second timeout)")
+                await asyncio.wait_for(connection_task, timeout=25)
+                _LOGGER.debug("Connection established")
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Initial connection timed out")
+                # Don't fail immediately, continue anyway and see if we can get device info
+
+            # Wait for connection to stabilize
+            _LOGGER.debug("Waiting 5 seconds for connection to stabilize")
+            await asyncio.sleep(5)
+
+            # Try to get device info
+            _LOGGER.debug("Getting device info")
+            try:
+                device_info = await asyncio.wait_for(
+                    controller.get_device_info(), timeout=20
+                )
+                _LOGGER.debug("Device info received: %s", device_info)
+
+                # Check if we got valid device info
+                if device_info and "model" in device_info:
+                    _LOGGER.info(
+                        "Successfully connected to %s - Model: %s",
+                        host,
+                        device_info.get("model", "Unknown"),
+                    )
+
+                    # Try to get basic outlet status to verify command execution
+                    _LOGGER.debug("Getting outlet status to verify commands work")
+                    try:
+                        outlet_cmd = "show outlets all"
+                        outlet_response = await asyncio.wait_for(
+                            controller.send_command(outlet_cmd), timeout=15
+                        )
+
+                        if outlet_response:
+                            _LOGGER.debug("Command test succeeded, received response")
+                            await controller.disconnect()
+                            return True, device_info
+                        else:
+                            _LOGGER.warning("Command test failed: no response")
+                            await controller.disconnect()
+                            return False, {"error": "Command test failed: no response"}
+                    except Exception as cmd_err:
+                        _LOGGER.warning("Command test error: %s", cmd_err)
+                        await controller.disconnect()
+                        return False, {"error": f"Command test error: {cmd_err}"}
+
+                else:
+                    _LOGGER.warning("Failed to get valid device info")
+                    await controller.disconnect()
+                    return False, {"error": "Could not get device information"}
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Timeout getting device info")
+                await controller.disconnect()
+                return False, {"error": "Timeout getting device information"}
+            except Exception as err:
+                _LOGGER.error("Error getting device info: %s", err)
+                await controller.disconnect()
+                return False, {"error": f"Error getting device info: {err}"}
+
+        except Exception as err:
+            _LOGGER.error("Error connecting to PDU: %s", err)
+            try:
+                await controller.disconnect()
+            except:
+                pass
+            return False, {"error": f"Connection error: {err}"}
+
+        # We should never reach here, but just in case
+        try:
+            await controller.disconnect()
+        except:
+            pass
+        return False, {"error": "Unknown connection error"}

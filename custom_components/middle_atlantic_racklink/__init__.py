@@ -42,18 +42,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Create controller instance
-    controller = RacklinkController(host, port, username, password, model)
+    controller = RacklinkController(host, port, username, password)
+    _LOGGER.debug("Controller instance created")
 
     # Start background connection with timeout
     try:
         # Attempt initial connection to device with timeout
         _LOGGER.debug("Starting background connection to %s", host)
         connection_task = controller.start_background_connection()
-        # Set 15 second timeout for initial connection
+        # Set 20 second timeout for initial connection (increased from 15)
         try:
-            await asyncio.wait_for(connection_task, timeout=15)
+            _LOGGER.debug("Waiting for initial connection (20 second timeout)")
+            await asyncio.wait_for(connection_task, timeout=20)
+            _LOGGER.info("Initial connection established successfully")
         except asyncio.TimeoutError:
-            _LOGGER.warning("Initial connection timed out, proceeding with setup")
+            _LOGGER.warning(
+                "Initial connection to %s timed out after 20 seconds, proceeding with setup anyway",
+                host,
+            )
             # Continue anyway - entities will show as unavailable until connected
 
         # Ensure update method is implemented and ready
@@ -74,15 +80,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Add update method to controller
             controller.update = update_wrapper
 
-        # Wait briefly for connection to establish - reduce from 5 to 2 seconds
-        await asyncio.sleep(2)
+        # Wait longer for connection to establish - increase from 2 to 5 seconds
+        _LOGGER.debug("Waiting 5 seconds for connection to stabilize")
+        await asyncio.sleep(5)
 
         # Force an initial update to populate data with timeout
         _LOGGER.debug("Triggering initial data refresh for %s", host)
         try:
-            await asyncio.wait_for(controller.update(), timeout=10)
+            _LOGGER.debug("Waiting for initial data refresh (15 second timeout)")
+            await asyncio.wait_for(controller.update(), timeout=15)
+            _LOGGER.info("Initial data refresh completed successfully")
         except asyncio.TimeoutError:
-            _LOGGER.warning("Initial data refresh timed out")
+            _LOGGER.warning(
+                "Initial data refresh for %s timed out after 15 seconds", host
+            )
             # Continue with setup - the coordinator will retry
 
     except Exception as e:
@@ -93,6 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store the controller
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = controller
+    _LOGGER.debug("Controller stored in hass.data")
 
     # Create update coordinator to refresh the data
     async def async_update_data():
@@ -102,7 +114,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not controller.connected:
                 _LOGGER.debug("Controller not connected, attempting reconnection")
                 try:
-                    await controller.reconnect()
+                    connection_result = await controller.reconnect()
+                    _LOGGER.debug("Reconnection attempt result: %s", connection_result)
 
                     # If still not connected, raise exception but let coordinator handle it
                     if not controller.connected:
@@ -118,6 +131,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 try:
                     # Use a timeout to prevent blocking indefinitely
                     success = await asyncio.wait_for(controller.update(), timeout=15)
+                    _LOGGER.debug("Update result: %s", success)
 
                     if not success:
                         _LOGGER.warning(
@@ -134,6 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 # Get the latest device info
                 device_info = await controller.get_device_info()
+                _LOGGER.debug("Device info: %s", device_info)
 
                 # Collect updated data for entities
                 return {
@@ -141,42 +156,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "available": controller.available,
                     "outlet_states": controller.outlet_states.copy(),
                     "outlet_names": controller.outlet_names.copy(),
-                    "outlet_power": (
-                        controller.outlet_power.copy()
-                        if hasattr(controller, "outlet_power")
-                        else {}
-                    ),
-                    "outlet_current": (
-                        controller.outlet_current.copy()
-                        if hasattr(controller, "outlet_current")
-                        else {}
-                    ),
-                    "outlet_energy": (
-                        controller.outlet_energy.copy()
-                        if hasattr(controller, "outlet_energy")
-                        else {}
-                    ),
-                    "outlet_voltage": (
-                        controller.outlet_voltage.copy()
-                        if hasattr(controller, "outlet_voltage")
-                        else {}
-                    ),
-                    "outlet_power_factor": (
-                        controller.outlet_power_factor.copy()
-                        if hasattr(controller, "outlet_power_factor")
-                        else {}
-                    ),
+                    "outlet_power": controller.outlet_power.copy(),
+                    "outlet_current": controller.outlet_current.copy(),
+                    "outlet_energy": controller.outlet_energy.copy(),
+                    "outlet_voltage": controller.outlet_voltage.copy(),
+                    "outlet_power_factor": controller.outlet_power_factor.copy(),
                     "sensors": (
                         controller.sensors.copy()
                         if hasattr(controller, "sensors")
                         else {}
                     ),
                     "last_update": getattr(controller, "_last_update", 0),
-                    "pdu_info": (
-                        controller.pdu_info.copy()
-                        if hasattr(controller, "pdu_info")
-                        else {}
-                    ),
+                    "pdu_info": controller.pdu_info.copy(),
                 }
             else:
                 _LOGGER.warning("Controller is not connected, cannot update data")

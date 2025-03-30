@@ -46,7 +46,7 @@ async def async_setup_entry(
     # Add switches even if device is not yet available
     # They will show as unavailable until connection is established
     for outlet in range(1, outlet_count + 1):
-        switches.append(RacklinkOutlet(controller, coordinator, outlet))
+        switches.append(RacklinkOutlet(coordinator, config_entry, outlet))
 
     async_add_entities(switches)
 
@@ -71,34 +71,47 @@ async def async_setup_entry(
 class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
     """Representation of a Racklink outlet switch."""
 
-    def __init__(
-        self,
-        controller: RacklinkController,
-        coordinator: DataUpdateCoordinator,
-        outlet: int,
-    ) -> None:
+    def __init__(self, coordinator, config_entry, outlet):
         """Initialize the outlet switch."""
         super().__init__(coordinator)
-        self._controller = controller
+        self._controller = coordinator.data["controller"]
+        self._config_entry = config_entry
         self._outlet = outlet
-        self._last_commanded_state = None
         self._pending_update = False
+        self._coordinator = coordinator
 
-        # Get the outlet name from the controller if available
-        # We'll update this in the coordinator data
-        self._outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
-        self._attr_unique_id = f"{controller.pdu_serial}_outlet_{outlet}"
+        # Get outlet name if available or create a default
+        if self._controller.outlet_names and outlet in self._controller.outlet_names:
+            self._outlet_name = self._controller.outlet_names[outlet]
+        else:
+            self._outlet_name = f"Outlet {outlet}"
+
+        # Get PDU info safely with fallbacks
+        self._pdu_model = getattr(self._controller, "pdu_model", "RackLink PDU")
+        self._pdu_name = getattr(self._controller, "pdu_name", "RackLink")
+        self._pdu_serial = getattr(self._controller, "pdu_serial", f"Unknown_{outlet}")
+        self._pdu_firmware = getattr(self._controller, "pdu_firmware", "Unknown")
+
+        # Set entity attributes
         self._attr_name = self._outlet_name
+        self._attr_unique_id = f"{self._pdu_serial}_outlet_{outlet}"
+
+        _LOGGER.debug(
+            "Initialized outlet switch %s on PDU %s (outlet %s)",
+            self._outlet_name,
+            self._pdu_name,
+            outlet,
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information about this entity."""
         return {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
+            "identifiers": {(DOMAIN, self._pdu_serial)},
+            "name": f"Racklink PDU {self._pdu_name}",
             "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
+            "model": self._pdu_model or ATTR_MODEL,
+            "sw_version": self._pdu_firmware,
         }
 
     @property

@@ -74,9 +74,20 @@ class RacklinkController:
         self._mac_address = None
         self._outlet_names = {}
         self._outlet_states = {}
+
+        # Initialize all sensor data dictionaries
         self._outlet_power_data = {}
+        self._outlet_power = {}
+        self._outlet_current = {}
+        self._outlet_energy = {}
+        self._outlet_voltage = {}
+        self._outlet_power_factor = {}
         self._sensor_values = {}
+        self._pdu_info = {}  # Initialize PDU info dictionary
+
         self._last_update = None
+        self._last_error = None
+        self._last_error_time = None
 
         self._socket = None
         self._connected = False
@@ -91,6 +102,8 @@ class RacklinkController:
         self._command_delay = (
             0.25  # Delay between commands to avoid overwhelming device
         )
+        self._connection_task = None
+        self._shutdown_requested = False
 
         _LOGGER.debug(
             "Initialized RackLink controller for %s:%s (username: %s)",
@@ -119,6 +132,80 @@ class RacklinkController:
     def last_error_time(self) -> Optional[datetime]:
         """Return the time of the last error."""
         return self._last_error_time
+
+    @property
+    def pdu_serial(self) -> Optional[str]:
+        """Return the PDU serial number."""
+        return self._serial_number
+
+    @property
+    def pdu_name(self) -> Optional[str]:
+        """Return the PDU name."""
+        return self._pdu_name
+
+    @property
+    def pdu_model(self) -> Optional[str]:
+        """Return the PDU model."""
+        return self._model
+
+    @property
+    def pdu_firmware(self) -> Optional[str]:
+        """Return the PDU firmware version."""
+        return self._firmware_version
+
+    @property
+    def mac_address(self) -> Optional[str]:
+        """Return the PDU MAC address."""
+        return self._mac_address
+
+    @property
+    def outlet_states(self) -> dict:
+        """Return all outlet states."""
+        return self._outlet_states
+
+    @property
+    def outlet_names(self) -> dict:
+        """Return all outlet names."""
+        return self._outlet_names
+
+    @property
+    def outlet_power(self) -> dict:
+        """Return outlet power data."""
+        return self._outlet_power
+
+    @property
+    def outlet_current(self) -> dict:
+        """Return outlet current data."""
+        return self._outlet_current
+
+    @property
+    def outlet_energy(self) -> dict:
+        """Return outlet energy data."""
+        return self._outlet_energy
+
+    @property
+    def outlet_voltage(self) -> dict:
+        """Return outlet voltage data."""
+        return self._outlet_voltage
+
+    @property
+    def outlet_power_factor(self) -> dict:
+        """Return outlet power factor data."""
+        return self._outlet_power_factor
+
+    @property
+    def pdu_info(self) -> dict:
+        """Return PDU information."""
+        # Ensure PDU info is up to date
+        if not self._pdu_info and (self._model or self._serial_number):
+            self._pdu_info = {
+                "model": self._model,
+                "firmware": self._firmware_version,
+                "serial": self._serial_number,
+                "name": self._pdu_name,
+                "mac_address": self._mac_address,
+            }
+        return self._pdu_info
 
     def _handle_error(self, error: str) -> None:
         """Handle an error by logging it and updating state."""
@@ -455,178 +542,99 @@ class RacklinkController:
             _LOGGER.error("Error loading initial PDU data: %s", e)
 
     async def get_device_info(self) -> dict:
-        """Get device information (model, firmware, etc)."""
-        if not self.connected:
-            _LOGGER.debug("Not connected, can't get device info")
-            return self._pdu_info
+        """Get device information."""
+        _LOGGER.debug("Getting device information for %s", self._host)
 
-        try:
-            # Check if we need to get info (first run)
-            if not self._model:
-                _LOGGER.info("Getting PDU information")
+        if not self._connected:
+            _LOGGER.debug("Not connected during get_device_info, attempting to connect")
+            if not await self.reconnect():
+                _LOGGER.warning("Could not connect to get device info")
+                return {}
 
-                # Try different commands to extract system info
-                commands_to_try = [
-                    "show system info",
-                    "show system",
-                    "system info",
-                    "info",
-                    "show info",
-                ]
+        # Only fetch device info if we don't have it yet
+        if not self._model or not self._serial_number:
+            _LOGGER.info("Fetching PDU details")
 
-                system_info = None
-                for cmd in commands_to_try:
-                    _LOGGER.debug(f"Trying command: {cmd}")
-                    response = await self.send_command(cmd)
-                    if (
-                        response and len(response) > 20
-                    ):  # Ensure we got a meaningful response
-                        system_info = response
-                        _LOGGER.debug(f"Got response from command: {cmd}")
-                        break
-                    await asyncio.sleep(0.5)  # Brief delay between commands
+            try:
+                # Get PDU details
+                details_cmd = "show pdu details"
+                details_response = await self.send_command(details_cmd)
 
-                if system_info:
-                    _LOGGER.debug("System info response: %s", system_info)
+                if details_response:
+                    # Parse model
+                    model_match = re.search(
+                        r"Model:\s*(.+?)(?:\r|\n)",
+                        details_response,
+                        re.IGNORECASE,
+                    )
+                    if model_match:
+                        self._model = model_match.group(1).strip()
+                        _LOGGER.debug("Found PDU model: %s", self._model)
 
-                    # Try multiple different patterns for model information
-                    model_patterns = [
-                        r"Model Name:\s*([^\r\n]+)",
-                        r"Model:\s*([^\r\n]+)",
-                        r"Product( type)?:\s*([^\r\n]+)",
-                        r"Type:\s*([^\r\n]+)",
-                    ]
+                    # Parse serial number
+                    sn_match = re.search(
+                        r"Serial Number:\s*(.+?)(?:\r|\n)",
+                        details_response,
+                        re.IGNORECASE,
+                    )
+                    if sn_match:
+                        self._serial_number = sn_match.group(1).strip()
+                        _LOGGER.debug("Found PDU serial: %s", self._serial_number)
 
-                    for pattern in model_patterns:
-                        model_match = re.search(pattern, system_info)
-                        if model_match:
-                            # If we have multiple capturing groups, use the last one
-                            group_index = len(model_match.groups())
-                            self._model = model_match.group(group_index).strip()
-                            _LOGGER.debug("Found PDU model: %s", self._model)
-                            break
+                    # Parse firmware version
+                    fw_match = re.search(
+                        r"Firmware Version:\s*(.+?)(?:\r|\n)",
+                        details_response,
+                        re.IGNORECASE,
+                    )
+                    if fw_match:
+                        self._firmware_version = fw_match.group(1).strip()
+                        _LOGGER.debug("Found PDU firmware: %s", self._firmware_version)
 
-                    # If we still don't have a model, try a broader search
-                    if not self._model:
-                        model_lines = re.findall(r"[Mm]odel.*", system_info)
-                        if model_lines:
-                            self._model = model_lines[0].strip()
-                            _LOGGER.debug("Found PDU model from line: %s", self._model)
+                    # Parse name
+                    name_match = re.search(
+                        r"Name:\s*'(.+?)'",
+                        details_response,
+                        re.IGNORECASE,
+                    )
+                    if name_match:
+                        self._pdu_name = name_match.group(1).strip()
+                        _LOGGER.debug("Found PDU name: %s", self._pdu_name)
 
-                    # Try multiple patterns for firmware
-                    firmware_patterns = [
-                        r"Firmware [Vv]ersion:\s*([^\r\n]+)",
-                        r"Firmware:\s*([^\r\n]+)",
-                        r"Version:\s*([^\r\n]+)",
-                        r"FW( Version)?:\s*([^\r\n]+)",
-                    ]
+                # Get MAC address if we don't have it
+                if not self._mac_address:
+                    _LOGGER.debug("Getting network interface information")
+                    net_cmd = "show network interface eth1"
+                    net_response = await self.send_command(net_cmd)
 
-                    for pattern in firmware_patterns:
-                        firmware_match = re.search(pattern, system_info)
-                        if firmware_match:
-                            # If we have multiple capturing groups, use the last one
-                            group_index = len(firmware_match.groups())
-                            self._firmware_version = firmware_match.group(
-                                group_index
-                            ).strip()
+                    if net_response:
+                        mac_match = re.search(
+                            r"MAC address:\s*(.+?)(?:\r|\n)",
+                            net_response,
+                            re.IGNORECASE,
+                        )
+                        if mac_match:
+                            self._mac_address = mac_match.group(1).strip()
                             _LOGGER.debug(
-                                "Found PDU firmware: %s", self._firmware_version
+                                "Found PDU MAC address: %s", self._mac_address
                             )
-                            break
 
-                    # Try multiple patterns for serial number
-                    serial_patterns = [
-                        r"Serial [Nn]umber:\s*([^\r\n]+)",
-                        r"Serial:\s*([^\r\n]+)",
-                        r"SN:\s*([^\r\n]+)",
-                    ]
+            except Exception as e:
+                _LOGGER.error("Error getting device info: %s", e)
+        else:
+            _LOGGER.debug("Using cached device info")
 
-                    for pattern in serial_patterns:
-                        serial_match = re.search(pattern, system_info)
-                        if serial_match:
-                            self._serial_number = serial_match.group(1).strip()
-                            _LOGGER.debug("Found PDU serial: %s", self._serial_number)
-                            break
-                else:
-                    _LOGGER.warning("Could not get system info from any command")
+        # Update PDU info dictionary
+        self._pdu_info = {
+            "model": self._model or "Unknown",
+            "firmware": self._firmware_version or "Unknown",
+            "serial": self._serial_number or "Unknown",
+            "name": self._pdu_name or "RackLink PDU",
+            "mac_address": self._mac_address or "Unknown",
+        }
 
-                # If we still don't have essential information, set reasonable defaults
-                if not self._model:
-                    self._model = "RackLink PDU"
-                    _LOGGER.debug("Using default model name: %s", self._model)
-
-                if not self._serial_number:
-                    self._serial_number = f"RLNK_{self._host.replace('.', '_')}"
-                    _LOGGER.debug("Generated PDU serial: %s", self._serial_number)
-
-                if not self._firmware_version:
-                    self._firmware_version = "Unknown"
-
-                # Try to get outlet information to determine outlet count
-                try:
-                    outlet_commands = ["show outlets", "outlets", "show outlet"]
-                    outlets_info = None
-
-                    for cmd in outlet_commands:
-                        response = await self.send_command(cmd)
-                        if response and len(response) > 20:
-                            outlets_info = response
-                            break
-                        await asyncio.sleep(0.5)
-
-                    if outlets_info:
-                        # Try different patterns to count outlets
-                        outlet_patterns = [
-                            r"^\s*\d+\s+\|",  # Pattern like "  1 |"
-                            r"Outlet\s+(\d+)",  # Pattern like "Outlet 1"
-                            r"^\s*(\d+)[\s-]+\w+",  # Pattern like "1 - OutletName"
-                        ]
-
-                        for pattern in outlet_patterns:
-                            outlet_matches = re.findall(
-                                pattern, outlets_info, re.MULTILINE
-                            )
-                            if outlet_matches:
-                                num_outlets = len(outlet_matches)
-                                _LOGGER.info("Found %s outlets", num_outlets)
-                                break
-                except Exception as e:
-                    _LOGGER.error("Error getting outlet information: %s", e)
-
-                # Update the pdu_info dictionary
-                self._pdu_info = {
-                    "model": self._model,
-                    "firmware": self._firmware_version,
-                    "serial": self._serial_number,
-                    "name": self._pdu_name,
-                }
-
-            # Ensure we have basic information to satisfy config_flow
-            if "model" not in self._pdu_info or not self._pdu_info["model"]:
-                self._pdu_info["model"] = self._model or "RackLink PDU"
-
-            if "serial" not in self._pdu_info or not self._pdu_info["serial"]:
-                self._pdu_info["serial"] = (
-                    self._serial_number or f"RLNK_{self._host.replace('.', '_')}"
-                )
-
-            return self._pdu_info
-
-        except Exception as e:
-            _LOGGER.error("Error getting device info: %s", e)
-            # Make sure we still return valid info even after an error
-            if (
-                not self._pdu_info
-                or "model" not in self._pdu_info
-                or not self._pdu_info["model"]
-            ):
-                self._pdu_info = {
-                    "model": "RackLink PDU",
-                    "firmware": "Unknown",
-                    "serial": f"RLNK_{self._host.replace('.', '_')}",
-                    "name": self._pdu_name or "Middle Atlantic RackLink",
-                }
-            return self._pdu_info
+        _LOGGER.debug("Device info: %s", self._pdu_info)
+        return self._pdu_info
 
     def get_model_capabilities(self) -> Dict[str, Any]:
         """Get capabilities based on model number."""
