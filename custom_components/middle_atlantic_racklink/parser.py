@@ -269,6 +269,73 @@ def parse_outlet_state(response: str, outlet_num: int) -> Optional[bool]:
         )
         return state
 
+    # Try outletgroup pattern seen in logs
+    outletgroup_match = re.search(
+        r"outletgroup\s+%d\s+(?:is\s+)?(on|off)" % outlet_num,
+        response,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if outletgroup_match:
+        state = outletgroup_match.group(1).lower() == "on"
+        _LOGGER.debug(
+            "Parsed outlet %s state (outletgroup pattern): %s",
+            outlet_num,
+            "ON" if state else "OFF",
+        )
+        return state
+
+    # Try more generic patterns
+    # Look for mention of the outlet number within 5 lines of "on" or "off"
+    state_indicators = [
+        (r"outlet\s+%d.*?(?:\n.*?){0,5}(on|active|enabled)" % outlet_num, True),
+        (r"outlet\s+%d.*?(?:\n.*?){0,5}(off|inactive|disabled)" % outlet_num, False),
+        (r"outletgroup\s+%d.*?(?:\n.*?){0,5}(on|active|enabled)" % outlet_num, True),
+        (
+            r"outletgroup\s+%d.*?(?:\n.*?){0,5}(off|inactive|disabled)" % outlet_num,
+            False,
+        ),
+    ]
+
+    for pattern, state_value in state_indicators:
+        if re.search(pattern, response, re.IGNORECASE | re.MULTILINE):
+            _LOGGER.debug(
+                "Parsed outlet %s state (proximity pattern): %s",
+                outlet_num,
+                "ON" if state_value else "OFF",
+            )
+            return state_value
+
+    # Try a simple keyword search approach as a last resort
+    # This assumes that any mention of the specific outlet number followed by on/off indicates state
+    response_lower = response.lower()
+    outlet_str = f"outlet {outlet_num}"
+    outletgroup_str = f"outletgroup {outlet_num}"
+
+    # Check if the outlet is mentioned at all
+    if (
+        outlet_str in response_lower
+        or outletgroup_str in response_lower
+        or f"outlet{outlet_num}" in response_lower
+    ):
+        # If outlet is mentioned, check for on/off indicators
+        indicators = [
+            ("on", True),
+            ("enabled", True),
+            ("active", True),
+            ("off", False),
+            ("disabled", False),
+            ("inactive", False),
+        ]
+
+        for keyword, state_value in indicators:
+            if keyword in response_lower:
+                _LOGGER.debug(
+                    "Parsed outlet %s state (keyword pattern): %s",
+                    outlet_num,
+                    "ON" if state_value else "OFF",
+                )
+                return state_value
+
     # If we couldn't find the state in expected formats, log the issue
     _LOGGER.warning(
         "Could not find outlet state in response for outlet %s. Response excerpt: %s",
@@ -400,38 +467,73 @@ def parse_outlet_details(response: str, outlet_num: int) -> Dict[str, Any]:
 
 
 def parse_pdu_power_data(response: str) -> Dict[str, Any]:
-    """Parse PDU power data from 'show pdu power' response."""
+    """Parse PDU power data from 'show pdu power' or 'show inlets all details' response."""
     if not response:
         return {}
 
     result = {}
 
-    # Parse power
+    # Log full response for debugging
+    _LOGGER.debug("Parsing PDU power data from response of length %d", len(response))
+
+    # Try different patterns for power data (from different command outputs)
+
+    # Pattern 1: Standard PDU power format
     power_match = re.search(r"Power:\s*([\d.]+)\s*W", response)
     if power_match:
         try:
             result["power"] = float(power_match.group(1))
+            _LOGGER.debug("Found power: %s W", result["power"])
         except (ValueError, TypeError):
             pass
 
-    # Parse current
+    # Pattern 2: Alternative format "Active Power"
+    if "power" not in result:
+        alt_power_match = re.search(
+            r"Active Power:\s*([\d.]+)\s*W", response, re.IGNORECASE
+        )
+        if alt_power_match:
+            try:
+                result["power"] = float(alt_power_match.group(1))
+                _LOGGER.debug("Found active power: %s W", result["power"])
+            except (ValueError, TypeError):
+                pass
+
+    # Parse current - try different formats
     current_match = re.search(r"Current:\s*([\d.]+)\s*A", response)
+    if not current_match:
+        current_match = re.search(
+            r"RMS Current:\s*([\d.]+)\s*A", response, re.IGNORECASE
+        )
+
     if current_match:
         try:
             result["current"] = float(current_match.group(1))
+            _LOGGER.debug("Found current: %s A", result["current"])
         except (ValueError, TypeError):
             pass
 
-    # Parse voltage
+    # Parse voltage - try different formats
     voltage_match = re.search(r"Voltage:\s*([\d.]+)\s*V", response)
+    if not voltage_match:
+        voltage_match = re.search(
+            r"RMS Voltage:\s*([\d.]+)\s*V", response, re.IGNORECASE
+        )
+
     if voltage_match:
         try:
             result["voltage"] = float(voltage_match.group(1))
+            _LOGGER.debug("Found voltage: %s V", result["voltage"])
         except (ValueError, TypeError):
             pass
 
-    # Parse energy
+    # Parse energy - handle both kWh and Wh formats
     energy_match = re.search(r"Energy:\s*([\d.]+)\s*(?:kW|W)h", response)
+    if not energy_match:
+        energy_match = re.search(
+            r"Active Energy:\s*([\d.]+)\s*(?:kW|W)h", response, re.IGNORECASE
+        )
+
     if energy_match:
         try:
             # Convert kWh to Wh if needed
@@ -439,6 +541,24 @@ def parse_pdu_power_data(response: str) -> Dict[str, Any]:
             if "kWh" in response:
                 energy_value *= 1000
             result["energy"] = energy_value
+            _LOGGER.debug("Found energy: %s Wh", result["energy"])
+        except (ValueError, TypeError):
+            pass
+
+    # Parse power factor if available
+    pf_match = re.search(r"Power Factor:\s*([^(\r\n]+)", response, re.IGNORECASE)
+    if pf_match:
+        power_factor = parse_power_factor(pf_match.group(1))
+        if power_factor is not None:
+            result["power_factor"] = power_factor
+            _LOGGER.debug("Found power factor: %s", result["power_factor"])
+
+    # Parse frequency if available
+    freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response, re.IGNORECASE)
+    if freq_match:
+        try:
+            result["frequency"] = float(freq_match.group(1))
+            _LOGGER.debug("Found frequency: %s Hz", result["frequency"])
         except (ValueError, TypeError):
             pass
 
@@ -452,11 +572,24 @@ def parse_pdu_temperature(response: str) -> Dict[str, Any]:
 
     result = {}
 
-    # Parse temperature
+    # Log full response for debugging
+    _LOGGER.debug(
+        "Parsing PDU temperature data from response of length %d", len(response)
+    )
+
+    # Try different temperature formats
+    # Pattern 1: Standard format
     temp_match = re.search(r"Temperature:\s*([\d.]+)\s*[CF]", response)
+    if not temp_match:
+        # Pattern 2: Alternative format
+        temp_match = re.search(
+            r"Internal Temperature:\s*([\d.]+)\s*[CF]", response, re.IGNORECASE
+        )
+
     if temp_match:
         try:
             result["temperature"] = float(temp_match.group(1))
+            _LOGGER.debug("Found temperature: %s", result["temperature"])
         except (ValueError, TypeError):
             pass
 
@@ -539,3 +672,34 @@ def extract_device_name_from_prompt(prompt: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+
+def parse_available_commands(response: str) -> List[str]:
+    """Parse available commands from a help response."""
+    if not response or "available commands" not in response.lower():
+        return []
+
+    # Extract the commands section
+    commands_section = response.lower().split("available commands:")[1].strip()
+
+    # Extract command names
+    command_lines = commands_section.split("\n")
+    commands = []
+
+    for line in command_lines:
+        # Pattern: commandName  Description
+        parts = line.strip().split(None, 1)
+        if parts and parts[0]:
+            commands.append(parts[0].strip())
+
+    return commands
+
+
+def parse_inlet_data(response: str) -> Dict[str, Any]:
+    """Parse inlet data from 'show inlets all details' response."""
+    if not response:
+        return {}
+
+    # This is essentially a wrapper for parse_pdu_power_data
+    # with special inlet-specific handling if needed in the future
+    return parse_pdu_power_data(response)
