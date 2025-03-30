@@ -101,6 +101,28 @@ If you encounter issues with the integration:
 4. If your PDU requires authentication, ensure the credentials are correct
 5. Make sure no other devices or services are trying to connect to the PDU at the same time
 
+### Enabling Debug Logging
+
+To help troubleshoot issues, you can enable debug logging for this integration. Add the following to your `configuration.yaml` file:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.middle_atlantic_racklink: debug
+```
+
+This will show detailed logs including raw commands sent to the PDU and the responses received. After adding this, restart Home Assistant and check the logs for more detailed information.
+
+The debug logs will show:
+- Raw commands sent to the PDU
+- Raw responses received from the PDU
+- Parsed data and state changes
+- Socket connection details
+- Error messages with full context
+
+After troubleshooting, it's recommended to remove the debug logging or set it back to `info` level to reduce log file size.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request or open an Issue on GitHub.

@@ -64,7 +64,7 @@ class RacklinkController:
     async def connect(self) -> bool:
         """Connect to the PDU."""
         try:
-            _LOGGER.debug("Connecting to RackLink PDU at %s:%d", self.host, self.port)
+            _LOGGER.info("Connecting to RackLink PDU at %s:%d", self.host, self.port)
             self.connected = await self.socket.connect()
             if self.connected:
                 self.available = True
@@ -84,24 +84,31 @@ class RacklinkController:
         await self.socket.disconnect()
         self.connected = False
         self.available = False
+        _LOGGER.info("Disconnected from RackLink PDU")
 
     async def update(self) -> bool:
         """Update PDU data."""
         try:
             if not self.connected:
+                _LOGGER.info("Not connected, attempting to connect before update")
                 if not await self.connect():
+                    _LOGGER.error("Connection failed during update")
                     return False
 
             # Get PDU details
+            _LOGGER.debug("Updating PDU details")
             await self._update_pdu_details()
 
             # Get outlet states
+            _LOGGER.debug("Updating outlet states")
             await self._update_outlet_states()
 
             # Get system status
+            _LOGGER.debug("Updating system status")
             await self._update_system_status()
 
             self.available = True
+            _LOGGER.debug("Update completed successfully")
             return True
         except Exception as err:
             _LOGGER.error("Error updating PDU data: %s", err)
@@ -111,35 +118,55 @@ class RacklinkController:
     async def _update_pdu_details(self) -> None:
         """Update PDU details."""
         try:
+            _LOGGER.debug("Fetching PDU details")
             response = await self.socket.send_command("show pdu details")
+            _LOGGER.debug("PDU details response received (full): %r", response)
 
             # Parse PDU model
             model_match = re.search(r"Model:\s*(.+?)(?:\r|\n)", response)
             if model_match:
                 self.pdu_model = model_match.group(1).strip()
+                _LOGGER.debug("Parsed PDU model: %s", self.pdu_model)
+            else:
+                _LOGGER.warning("Could not parse PDU model from response")
 
             # Parse firmware version
             fw_match = re.search(r"Firmware Version:\s*(.+?)(?:\r|\n)", response)
             if fw_match:
                 self.pdu_firmware = fw_match.group(1).strip()
+                _LOGGER.debug("Parsed PDU firmware: %s", self.pdu_firmware)
+            else:
+                _LOGGER.warning("Could not parse firmware version from response")
 
             # Parse serial number
             sn_match = re.search(r"Serial Number:\s*(.+?)(?:\r|\n)", response)
             if sn_match:
                 self.pdu_serial = sn_match.group(1).strip()
+                _LOGGER.debug("Parsed PDU serial: %s", self.pdu_serial)
+            else:
+                _LOGGER.warning("Could not parse serial number from response")
 
             # Parse PDU name
             name_match = re.search(r"Name:\s*'(.+?)'", response)
             if name_match:
                 self.pdu_name = name_match.group(1)
+                _LOGGER.debug("Parsed PDU name: %s", self.pdu_name)
+            else:
+                _LOGGER.warning("Could not parse PDU name from response")
 
             # Get MAC address
+            _LOGGER.debug("Fetching network interface details")
             network_response = await self.socket.send_command(
                 "show network interface eth1"
             )
+            _LOGGER.debug("Network interface response: %r", network_response)
+
             mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n)", network_response)
             if mac_match:
                 self.mac_address = mac_match.group(1).strip()
+                _LOGGER.debug("Parsed MAC address: %s", self.mac_address)
+            else:
+                _LOGGER.warning("Could not parse MAC address from response")
 
         except Exception as err:
             _LOGGER.error("Error updating PDU details: %s", err)
@@ -148,26 +175,84 @@ class RacklinkController:
     async def _update_outlet_states(self) -> None:
         """Update outlet states."""
         try:
+            _LOGGER.debug("Fetching outlet states")
             response = await self.socket.send_command("show outlets all")
+            _LOGGER.debug("Outlet states response (full): %r", response)
 
             # Find all outlets and their states
             outlet_pattern = r"Outlet (\d+):[^\n]*\n\s+(\w+)"
             matches = re.findall(outlet_pattern, response)
 
+            if not matches:
+                _LOGGER.warning(
+                    "No outlet information found in response. Raw response: %r",
+                    response,
+                )
+                # Try an alternative pattern that might match
+                alt_pattern = r"Outlet\s+(\d+):\s+(?:.*?)\s+(\w+)"
+                matches = re.findall(alt_pattern, response)
+                if matches:
+                    _LOGGER.debug(
+                        "Found outlets using alternative pattern: %r", matches
+                    )
+                else:
+                    _LOGGER.error(
+                        "Could not find any outlets with alternative pattern either"
+                    )
+
+            # Log what matches we found
+            _LOGGER.debug("Outlet matches found: %r", matches)
+
             # Update outlets dictionary
             for match in matches:
-                outlet_num = int(match[0])
-                state = match[1].lower() == "on"
-                self.outlet_states[outlet_num] = state
+                try:
+                    outlet_num = int(match[0])
+                    state_text = match[1].lower()
+                    state = state_text == "on"
 
-                # Extract the outlet name while we're at it
-                name_match = re.search(
-                    f"Outlet {outlet_num}: (.*?)$", response, re.MULTILINE
-                )
-                if name_match:
-                    self.outlet_names[outlet_num] = name_match.group(1).strip()
-                else:
-                    self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                    # Store the previous state for logging
+                    prev_state = self.outlet_states.get(outlet_num, None)
+
+                    self.outlet_states[outlet_num] = state
+                    _LOGGER.debug(
+                        "Outlet %d state: %s (raw state text: %r, previous state: %s)",
+                        outlet_num,
+                        "ON" if state else "OFF",
+                        state_text,
+                        (
+                            "ON"
+                            if prev_state
+                            else "OFF" if prev_state is not None else "unknown"
+                        ),
+                    )
+
+                    # Extract the outlet name while we're at it
+                    name_match = re.search(
+                        f"Outlet {outlet_num}:\s*(.*?)(?:\r|\n)", response, re.MULTILINE
+                    )
+                    if name_match:
+                        name = name_match.group(1).strip()
+                        prev_name = self.outlet_names.get(outlet_num)
+                        self.outlet_names[outlet_num] = name
+                        _LOGGER.debug(
+                            "Outlet %d name: %r (previous: %r)",
+                            outlet_num,
+                            name,
+                            prev_name,
+                        )
+                    else:
+                        _LOGGER.warning("Could not find name for outlet %d", outlet_num)
+                        self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                except Exception as inner_err:
+                    _LOGGER.error(
+                        "Error processing outlet %s: %s",
+                        match[0] if match else "unknown",
+                        inner_err,
+                    )
+
+            _LOGGER.info("Updated %d outlet states", len(matches))
+            _LOGGER.debug("Current outlet states: %r", self.outlet_states)
+            _LOGGER.debug("Current outlet names: %r", self.outlet_names)
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)
@@ -177,40 +262,63 @@ class RacklinkController:
         """Update system status including power data."""
         try:
             # Get inlet details
+            _LOGGER.debug("Fetching inlet details")
             response = await self.socket.send_command("show inlets all details")
+            _LOGGER.debug("Inlet details response: %r", response)
 
             # Parse voltage
             voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
             if voltage_match:
                 self.rms_voltage = float(voltage_match.group(1))
+                _LOGGER.debug("Parsed voltage: %s V", self.rms_voltage)
+            else:
+                _LOGGER.warning("Could not parse voltage from response")
 
             # Parse current
             current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
             if current_match:
                 self.rms_current = float(current_match.group(1))
+                _LOGGER.debug("Parsed current: %s A", self.rms_current)
+            else:
+                _LOGGER.warning("Could not parse current from response")
 
             # Parse power
             power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
             if power_match:
                 self.active_power = float(power_match.group(1))
+                _LOGGER.debug("Parsed power: %s W", self.active_power)
+            else:
+                _LOGGER.warning("Could not parse power from response")
 
             # Parse energy
             energy_match = re.search(r"Active Energy:\s*([\d.]+)\s*Wh", response)
             if energy_match:
                 self.active_energy = float(energy_match.group(1))
+                _LOGGER.debug("Parsed energy: %s Wh", self.active_energy)
+            else:
+                _LOGGER.warning("Could not parse energy from response")
 
             # Parse frequency
             freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
             if freq_match:
                 self.line_frequency = float(freq_match.group(1))
+                _LOGGER.debug("Parsed frequency: %s Hz", self.line_frequency)
+            else:
+                _LOGGER.warning("Could not parse frequency from response")
 
             # Check load shedding status
+            _LOGGER.debug("Checking load shedding status")
             load_shed_response = await self.socket.send_command("show loadshed")
+            _LOGGER.debug("Load shedding response: %r", load_shed_response)
             self.load_shedding_active = "enabled" in load_shed_response.lower()
+            _LOGGER.debug("Load shedding active: %s", self.load_shedding_active)
 
             # Check sequence status
+            _LOGGER.debug("Checking sequence status")
             sequence_response = await self.socket.send_command("show outlet sequence")
+            _LOGGER.debug("Sequence status response: %r", sequence_response)
             self.sequence_active = "running" in sequence_response.lower()
+            _LOGGER.debug("Sequence active: %s", self.sequence_active)
 
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)
@@ -219,10 +327,38 @@ class RacklinkController:
     async def turn_outlet_on(self, outlet: int) -> bool:
         """Turn an outlet on."""
         try:
+            _LOGGER.info("Turning outlet %d ON", outlet)
             cmd = f"power outlets {outlet} on /y"
-            await self.socket.send_command(cmd)
-            self.outlet_states[outlet] = True
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Turn outlet ON response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "powered on" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully turned outlet %d ON", outlet)
+                # Store previous state for logging
+                prev_state = self.outlet_states.get(outlet, None)
+                self.outlet_states[outlet] = True
+                _LOGGER.debug(
+                    "Updated outlet %d state: ON (previous: %s)",
+                    outlet,
+                    (
+                        "ON"
+                        if prev_state
+                        else "OFF" if prev_state is not None else "unknown"
+                    ),
+                )
+                return True
+            else:
+                _LOGGER.warning(
+                    "Failed to turn outlet %d ON. Response: %r", outlet, response
+                )
+                # Try to update outlet state to get current state
+                _LOGGER.debug("Attempting to refresh outlet state after failed command")
+                await self._update_outlet_states()
+                return False
+
         except Exception as err:
             _LOGGER.error("Error turning outlet %d on: %s", outlet, err)
             return False
@@ -230,10 +366,38 @@ class RacklinkController:
     async def turn_outlet_off(self, outlet: int) -> bool:
         """Turn an outlet off."""
         try:
+            _LOGGER.info("Turning outlet %d OFF", outlet)
             cmd = f"power outlets {outlet} off /y"
-            await self.socket.send_command(cmd)
-            self.outlet_states[outlet] = False
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Turn outlet OFF response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "powered off" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully turned outlet %d OFF", outlet)
+                # Store previous state for logging
+                prev_state = self.outlet_states.get(outlet, None)
+                self.outlet_states[outlet] = False
+                _LOGGER.debug(
+                    "Updated outlet %d state: OFF (previous: %s)",
+                    outlet,
+                    (
+                        "ON"
+                        if prev_state
+                        else "OFF" if prev_state is not None else "unknown"
+                    ),
+                )
+                return True
+            else:
+                _LOGGER.warning(
+                    "Failed to turn outlet %d OFF. Response: %r", outlet, response
+                )
+                # Try to update outlet state to get current state
+                _LOGGER.debug("Attempting to refresh outlet state after failed command")
+                await self._update_outlet_states()
+                return False
+
         except Exception as err:
             _LOGGER.error("Error turning outlet %d off: %s", outlet, err)
             return False
@@ -241,11 +405,39 @@ class RacklinkController:
     async def cycle_outlet(self, outlet: int) -> bool:
         """Cycle an outlet."""
         try:
+            _LOGGER.info("Cycling outlet %d", outlet)
             cmd = f"power outlets {outlet} cycle /y"
-            await self.socket.send_command(cmd)
-            # The outlet will be on after cycling
-            self.outlet_states[outlet] = True
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Cycle outlet response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "cycling" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully cycled outlet %d", outlet)
+                # The outlet will be on after cycling (after a delay)
+                # Wait briefly for the cycle to complete
+                _LOGGER.debug("Waiting for cycle to complete")
+                await asyncio.sleep(2)
+                # Store previous state for logging
+                prev_state = self.outlet_states.get(outlet, None)
+                self.outlet_states[outlet] = True
+                _LOGGER.debug(
+                    "Updated outlet %d state after cycle: ON (previous: %s)",
+                    outlet,
+                    (
+                        "ON"
+                        if prev_state
+                        else "OFF" if prev_state is not None else "unknown"
+                    ),
+                )
+                return True
+            else:
+                _LOGGER.warning(
+                    "Failed to cycle outlet %d. Response: %r", outlet, response
+                )
+                return False
+
         except Exception as err:
             _LOGGER.error("Error cycling outlet %d: %s", outlet, err)
             return False
@@ -253,12 +445,30 @@ class RacklinkController:
     async def cycle_all_outlets(self) -> bool:
         """Cycle all outlets."""
         try:
+            _LOGGER.info("Cycling all outlets")
             cmd = "power outlets all cycle /y"
-            await self.socket.send_command(cmd)
-            # Update all outlets to on
-            for outlet in self.outlet_states:
-                self.outlet_states[outlet] = True
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Cycle all outlets response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "cycling" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully cycling all outlets")
+                # Wait briefly for the cycle to complete
+                _LOGGER.debug("Waiting for all outlets cycle to complete")
+                await asyncio.sleep(2)
+                # Log previous states
+                _LOGGER.debug("Previous outlet states: %r", self.outlet_states)
+                # Update all outlets to on
+                for outlet in self.outlet_states:
+                    self.outlet_states[outlet] = True
+                _LOGGER.debug("Updated all outlet states to ON after cycle")
+                return True
+            else:
+                _LOGGER.warning("Failed to cycle all outlets. Response: %r", response)
+                return False
+
         except Exception as err:
             _LOGGER.error("Error cycling all outlets: %s", err)
             return False
@@ -266,10 +476,22 @@ class RacklinkController:
     async def start_load_shedding(self) -> bool:
         """Start load shedding."""
         try:
+            _LOGGER.info("Starting load shedding")
             cmd = "config\nloadshed enable\napply"
-            await self.socket.send_command(cmd)
-            self.load_shedding_active = True
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Start load shedding response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "enabled" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully started load shedding")
+                self.load_shedding_active = True
+                return True
+            else:
+                _LOGGER.warning("Failed to start load shedding. Response: %r", response)
+                return False
+
         except Exception as err:
             _LOGGER.error("Error starting load shedding: %s", err)
             return False
@@ -277,10 +499,22 @@ class RacklinkController:
     async def stop_load_shedding(self) -> bool:
         """Stop load shedding."""
         try:
+            _LOGGER.info("Stopping load shedding")
             cmd = "config\nloadshed disable\napply"
-            await self.socket.send_command(cmd)
-            self.load_shedding_active = False
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Stop load shedding response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "disabled" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully stopped load shedding")
+                self.load_shedding_active = False
+                return True
+            else:
+                _LOGGER.warning("Failed to stop load shedding. Response: %r", response)
+                return False
+
         except Exception as err:
             _LOGGER.error("Error stopping load shedding: %s", err)
             return False
@@ -288,10 +522,24 @@ class RacklinkController:
     async def start_sequence(self) -> bool:
         """Start the outlet sequence."""
         try:
+            _LOGGER.info("Starting outlet sequence")
             cmd = "outlet sequence start /y"
-            await self.socket.send_command(cmd)
-            self.sequence_active = True
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Start sequence response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "started" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully started outlet sequence")
+                self.sequence_active = True
+                return True
+            else:
+                _LOGGER.warning(
+                    "Failed to start outlet sequence. Response: %r", response
+                )
+                return False
+
         except Exception as err:
             _LOGGER.error("Error starting sequence: %s", err)
             return False
@@ -299,10 +547,24 @@ class RacklinkController:
     async def stop_sequence(self) -> bool:
         """Stop the outlet sequence."""
         try:
+            _LOGGER.info("Stopping outlet sequence")
             cmd = "outlet sequence stop /y"
-            await self.socket.send_command(cmd)
-            self.sequence_active = False
-            return True
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Stop sequence response: %r", response)
+
+            # Check if command was successful
+            success = "success" in response.lower() or "stopped" in response.lower()
+
+            if success:
+                _LOGGER.info("Successfully stopped outlet sequence")
+                self.sequence_active = False
+                return True
+            else:
+                _LOGGER.warning(
+                    "Failed to stop outlet sequence. Response: %r", response
+                )
+                return False
+
         except Exception as err:
             _LOGGER.error("Error stopping sequence: %s", err)
             return False
