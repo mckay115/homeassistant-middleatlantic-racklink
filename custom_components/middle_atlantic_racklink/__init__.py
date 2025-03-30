@@ -69,19 +69,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Only fetch data if connected
         if controller.connected:
             try:
-                # Add timeouts to prevent blocking and request fresh data
-                _LOGGER.debug("Updating outlet states and sensor values")
-                await asyncio.wait_for(
-                    controller.get_all_outlet_states(force_refresh=True), timeout=10
-                )
-                await asyncio.wait_for(
-                    controller.get_sensor_values(force_refresh=True), timeout=10
-                )
+                # First, ensure we have the basic device info
+                _LOGGER.debug("Updating device details")
+                try:
+                    await asyncio.wait_for(controller.get_pdu_details(), timeout=10)
+                except Exception as err:
+                    _LOGGER.error("Error getting PDU details: %s", err)
+
+                # Then, get outlet details - try multiple times if needed
+                _LOGGER.debug("Updating outlet states")
+                outlet_retry = 2  # Try up to 3 times (initial + 2 retries)
+                outlet_data_success = False
+
+                while outlet_retry > 0 and not outlet_data_success:
+                    try:
+                        await asyncio.wait_for(
+                            controller.get_all_outlet_states(force_refresh=True),
+                            timeout=10,
+                        )
+                        # Check if we got data
+                        if controller.outlet_states:
+                            outlet_data_success = True
+                            _LOGGER.debug(
+                                "Successfully retrieved outlet states: %s",
+                                controller.outlet_states,
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "No outlet states data returned, retrying..."
+                            )
+                            outlet_retry -= 1
+                            await asyncio.sleep(1)  # Short delay before retry
+                    except Exception as err:
+                        _LOGGER.error(
+                            "Error getting outlet states (retry %d): %s",
+                            2 - outlet_retry,
+                            err,
+                        )
+                        outlet_retry -= 1
+                        await asyncio.sleep(1)  # Short delay before retry
+
+                # Get sensor values
+                _LOGGER.debug("Updating sensor values")
+                try:
+                    await asyncio.wait_for(
+                        controller.get_sensor_values(force_refresh=True), timeout=10
+                    )
+                    _LOGGER.debug("Retrieved sensor values: %s", controller.sensors)
+                except Exception as err:
+                    _LOGGER.error("Error getting sensor values: %s", err)
 
                 # Update entity states
-                for entity_id in hass.states.async_all(DOMAIN):
-                    _LOGGER.debug("Triggering update for entity: %s", entity_id)
-                    async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
+                _LOGGER.debug("Triggering entity update")
+                async_dispatcher_send(hass, f"{DOMAIN}_entity_update")
 
             except asyncio.TimeoutError:
                 _LOGGER.error("Update timed out for %s", entry.data["host"])

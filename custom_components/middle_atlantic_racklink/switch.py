@@ -69,18 +69,15 @@ class RacklinkOutlet(SwitchEntity):
         """Initialize the outlet switch."""
         self._controller = controller
         self._outlet = outlet
-        self._attr_name = f"Outlet {outlet}"
+        # Get the outlet name from the controller if available
+        self._outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+        self._attr_name = self._outlet_name
         self._attr_unique_id = f"{controller.pdu_serial}_outlet_{outlet}"
         # Set available as False initially until we confirm connection
         self._attr_available = False
-        self._state = None
+        self._state = controller.outlet_states.get(outlet, None)
         self._last_commanded_state = None
         self._pending_update = False
-        # Initialize attribute values
-        self._current = None
-        self._power = None
-        self._energy = None
-        self._power_factor = None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -101,8 +98,12 @@ class RacklinkOutlet(SwitchEntity):
     @property
     def available(self) -> bool:
         """Return if switch is available."""
-        # Only available if controller is connected
-        return self._controller.connected and self._controller.available
+        # Only available if controller is connected and outlet exists in data
+        return (
+            self._controller.connected
+            and self._controller.available
+            and self._outlet in self._controller.outlet_states
+        )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the outlet on."""
@@ -110,6 +111,7 @@ class RacklinkOutlet(SwitchEntity):
             self._last_commanded_state = True
             self._pending_update = True
 
+            _LOGGER.debug("Turning on outlet %d (%s)", self._outlet, self._outlet_name)
             await asyncio.wait_for(
                 self._controller.set_outlet_state(self._outlet, True), timeout=10
             )
@@ -134,6 +136,7 @@ class RacklinkOutlet(SwitchEntity):
             self._last_commanded_state = False
             self._pending_update = True
 
+            _LOGGER.debug("Turning off outlet %d (%s)", self._outlet, self._outlet_name)
             await asyncio.wait_for(
                 self._controller.set_outlet_state(self._outlet, False), timeout=10
             )
@@ -169,8 +172,9 @@ class RacklinkOutlet(SwitchEntity):
             if actual_state is not None:
                 if actual_state != self._last_commanded_state:
                     _LOGGER.warning(
-                        "Outlet %d state mismatch! Commanded: %s, Actual: %s",
+                        "Outlet %d (%s) state mismatch! Commanded: %s, Actual: %s",
                         self._outlet,
+                        self._outlet_name,
                         self._last_commanded_state,
                         actual_state,
                     )
@@ -196,20 +200,24 @@ class RacklinkOutlet(SwitchEntity):
         # Update state from controller's cached data
         self._state = self._controller.outlet_states.get(self._outlet, False)
 
-        # Update power attributes
-        self._current = self._controller.outlet_current.get(self._outlet)
-        self._power = self._controller.outlet_power.get(self._outlet)
-        self._energy = self._controller.outlet_energy.get(self._outlet)
-        self._power_factor = self._controller.outlet_power_factor.get(self._outlet)
-
         # Update name from controller if available
-        outlet_name = self._controller.outlet_names.get(self._outlet)
-        if outlet_name and outlet_name.strip():
-            self._attr_name = outlet_name
-        else:
+        new_outlet_name = self._controller.outlet_names.get(self._outlet)
+        if (
+            new_outlet_name
+            and new_outlet_name.strip()
+            and new_outlet_name != self._outlet_name
+        ):
+            self._outlet_name = new_outlet_name
+            self._attr_name = new_outlet_name
+        elif not self._attr_name:
             self._attr_name = f"Outlet {self._outlet}"
 
-        self._attr_available = self._controller.available
+        # Determine availability based on connection status and if outlet exists in data
+        self._attr_available = (
+            self._controller.connected
+            and self._controller.available
+            and self._outlet in self._controller.outlet_states
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -219,15 +227,15 @@ class RacklinkOutlet(SwitchEntity):
             "can_cycle": True,
         }
 
-        # Add all power-related attributes that are available
-        if self._power is not None:
-            attrs["power"] = f"{self._power:.2f} W"
-        if self._current is not None:
-            attrs["current"] = f"{self._current:.2f} A"
-        if self._energy is not None:
-            attrs["energy"] = f"{self._energy:.2f} Wh"
-        if self._power_factor is not None:
-            attrs["power_factor"] = f"{self._power_factor:.2f} %"
+        # Add all available power and metrics data
+        if power := self._controller.outlet_power.get(self._outlet):
+            attrs["power"] = f"{power:.1f} W"
+        if current := self._controller.outlet_current.get(self._outlet):
+            attrs["current"] = f"{current:.2f} A"
+        if energy := self._controller.outlet_energy.get(self._outlet):
+            attrs["energy"] = f"{energy:.1f} Wh"
+        if power_factor := self._controller.outlet_power_factor.get(self._outlet):
+            attrs["power_factor"] = f"{power_factor:.2f}"
 
         return attrs
 

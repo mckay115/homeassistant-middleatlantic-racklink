@@ -248,14 +248,25 @@ class RacklinkEnergy(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.sensors.get("energy")
-            self._attr_available = (
-                self._controller.connected and self._controller.available
-            )
+            # Get energy value and convert from Wh to kWh if needed
+            energy_wh = self._controller.sensors.get("energy")
+            if energy_wh is not None:
+                self._state = energy_wh / 1000.0  # Convert Wh to kWh
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._state = None
+                self._attr_available = False
         except Exception as err:
             _LOGGER.error("Error updating energy sensor: %s", err)
             self._state = None
             self._attr_available = False
+
+    @property
+    def last_reset(self) -> None:
+        """Return the last reset time."""
+        return None  # PDU energy values are typically since power-on
 
 
 class RacklinkTemperature(RacklinkSensor):
@@ -356,15 +367,19 @@ class RacklinkOutletPower(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Power",
+            f"{outlet_name} Power",
             UnitOfPower.WATT,
             f"outlet_{outlet}_power",
             SensorDeviceClass.POWER,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -373,10 +388,24 @@ class RacklinkOutletPower(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_power.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected and self._controller.available
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Power"
+
+            self._state = self._controller.outlet_power.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet power sensor %d: %s", self._outlet, err
@@ -390,15 +419,19 @@ class RacklinkOutletCurrent(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet current sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Current",
+            f"{outlet_name} Current",
             UnitOfElectricCurrent.AMPERE,
             f"outlet_{outlet}_current",
             SensorDeviceClass.CURRENT,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -407,10 +440,24 @@ class RacklinkOutletCurrent(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_current.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected and self._controller.available
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Current"
+
+            self._state = self._controller.outlet_current.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet current sensor %d: %s", self._outlet, err
@@ -424,15 +471,19 @@ class RacklinkOutletEnergy(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet energy sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Energy",
+            f"{outlet_name} Energy",
             UnitOfEnergy.KILO_WATT_HOUR,
             f"outlet_{outlet}_energy",
             SensorDeviceClass.ENERGY,
             SensorStateClass.TOTAL_INCREASING,
         )
         self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -441,10 +492,29 @@ class RacklinkOutletEnergy(RacklinkSensor):
             return
 
         try:
-            self._state = self._controller.outlet_energy.get(self._outlet)
-            self._attr_available = (
-                self._controller.connected and self._controller.available
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
             )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Energy"
+
+            # Convert from Wh to kWh if needed
+            energy_wh = self._controller.outlet_energy.get(self._outlet)
+            if energy_wh is not None:
+                self._state = energy_wh / 1000.0  # Convert Wh to kWh
+            else:
+                self._state = None
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet energy sensor %d: %s", self._outlet, err
@@ -463,16 +533,49 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
 
     def __init__(self, controller, outlet: int) -> None:
         """Initialize the outlet power factor sensor."""
+        # Get outlet name from controller if it exists
+        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
+
         super().__init__(
             controller,
-            f"Outlet {outlet} Power Factor",
+            f"{outlet_name} Power Factor",
             "%",
             f"outlet_{outlet}_power_factor",
             SensorDeviceClass.POWER_FACTOR,
             SensorStateClass.MEASUREMENT,
         )
         self._outlet = outlet
+        self._outlet_name = outlet_name
 
     async def async_update(self) -> None:
         """Update the sensor state."""
-        self._state = self._controller.outlet_power_factor.get(self._outlet)
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            # Update the name in case it changed
+            new_outlet_name = self._controller.outlet_names.get(
+                self._outlet, f"Outlet {self._outlet}"
+            )
+            if new_outlet_name != self._outlet_name:
+                self._outlet_name = new_outlet_name
+                self._attr_name = f"{new_outlet_name} Power Factor"
+
+            # Get the power factor value
+            self._state = self._controller.outlet_power_factor.get(self._outlet)
+
+            # Verify outlet exists in data
+            if self._outlet in self._controller.outlet_states:
+                self._attr_available = (
+                    self._controller.connected and self._controller.available
+                )
+            else:
+                self._attr_available = False
+
+        except Exception as err:
+            _LOGGER.error(
+                "Error updating outlet power factor sensor %d: %s", self._outlet, err
+            )
+            self._state = None
+            self._attr_available = False

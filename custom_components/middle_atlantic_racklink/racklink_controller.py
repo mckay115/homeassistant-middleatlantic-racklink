@@ -151,21 +151,6 @@ class RacklinkController:
         except Exception as err:
             _LOGGER.error("Error in background connection to %s: %s", self.host, err)
 
-    async def connect(self) -> None:
-        """Connect to the device and load basic status."""
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not connecting to %s", self.host)
-            return
-
-        # First establish base connection
-        await self._connect_only()
-
-        if not self._connected:
-            return
-
-        # Then load initial state information
-        await self._load_initial_data()
-
     async def _connect_only(self) -> None:
         """Connect to the device but skip loading initial status."""
         if self._shutdown_requested:
@@ -191,26 +176,16 @@ class RacklinkController:
                         f"Failed to connect to {self.host}:{self.port}"
                     )
 
-                # Perform login process
-                login_success = await self.login()
-                if login_success:
-                    self._connected = True
-                    self._available = True
-                    self._last_error = None
-                    self._last_error_time = None
-                    self._reconnect_attempts = 0
-                    _LOGGER.info(
-                        "Successfully connected to Middle Atlantic Racklink at %s (basic connection)",
-                        self.host,
-                    )
-                else:
-                    if self.telnet:
-                        await asyncio.to_thread(self.telnet.close)
-                        self.telnet = None
-                    self._connected = False
-                    self._handle_error("Login failed - authentication error")
-                    raise ValueError("Login failed - authentication error")
-
+                await self.login()
+                self._connected = True
+                self._available = True
+                self._last_error = None
+                self._last_error_time = None
+                self._reconnect_attempts = 0
+                _LOGGER.info(
+                    "Successfully connected to Middle Atlantic Racklink at %s (basic connection)",
+                    self.host,
+                )
             except (asyncio.TimeoutError, ConnectionError) as e:
                 if self.telnet:
                     await asyncio.to_thread(self.telnet.close)
@@ -267,6 +242,210 @@ class RacklinkController:
             _LOGGER.error("Timeout loading initial data for %s", self.host)
         except Exception as err:
             _LOGGER.error("Error loading initial data for %s: %s", self.host, err)
+
+    async def connect(self) -> None:
+        """Connect to the RackLink device."""
+        # Don't connect if shutdown was requested
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not connecting to %s", self.host)
+            return
+
+        async with self._connection_lock:
+            if self._connected:
+                _LOGGER.debug("Already connected to %s, skipping connection", self.host)
+                return
+
+            _LOGGER.info(
+                "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
+            )
+            try:
+                # Create telnet connection with timeout
+                self.telnet = await asyncio.wait_for(
+                    self._create_telnet_connection(), timeout=self._telnet_timeout
+                )
+
+                if not self.telnet:
+                    raise ConnectionError(
+                        f"Failed to connect to {self.host}:{self.port}"
+                    )
+
+                await self.login()
+                # Use the separate initial status loading method
+                asyncio.create_task(self._load_initial_data())
+                self._connected = True
+                self._available = True
+                self._last_error = None
+                self._last_error_time = None
+                self._reconnect_attempts = 0
+                _LOGGER.info(
+                    "Successfully connected to Middle Atlantic Racklink at %s",
+                    self.host,
+                )
+            except (asyncio.TimeoutError, ConnectionError) as e:
+                if self.telnet:
+                    await asyncio.to_thread(self.telnet.close)
+                    self.telnet = None
+                self._connected = False
+                self._handle_error(f"Connection failed: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
+            except Exception as e:
+                if self.telnet:
+                    await asyncio.to_thread(self.telnet.close)
+                    self.telnet = None
+                self._connected = False
+                self._handle_error(f"Unexpected error during connection: {e}")
+                raise ValueError(f"Connection failed: {e}") from e
+
+    async def reconnect(self) -> None:
+        """Reconnect to the device with backoff."""
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not reconnecting to %s", self.host)
+            return
+
+        if self._reconnect_attempts >= self._max_reconnect_attempts:
+            _LOGGER.warning(
+                "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
+                self._max_reconnect_attempts,
+                self.host,
+            )
+            return
+
+        self._reconnect_attempts += 1
+        backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
+        _LOGGER.info(
+            "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
+            self.host,
+            self._reconnect_attempts,
+            self._max_reconnect_attempts,
+            backoff,
+        )
+
+        await asyncio.sleep(backoff)
+        await self.disconnect()
+
+        try:
+            await asyncio.wait_for(self.connect(), timeout=self._telnet_timeout)
+            _LOGGER.info("Successfully reconnected to %s", self.host)
+        except (asyncio.TimeoutError, Exception) as e:
+            _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
+
+    async def send_command(self, cmd: str) -> str:
+        """Send a command to the device and return the response."""
+        if self._shutdown_requested:
+            _LOGGER.debug("Shutdown requested, not sending command to %s", self.host)
+            return ""
+
+        if not self.connected:
+            _LOGGER.debug("Not connected, attempting to connect before sending command")
+            try:
+                await asyncio.wait_for(self.connect(), timeout=self._telnet_timeout)
+            except asyncio.TimeoutError:
+                _LOGGER.error("Connection attempt timed out")
+                return ""
+            except Exception as err:
+                _LOGGER.error("Connection attempt failed: %s", err)
+                return ""
+
+            if not self.connected:
+                _LOGGER.error("Still not connected after connection attempt")
+                return ""
+
+        try:
+            _LOGGER.debug("Sending command: %s", cmd)
+            # Make sure to include CRLF - this is critical for telnet protocol
+            await self._telnet_write(f"{cmd}\r\n".encode())
+            self.last_cmd = cmd
+            self.context = cmd.replace(" ", "")
+
+            # Read until prompt character
+            _LOGGER.debug("Waiting for response to command: %s", cmd)
+            response = await asyncio.wait_for(
+                self._telnet_read_until(b"#", self._telnet_timeout),
+                timeout=self._telnet_timeout * 1.5,  # Add margin to outer timeout
+            )
+
+            if response:
+                # Decode and clean up the response
+                self.response_cache = response.decode("utf-8", errors="ignore")
+                _LOGGER.debug(
+                    "Response (first 100 chars): %s",
+                    self.response_cache[:100].replace("\r\n", " "),
+                )
+                return self.response_cache
+            else:
+                _LOGGER.warning("Empty response for command: %s", cmd)
+                return ""
+
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Command timed out after %s seconds: %s",
+                self._telnet_timeout * 1.5,
+                cmd,
+            )
+            self._handle_error(f"Command timed out: {cmd}")
+            # Don't attempt reconnect immediately on timeout, just return empty
+            return ""
+        except ConnectionError as e:
+            _LOGGER.error("Connection error while sending command: %s", e)
+            self._handle_error(f"Connection error while sending command: {e}")
+            await self.reconnect()
+            # After reconnection, try sending the command again if we're connected
+            if self.connected:
+                return await self.send_command(cmd)
+            return ""
+        except Exception as e:
+            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
+            self._handle_error(f"Error sending command: {e}")
+            await self.reconnect()
+            return ""
+
+    async def login(self) -> None:
+        """Login to the device."""
+        try:
+            # Wait for username prompt with timeout
+            _LOGGER.debug("Waiting for Username prompt")
+            response = await asyncio.wait_for(
+                self._telnet_read_until(b"Username:", self._telnet_timeout),
+                timeout=self._telnet_timeout * 1.5,
+            )
+            _LOGGER.debug("Got Username prompt, sending username")
+
+            # Send username with CRLF
+            await self._telnet_write(f"{self.username}\r\n".encode())
+
+            # Wait for password prompt with timeout
+            _LOGGER.debug("Waiting for Password prompt")
+            response = await asyncio.wait_for(
+                self._telnet_read_until(b"Password:", self._telnet_timeout),
+                timeout=self._telnet_timeout * 1.5,
+            )
+            _LOGGER.debug("Got Password prompt, sending password")
+
+            # Send password with CRLF
+            await self._telnet_write(f"{self.password}\r\n".encode())
+
+            # Wait for command prompt with timeout
+            _LOGGER.debug("Waiting for command prompt")
+            response = await asyncio.wait_for(
+                self._telnet_read_until(b"#", self._telnet_timeout),
+                timeout=self._telnet_timeout * 1.5,
+            )
+            _LOGGER.debug("Got command prompt")
+
+            if b"#" not in response:
+                _LOGGER.error("Did not get command prompt after login")
+                raise ValueError("Login failed: Invalid credentials")
+
+        except asyncio.TimeoutError as exc:
+            _LOGGER.error("Login timed out - no response from device")
+            raise ConnectionError("Login timed out") from exc
+        except ConnectionError as e:
+            _LOGGER.error("Connection error during login: %s", e)
+            raise ConnectionError(f"Login failed: {e}") from e
+        except Exception as e:
+            _LOGGER.error("Unexpected error during login: %s", e)
+            self._handle_error(f"Login failed: {e}")
+            raise ValueError(f"Login failed: {e}") from e
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
@@ -399,131 +578,145 @@ class RacklinkController:
             return
 
         _LOGGER.debug("Outlet states response length: %d", len(response))
-        _LOGGER.debug("Response excerpt: %s", response[:200].replace("\r\n", " | "))
+        _LOGGER.debug(
+            "First 100 chars of response: %s", response[:100].replace("\r\n", " ")
+        )
 
+        # Using a pattern inspired by the Q-Sys Lua implementation
+        # Looking for patterns like:
+        # Outlet 1:
+        # 1 - Outlet Name
+        # Power state: On
+        # RMS Current: 0.00A
+        # Active Power: 0W
+        # Active Energy: 0Wh
+        # Power Factor: 0%
+
+        # First, we'll split the response into sections by outlet
         try:
-            # Based on the Lua code pattern: for _,out in string.gmatch(data,"Outlet (%d.-):\r\n(P.-)V\r\n\r\n")
-            # This pattern captures each outlet section from the output
-            outlet_matches = re.finditer(
-                r"Outlet (\d+.*?):\r\n(.*?)(?:\r\n\r\n|\Z)", response, re.DOTALL
+            # Pattern to match outlet headers and capture the number
+            outlet_headers = re.findall(r"Outlet (\d+):", response)
+            _LOGGER.debug(
+                "Found %d outlet headers: %s", len(outlet_headers), outlet_headers
             )
 
-            outlets_found = 0
-            for match in outlet_matches:
-                try:
-                    # First group contains outlet number and possibly name
-                    outlet_header = match.group(1).strip()
-                    # Second group contains all details for this outlet
-                    outlet_details = match.group(2).strip()
+            if not outlet_headers:
+                _LOGGER.warning("No outlet headers found in response")
+                return
 
-                    _LOGGER.debug("Found outlet section: '%s'", outlet_header)
+            # Split the response by "Outlet X:" patterns
+            sections = re.split(r"Outlet \d+:", response)
 
-                    # Extract outlet number
-                    outlet_num_match = re.search(r"^(\d+)", outlet_header)
-                    if not outlet_num_match:
-                        _LOGGER.warning(
-                            "Could not extract outlet number from '%s'", outlet_header
+            # Skip the first section (before the first outlet)
+            if sections and len(sections) > 1:
+                sections = sections[1:]
+
+                for i, (outlet_num, section) in enumerate(
+                    zip(outlet_headers, sections)
+                ):
+                    try:
+                        outlet = int(outlet_num)
+                        _LOGGER.debug("Processing outlet %d data", outlet)
+
+                        # Extract state - more flexible pattern to match various formats
+                        state_match = re.search(
+                            r"Power state:\s*(On|Off)", section, re.IGNORECASE
                         )
-                        continue
+                        if state_match:
+                            state = state_match.group(1).lower() == "on"
+                            self.outlet_states[outlet] = state
+                            _LOGGER.debug("Outlet %d state: %s", outlet, state)
+                        else:
+                            _LOGGER.warning(
+                                "No power state found for outlet %d", outlet
+                            )
 
-                    outlet = int(outlet_num_match.group(1))
-                    outlets_found += 1
-
-                    # Extract outlet name (everything after the number and dash)
-                    name_match = re.search(r"^\d+\s*-\s*(.*?)$", outlet_header)
-                    if name_match:
-                        name = name_match.group(1).strip()
-                        if name:
+                        # Extract name - looking for patterns like "1 - Office Equipment"
+                        name_match = re.search(r"(\d+)\s*-\s*(.+?)[\r\n]", section)
+                        if name_match and int(name_match.group(1)) == outlet:
+                            name = name_match.group(2).strip()
                             self.outlet_names[outlet] = name
-                            _LOGGER.debug("Outlet %d name: '%s'", outlet, name)
+                            _LOGGER.debug("Outlet %d name: %s", outlet, name)
+                        else:
+                            # Fallback - just use generic name if we can't find one
+                            if outlet not in self.outlet_names:
+                                self.outlet_names[outlet] = f"Outlet {outlet}"
 
-                    # Extract power state - using case-insensitive search
-                    state_match = re.search(
-                        r"Power state:\s*(On|OFF|on|off)", outlet_details, re.IGNORECASE
-                    )
-                    if state_match:
-                        # Convert to boolean - "on" (any case) = True
-                        state = state_match.group(1).lower() == "on"
-                        self.outlet_states[outlet] = state
-                        _LOGGER.debug("Outlet %d state: %s", outlet, state)
-                    else:
-                        _LOGGER.warning("No power state found for outlet %d", outlet)
-                        # Default to false if no state found to avoid None values
-                        self.outlet_states[outlet] = False
+                        # Extract current - including '0.00A' or '0 A' formats
+                        current_match = re.search(
+                            r"RMS Current:\s*([\d.]+)\s*A", section, re.IGNORECASE
+                        )
+                        if current_match:
+                            try:
+                                current = float(current_match.group(1).strip())
+                                self.outlet_current[outlet] = current
+                                _LOGGER.debug(
+                                    "Outlet %d current: %.2f A", outlet, current
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid current value for outlet %d", outlet
+                                )
 
-                    # Extract current - based on Lua: string.match(out,"RMS Current: (.-A)")
-                    current_match = re.search(
-                        r"RMS Current:\s*([\d\.]+)\s*A", outlet_details
-                    )
-                    if current_match:
-                        try:
-                            current = float(current_match.group(1).strip())
-                            self.outlet_current[outlet] = current
-                            _LOGGER.debug("Outlet %d current: %.3f A", outlet, current)
-                        except ValueError as e:
-                            _LOGGER.warning(
-                                "Error converting current for outlet %d: %s", outlet, e
-                            )
+                        # Extract power - including '0W' or '0 W' formats
+                        power_match = re.search(
+                            r"Active Power:\s*([\d.]+)\s*W", section, re.IGNORECASE
+                        )
+                        if power_match:
+                            try:
+                                power = float(power_match.group(1).strip())
+                                self.outlet_power[outlet] = power
+                                _LOGGER.debug("Outlet %d power: %.2f W", outlet, power)
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid power value for outlet %d", outlet
+                                )
 
-                    # Extract power - based on Lua: string.match(out,"Active Power: (.-W)")
-                    power_match = re.search(
-                        r"Active Power:\s*([\d\.]+)\s*W", outlet_details
-                    )
-                    if power_match:
-                        try:
-                            power = float(power_match.group(1).strip())
-                            self.outlet_power[outlet] = power
-                            _LOGGER.debug("Outlet %d power: %.3f W", outlet, power)
-                        except ValueError as e:
-                            _LOGGER.warning(
-                                "Error converting power for outlet %d: %s", outlet, e
-                            )
+                        # Extract energy - including '0Wh' or '0 Wh' formats
+                        energy_match = re.search(
+                            r"Active Energy:\s*([\d.]+)\s*Wh", section, re.IGNORECASE
+                        )
+                        if energy_match:
+                            try:
+                                energy = float(energy_match.group(1).strip())
+                                self.outlet_energy[outlet] = energy
+                                _LOGGER.debug(
+                                    "Outlet %d energy: %.2f Wh", outlet, energy
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid energy value for outlet %d", outlet
+                                )
 
-                    # Extract energy - based on Lua: string.match(out,"Active Energy: (.-Wh)")
-                    energy_match = re.search(
-                        r"Active Energy:\s*([\d\.]+)\s*Wh", outlet_details
-                    )
-                    if energy_match:
-                        try:
-                            energy = float(energy_match.group(1).strip())
-                            self.outlet_energy[outlet] = energy
-                            _LOGGER.debug("Outlet %d energy: %.3f Wh", outlet, energy)
-                        except ValueError as e:
-                            _LOGGER.warning(
-                                "Error converting energy for outlet %d: %s", outlet, e
-                            )
+                        # Extract power factor - including '0%' format
+                        pf_match = re.search(
+                            r"Power Factor:\s*([\d.]+)\s*%", section, re.IGNORECASE
+                        )
+                        if pf_match:
+                            try:
+                                power_factor = float(pf_match.group(1).strip())
+                                self.outlet_power_factor[outlet] = (
+                                    power_factor / 100.0
+                                )  # Convert to decimal
+                                _LOGGER.debug(
+                                    "Outlet %d power factor: %.2f",
+                                    outlet,
+                                    self.outlet_power_factor[outlet],
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid power factor value for outlet %d", outlet
+                                )
 
-                    # Extract power factor
-                    pf_match = re.search(
-                        r"Power Factor:\s*([\d\.]+)\s*%", outlet_details
-                    )
-                    if pf_match:
-                        try:
-                            power_factor = float(pf_match.group(1).strip())
-                            self.outlet_power_factor[outlet] = power_factor
-                            _LOGGER.debug(
-                                "Outlet %d power factor: %.2f %%", outlet, power_factor
-                            )
-                        except ValueError as e:
-                            _LOGGER.warning(
-                                "Error converting power factor for outlet %d: %s",
-                                outlet,
-                                e,
-                            )
+                    except Exception as err:
+                        _LOGGER.error("Error parsing outlet %d: %s", outlet, err)
+                        _LOGGER.debug("Section causing parse error: %s", section[:100])
+            else:
+                _LOGGER.warning("No valid outlet sections found in response")
 
-                except Exception as err:
-                    _LOGGER.error("Error parsing outlet data: %s", err)
-
-            _LOGGER.info("Successfully processed %d outlets", outlets_found)
-            if outlets_found == 0:
-                _LOGGER.warning(
-                    "No outlets found in response. Raw response excerpt: %s",
-                    response[:200],
-                )
-
-        except Exception as err:
-            _LOGGER.error("Error parsing outlet data: %s", err)
-            _LOGGER.debug("Failed response: %s", response[:200])
+        except Exception as e:
+            _LOGGER.error("Failed to parse outlet details: %s", e)
+            _LOGGER.debug("Response causing parse failure: %s", response[:200])
 
     async def set_outlet_state(self, outlet: int, state: bool):
         """Set an outlet's power state."""
@@ -589,52 +782,113 @@ class RacklinkController:
         _LOGGER.debug("Sensor values response: %s", response[:200].replace("\r\n", " "))
 
         try:
-            # Extract voltage
-            voltage_match = re.search(r"RMS Voltage: (.+?)V", response)
+            # Check if we actually got data
+            if "RMS Voltage" not in response:
+                _LOGGER.warning("Response doesn't contain expected inlet data")
+                return
+
+            # Extract voltage - using more flexible patterns with whitespace handling
+            voltage_match = re.search(
+                r"RMS Voltage:\s*([\d.]+)\s*V", response, re.IGNORECASE
+            )
             if voltage_match:
-                self.sensors["voltage"] = float(voltage_match.group(1).strip())
-                _LOGGER.debug("Found voltage: %f", self.sensors["voltage"])
+                try:
+                    self.sensors["voltage"] = float(voltage_match.group(1).strip())
+                    _LOGGER.debug("Found voltage: %.2f V", self.sensors["voltage"])
+                except ValueError:
+                    _LOGGER.warning("Invalid voltage value")
+            else:
+                _LOGGER.debug("No voltage found in response")
 
             # Extract current
-            current_match = re.search(r"RMS Current: (.+?)A", response)
+            current_match = re.search(
+                r"RMS Current:\s*([\d.]+)\s*A", response, re.IGNORECASE
+            )
             if current_match:
-                self.sensors["current"] = float(current_match.group(1).strip())
-                _LOGGER.debug("Found current: %f", self.sensors["current"])
+                try:
+                    self.sensors["current"] = float(current_match.group(1).strip())
+                    _LOGGER.debug("Found current: %.2f A", self.sensors["current"])
+                except ValueError:
+                    _LOGGER.warning("Invalid current value")
+            else:
+                _LOGGER.debug("No current found in response")
 
             # Extract power
-            power_match = re.search(r"Active Power: (.+?)W", response)
+            power_match = re.search(
+                r"Active Power:\s*([\d.]+)\s*W", response, re.IGNORECASE
+            )
             if power_match:
-                self.sensors["power"] = float(power_match.group(1).strip())
-                _LOGGER.debug("Found power: %f", self.sensors["power"])
+                try:
+                    self.sensors["power"] = float(power_match.group(1).strip())
+                    _LOGGER.debug("Found power: %.2f W", self.sensors["power"])
+                except ValueError:
+                    _LOGGER.warning("Invalid power value")
+            else:
+                _LOGGER.debug("No power found in response")
+
+            # Extract energy - many devices also report total energy consumption
+            energy_match = re.search(
+                r"Active Energy:\s*([\d.]+)\s*Wh", response, re.IGNORECASE
+            )
+            if energy_match:
+                try:
+                    self.sensors["energy"] = float(energy_match.group(1).strip())
+                    _LOGGER.debug("Found energy: %.2f Wh", self.sensors["energy"])
+                except ValueError:
+                    _LOGGER.warning("Invalid energy value")
+            else:
+                _LOGGER.debug("No energy found in response")
 
             # Extract frequency
-            freq_match = re.search(r"Frequency: (.+?)Hz", response)
+            freq_match = re.search(
+                r"Frequency:\s*([\d.]+)\s*Hz", response, re.IGNORECASE
+            )
             if freq_match:
-                self.sensors["frequency"] = float(freq_match.group(1).strip())
-                _LOGGER.debug("Found frequency: %f", self.sensors["frequency"])
+                try:
+                    self.sensors["frequency"] = float(freq_match.group(1).strip())
+                    _LOGGER.debug("Found frequency: %.2f Hz", self.sensors["frequency"])
+                except ValueError:
+                    _LOGGER.warning("Invalid frequency value")
+            else:
+                _LOGGER.debug("No frequency found in response")
 
             # Extract power factor
-            pf_match = re.search(r"Power Factor: (.+?)%", response)
+            pf_match = re.search(
+                r"Power Factor:\s*([\d.]+)\s*%", response, re.IGNORECASE
+            )
             if pf_match:
-                self.sensors["power_factor"] = float(pf_match.group(1).strip())
-                _LOGGER.debug("Found power factor: %f", self.sensors["power_factor"])
+                try:
+                    # Convert percentage to decimal (0-1)
+                    power_factor = float(pf_match.group(1).strip()) / 100.0
+                    self.sensors["power_factor"] = power_factor
+                    _LOGGER.debug(
+                        "Found power factor: %.2f", self.sensors["power_factor"]
+                    )
+                except ValueError:
+                    _LOGGER.warning("Invalid power factor value")
+            else:
+                _LOGGER.debug("No power factor found in response")
 
             # Extract temperature
-            temp_match = re.search(r"Temperature: (.+?)°C", response)
+            temp_match = re.search(
+                r"Temperature:\s*([\d.]+)\s*°C", response, re.IGNORECASE
+            )
             if temp_match:
-                self.sensors["temperature"] = float(temp_match.group(1).strip())
-                _LOGGER.debug("Found temperature: %f", self.sensors["temperature"])
+                try:
+                    self.sensors["temperature"] = float(temp_match.group(1).strip())
+                    _LOGGER.debug(
+                        "Found temperature: %.1f °C", self.sensors["temperature"]
+                    )
+                except ValueError:
+                    _LOGGER.warning("Invalid temperature value")
             else:
-                self.sensors["temperature"] = None
                 _LOGGER.debug("No temperature found in response")
+                # Some devices don't have temperature sensors
+                self.sensors["temperature"] = None
 
-        except AttributeError as e:
+        except Exception as e:
             _LOGGER.error("Failed to parse sensor values: %s", e)
             _LOGGER.debug("Response causing parse failure: %s", response[:200])
-            self._handle_error(f"Failed to parse sensor values: {e}")
-        except ValueError as e:
-            _LOGGER.error("Failed to convert sensor value: %s", e)
-            self._handle_error(f"Failed to convert sensor value: {e}")
 
     async def get_all_outlet_statuses(self) -> Dict[int, bool]:
         """Get status of all outlets."""
@@ -720,36 +974,3 @@ class RacklinkController:
 
         _LOGGER.debug("Model capabilities for %s: %s", model, capabilities)
         return capabilities
-
-    async def reconnect(self) -> None:
-        """Reconnect to the device with backoff."""
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not reconnecting to %s", self.host)
-            return
-
-        if self._reconnect_attempts >= self._max_reconnect_attempts:
-            _LOGGER.warning(
-                "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
-                self._max_reconnect_attempts,
-                self.host,
-            )
-            return
-
-        self._reconnect_attempts += 1
-        backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
-        _LOGGER.info(
-            "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
-            self.host,
-            self._reconnect_attempts,
-            self._max_reconnect_attempts,
-            backoff,
-        )
-
-        await asyncio.sleep(backoff)
-        await self.disconnect()
-
-        try:
-            await asyncio.wait_for(self.connect(), timeout=self._telnet_timeout * 2)
-            _LOGGER.info("Successfully reconnected to %s", self.host)
-        except (asyncio.TimeoutError, Exception) as e:
-            _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
