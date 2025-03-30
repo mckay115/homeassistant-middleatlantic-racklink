@@ -108,14 +108,20 @@ class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information about this entity."""
-        return {
-            "identifiers": {(DOMAIN, self._pdu_serial)},
-            "name": f"Racklink PDU {self._pdu_name}",
+        """Return device info."""
+        device_info = {
+            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
+            "name": f"Racklink PDU {self._controller.pdu_name}",
             "manufacturer": ATTR_MANUFACTURER,
-            "model": self._pdu_model or ATTR_MODEL,
-            "sw_version": self._pdu_firmware,
+            "model": self._controller.pdu_model or ATTR_MODEL,
+            "sw_version": self._controller.pdu_firmware,
         }
+
+        # Add MAC address as a connection info if available
+        if self._controller.mac_address:
+            device_info["connections"] = {("mac", self._controller.mac_address)}
+
+        return device_info
 
     @property
     def is_on(self) -> Optional[bool]:
