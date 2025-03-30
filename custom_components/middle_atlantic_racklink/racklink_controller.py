@@ -297,11 +297,21 @@ class RacklinkController:
         loop = asyncio.get_event_loop()
 
         try:
+            # First check if socket is still valid
+            if self._socket.fileno() == -1:
+                _LOGGER.warning("Socket is no longer valid (fileno=-1)")
+                self._connected = False
+                self._available = False
+                return b""
+
             # Create a Future that will receive the data
             read_future = loop.create_future()
 
             # Define the read callback to be used with add_reader
             def _socket_read_callback():
+                if read_future.done():
+                    return  # Avoid calling set_result twice
+
                 try:
                     data = self._socket.recv(4096)
                     if data:
@@ -319,19 +329,40 @@ class RacklinkController:
                 except BlockingIOError:
                     # No data available yet
                     pass
+                except ConnectionError as e:
+                    _LOGGER.debug("Socket connection error: %s", e)
+                    self._connected = False
+                    if not read_future.done():
+                        read_future.set_exception(e)
+                except OSError as e:
+                    _LOGGER.debug("Socket OS error: %s", e)
+                    self._connected = False
+                    if not read_future.done():
+                        read_future.set_exception(e)
                 except Exception as e:
                     _LOGGER.debug("Socket read error: %s", e)
-                    read_future.set_exception(e)
+                    if not read_future.done():
+                        read_future.set_exception(e)
 
-            # Add the socket reader
-            loop.add_reader(self._socket.fileno(), _socket_read_callback)
+            # Try to add the socket reader safely
+            try:
+                loop.add_reader(self._socket.fileno(), _socket_read_callback)
+            except (ValueError, OSError) as e:
+                _LOGGER.warning("Could not add socket reader: %s", e)
+                self._connected = False
+                return b""
 
             try:
                 # Wait for the read to complete or timeout
                 return await asyncio.wait_for(read_future, timeout=timeout)
             finally:
-                # Always remove the reader when done
-                loop.remove_reader(self._socket.fileno())
+                # Always try to remove the reader when done
+                try:
+                    if self._socket and self._socket.fileno() != -1:
+                        loop.remove_reader(self._socket.fileno())
+                except (ValueError, OSError):
+                    # Socket might be closed already
+                    pass
 
         except asyncio.TimeoutError:
             _LOGGER.debug("Socket read timed out after %s seconds", timeout)
@@ -471,8 +502,19 @@ class RacklinkController:
         """Connect to the device and authenticate."""
         async with self._connection_lock:
             if self._connected and self._socket:
-                _LOGGER.debug("Already connected to %s", self._host)
-                return True
+                # Verify socket is still valid
+                try:
+                    if self._socket.fileno() == -1:
+                        _LOGGER.debug("Socket appears to be closed, reconnecting")
+                        self._connected = False
+                        self._socket = None
+                    else:
+                        _LOGGER.debug("Already connected to %s", self._host)
+                        return True
+                except (OSError, ValueError):
+                    _LOGGER.debug("Socket error, needs reconnection")
+                    self._connected = False
+                    self._socket = None
 
             _LOGGER.info("Connecting to %s:%s", self._host, self._port)
 
@@ -480,6 +522,9 @@ class RacklinkController:
             self._retry_count = 0
 
             try:
+                # Close any existing socket first
+                await self._close_socket()
+
                 # Create socket with a reasonable timeout
                 self._socket = await asyncio.wait_for(
                     self._create_socket_connection(), timeout=self._socket_timeout
@@ -1339,79 +1384,139 @@ class RacklinkController:
         command_timeout = timeout or self._command_timeout
         command_with_newline = f"{command}\r\n"
 
-        try:
-            if not self._connected:
-                _LOGGER.debug("Not connected while sending command: %s", command)
-                connection_success = await self._handle_connection_issues()
-                if not connection_success:
-                    _LOGGER.warning("Could not reconnect to send command: %s", command)
-                    return ""
+        # Retry counter for this specific command
+        retry_count = 0
+        max_retries = 2  # Maximum retries for a single command
 
-            _LOGGER.debug("Sending command: %s (timeout: %s)", command, command_timeout)
+        while retry_count <= max_retries:
+            try:
+                if not self._connected:
+                    _LOGGER.debug("Not connected while sending command: %s", command)
+                    # Only try to reconnect on the first attempt
+                    if retry_count == 0:
+                        connection_success = await self._handle_connection_issues()
+                        if not connection_success:
+                            _LOGGER.warning(
+                                "Could not reconnect to send command: %s", command
+                            )
+                            return ""
+                    else:
+                        # Don't try to reconnect on subsequent retries
+                        return ""
 
-            # Flush any data in the buffer before sending
-            if self._buffer:
                 _LOGGER.debug(
-                    "Clearing read buffer of %d bytes before sending command",
-                    len(self._buffer),
-                )
-                self._buffer = b""
-
-            # Send the command
-            await self._socket_write(command_with_newline.encode())
-
-            # Wait for device to process the command
-            # Some commands need more time, especially power control commands
-            if "power outlets" in command:
-                # Power commands need more time
-                await asyncio.sleep(wait_time * 2)
-            else:
-                await asyncio.sleep(wait_time)
-
-            # Read response until we get the command prompt
-            response = await self._socket_read_until(b"#", timeout=command_timeout)
-
-            # Convert to string for parsing
-            response_text = response.decode("utf-8", errors="ignore")
-
-            # Debug log the response
-            if len(response_text) < 200:  # Only log small responses
-                _LOGGER.debug("Response for '%s': %s", command, response_text)
-            else:
-                _LOGGER.debug(
-                    "Response for '%s': %d bytes (showing first 100): %s...",
+                    "Sending command: %s (timeout: %s, attempt: %d)",
                     command,
-                    len(response_text),
-                    response_text[:100],
+                    command_timeout,
+                    retry_count + 1,
                 )
 
-            # Verify the response contains evidence of command execution
-            # For safety, ensure we have a valid response before proceeding
-            if not response_text or (
-                len(response_text) < 3 and "#" not in response_text
-            ):
-                _LOGGER.warning("Potentially invalid response for command: %s", command)
-                # Try again, but only once to avoid infinite recursion
-                if not hasattr(self, "_retry_send_command"):
-                    self._retry_send_command = True
-                    _LOGGER.debug("Retrying command once: %s", command)
-                    result = await self.send_command(command, timeout, wait_time)
-                    delattr(self, "_retry_send_command")
-                    return result
+                # Flush any data in the buffer before sending
+                if self._buffer:
+                    _LOGGER.debug(
+                        "Clearing read buffer of %d bytes before sending command",
+                        len(self._buffer),
+                    )
+                    self._buffer = b""
+
+                # Send the command
+                try:
+                    await self._socket_write(command_with_newline.encode())
+                except ConnectionError as e:
+                    _LOGGER.error("Connection error while sending command: %s", e)
+                    # Mark as disconnected
+                    self._connected = False
+                    self._available = False
+                    # Try again if we have retries left
+                    retry_count += 1
+                    continue
+
+                # Wait for device to process the command
+                # Some commands need more time, especially power control commands
+                cmd_wait_time = wait_time
+                if "power outlets" in command:
+                    # Power commands need more time
+                    cmd_wait_time = wait_time * 2
+
+                await asyncio.sleep(cmd_wait_time)
+
+                # Read response until we get the command prompt
+                response = await self._socket_read_until(b"#", timeout=command_timeout)
+
+                # If we lost connection during read, try again
+                if not self._connected and retry_count < max_retries:
+                    _LOGGER.warning("Lost connection while reading response, retrying")
+                    retry_count += 1
+                    continue
+
+                # Convert to string for parsing
+                response_text = response.decode("utf-8", errors="ignore")
+
+                # Debug log the response
+                if len(response_text) < 200:  # Only log small responses
+                    _LOGGER.debug("Response for '%s': %s", command, response_text)
                 else:
-                    delattr(self, "_retry_send_command")
-                    _LOGGER.error("Command failed even after retry: %s", command)
+                    _LOGGER.debug(
+                        "Response for '%s': %d bytes (showing first 100): %s...",
+                        command,
+                        len(response_text),
+                        response_text[:100],
+                    )
 
-            return response_text
+                # Verify the response contains evidence of command execution
+                # For safety, ensure we have a valid response before proceeding
+                if not response_text or (
+                    len(response_text) < 3 and "#" not in response_text
+                ):
+                    _LOGGER.warning(
+                        "Potentially invalid response: '%s' for command: %s",
+                        response_text,
+                        command,
+                    )
 
-        except ConnectionError as e:
-            _LOGGER.error("Connection error sending command '%s': %s", command, e)
-            # Try to recover the connection
-            await self._handle_connection_issues()
-            return ""
-        except Exception as e:
-            _LOGGER.error("Error sending command '%s': %s", command, e)
-            return ""
+                    if retry_count < max_retries:
+                        _LOGGER.debug(
+                            "Retrying command: %s (attempt %d)",
+                            command,
+                            retry_count + 2,
+                        )
+                        retry_count += 1
+                        # Wait before retrying
+                        await asyncio.sleep(1)
+                        continue
+
+                # If we got here, we have a valid response or have exhausted retries
+                return response_text
+
+            except ConnectionError as e:
+                _LOGGER.error("Connection error sending command '%s': %s", command, e)
+                # Try to recover the connection only on first attempt
+                if retry_count == 0:
+                    await self._handle_connection_issues()
+                retry_count += 1
+                if retry_count <= max_retries:
+                    await asyncio.sleep(1)  # Wait before retry
+                    continue
+                return ""
+
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout sending command '%s'", command)
+                retry_count += 1
+                if retry_count <= max_retries:
+                    await asyncio.sleep(1)  # Wait before retry
+                    continue
+                return ""
+
+            except Exception as e:
+                _LOGGER.error("Error sending command '%s': %s", command, e)
+                retry_count += 1
+                if retry_count <= max_retries:
+                    await asyncio.sleep(1)  # Wait before retry
+                    continue
+                return ""
+
+        # If we got here, we've exhausted all retries
+        return ""
 
     async def _handle_connection_issues(self) -> bool:
         """Handle connection issues by attempting to reconnect.
@@ -1421,26 +1526,8 @@ class RacklinkController:
         if not self._connected:
             _LOGGER.debug("Connection issue detected, attempting to reconnect")
 
-            # Try immediate reconnect
+            # Try immediate reconnect (this will try multiple ports)
             reconnect_success = await self.reconnect()
-
-            # If that fails, try again with more ports
-            if not reconnect_success:
-                _LOGGER.warning("Initial reconnect failed, trying alternative ports")
-                # Reset port to default for a fresh attempt
-                original_port = self._port
-                self._port = 6000  # Reset to default first
-                reconnect_success = await self.reconnect()
-
-                # If that still fails, try with telnet port 23
-                if not reconnect_success and self._port != 23:
-                    _LOGGER.warning("Reconnect failed, trying telnet port 23")
-                    self._port = 23
-                    reconnect_success = await self.reconnect()
-
-                # If still no success, restore original port
-                if not reconnect_success:
-                    self._port = original_port
 
             if reconnect_success:
                 _LOGGER.info("Successfully reconnected")
@@ -1556,89 +1643,90 @@ class RacklinkController:
             # Close any existing socket first
             await self._close_socket()
 
+            # Save the original port for reference
+            original_port = self._port
+
             # Try different port numbers if the default doesn't work
-            potential_ports = [self._port]
+            potential_ports = [original_port]
 
             # If the port is the default (6000), also try some alternative common ports
-            if self._port == 6000:
+            if original_port == 6000:
                 potential_ports.extend([23, 22, 2000, 4000, 8000, 6001])
 
             # Try each port in sequence
             for port in potential_ports:
-                if port != self._port:
+                if port != original_port:
                     _LOGGER.info("Trying alternative port %s for %s", port, self._host)
 
-                    # Save the current port we're trying
-                    current_port = self._port
-                    self._port = port
+                self._port = port  # Set the current port we're trying
 
-                    try:
-                        # Create socket with a reasonable timeout
-                        self._socket = await asyncio.wait_for(
-                            self._create_socket_connection(), timeout=5
+                try:
+                    # Create socket with a reasonable timeout
+                    self._socket = await asyncio.wait_for(
+                        self._create_socket_connection(), timeout=5
+                    )
+
+                    if not self._socket:
+                        _LOGGER.debug(
+                            "Failed to reconnect on port %s - socket creation failed",
+                            port,
                         )
+                        continue  # Try next port
 
-                        if not self._socket:
-                            _LOGGER.debug(
-                                "Failed to reconnect on port %s - socket creation failed",
+                    # Try to log in
+                    login_success = await asyncio.wait_for(self._login(), timeout=5)
+
+                    if login_success:
+                        self._connected = True
+                        self._available = True
+
+                        # If this was an alternative port, log that we found a working port
+                        if port != original_port:
+                            _LOGGER.warning(
+                                "Successfully connected to %s using alternative port %s instead of %s",
+                                self._host,
+                                port,
+                                original_port,
+                            )
+                        else:
+                            _LOGGER.info(
+                                "Successfully reconnected to %s on port %s",
+                                self._host,
                                 port,
                             )
-                            continue  # Try next port
 
-                        # Try to log in
-                        login_success = await asyncio.wait_for(self._login(), timeout=5)
+                        # Ensure command processor is running
+                        self._ensure_command_processor_running()
 
-                        if login_success:
-                            self._connected = True
-                            self._available = True
+                        # Update device info
+                        await self.get_device_info()
 
-                            # If this was an alternative port, log that we found a working port
-                            if port != current_port:
-                                _LOGGER.warning(
-                                    "Successfully connected to %s using alternative port %s instead of %s",
-                                    self._host,
-                                    port,
-                                    current_port,
-                                )
-                            else:
-                                _LOGGER.info(
-                                    "Successfully reconnected to %s on port %s",
-                                    self._host,
-                                    port,
-                                )
-
-                            # Ensure command processor is running
-                            self._ensure_command_processor_running()
-
-                            # Update device info
-                            await self.get_device_info()
-
-                            return True
-                        else:
-                            _LOGGER.debug("Failed to log in on port %s", port)
-                            await self._close_socket()
-
-                    except asyncio.TimeoutError:
-                        _LOGGER.debug(
-                            "Connection attempt to %s on port %s timed out",
-                            self._host,
-                            port,
-                        )
+                        return True
+                    else:
+                        _LOGGER.debug("Failed to log in on port %s", port)
                         await self._close_socket()
-                    except Exception as e:
-                        _LOGGER.debug(
-                            "Error during reconnection to %s on port %s: %s",
-                            self._host,
-                            port,
-                            e,
-                        )
-                        await self._close_socket()
+
+                except asyncio.TimeoutError:
+                    _LOGGER.debug(
+                        "Connection attempt to %s on port %s timed out",
+                        self._host,
+                        port,
+                    )
+                    await self._close_socket()
+                except Exception as e:
+                    _LOGGER.debug(
+                        "Error during reconnection to %s on port %s: %s",
+                        self._host,
+                        port,
+                        e,
+                    )
+                    await self._close_socket()
 
             # If we get here, we failed to connect on any port
             _LOGGER.error("Failed to reconnect to %s on any port", self._host)
 
             # Restore original port
-            self._port = current_port
+            self._port = original_port
             return False
 
     async def _socket_read_until(
@@ -1826,7 +1914,7 @@ class RacklinkController:
         """Turn a specific outlet on."""
         if not self._connected:
             _LOGGER.warning("Not connected, cannot turn on outlet %d", outlet_num)
-            await self.reconnect()
+            await self._handle_connection_issues()
             if not self._connected:
                 return False
 
@@ -1841,10 +1929,19 @@ class RacklinkController:
 
                 # Verify the state change by getting updated details
                 try:
-                    await self.get_outlet_state(outlet_num)
+                    # Only try to verify if we're still connected
+                    if self._connected:
+                        state = await self.get_outlet_state(outlet_num)
+                        if not state:
+                            _LOGGER.warning(
+                                "Outlet %d may not have turned ON properly", outlet_num
+                            )
+                    else:
+                        _LOGGER.warning("Not connected, cannot verify outlet state")
                 except Exception as e:
                     _LOGGER.warning("Error verifying outlet state: %s", e)
 
+                # Consider the command successful even if verification failed
                 return True
             else:
                 _LOGGER.error("No response when turning on outlet %d", outlet_num)
@@ -1858,7 +1955,7 @@ class RacklinkController:
         """Turn a specific outlet off."""
         if not self._connected:
             _LOGGER.warning("Not connected, cannot turn off outlet %d", outlet_num)
-            await self.reconnect()
+            await self._handle_connection_issues()
             if not self._connected:
                 return False
 
@@ -1873,10 +1970,19 @@ class RacklinkController:
 
                 # Verify the state change by getting updated details
                 try:
-                    await self.get_outlet_state(outlet_num)
+                    # Only try to verify if we're still connected
+                    if self._connected:
+                        state = await self.get_outlet_state(outlet_num)
+                        if state:
+                            _LOGGER.warning(
+                                "Outlet %d may not have turned OFF properly", outlet_num
+                            )
+                    else:
+                        _LOGGER.warning("Not connected, cannot verify outlet state")
                 except Exception as e:
                     _LOGGER.warning("Error verifying outlet state: %s", e)
 
+                # Consider the command successful even if verification failed
                 return True
             else:
                 _LOGGER.error("No response when turning off outlet %d", outlet_num)
