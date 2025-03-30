@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
+import re
 from typing import Any, Dict, Optional
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -25,54 +25,110 @@ from .const import (
     SUPPORTED_MODELS,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USERNAME,
 )
 from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
-CONNECTION_TIMEOUT = 15  # Timeout in seconds for connection validation
+CONNECTION_TIMEOUT = 30  # Timeout in seconds for connection validation
 
-DEFAULT_USERNAME = "admin"
+# Data schema for the user input in the config flow
+STEP_USER_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_HOST): str,
+        vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
+        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+    }
+)
+
+# Data schema for the options flow
+OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
+    }
+)
 
 
 async def validate_connection(
     hass: HomeAssistant, data: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Validate the connection by attempting to connect to the device."""
+    """Validate the connection to the RackLink PDU."""
     host = data[CONF_HOST]
-    port = data.get(CONF_PORT, DEFAULT_PORT)
-    username = data.get(CONF_USERNAME, DEFAULT_USERNAME)
+    port = data[CONF_PORT]
+    username = data[CONF_USERNAME]
     password = data[CONF_PASSWORD]
 
     controller = RacklinkController(
-        host=host, port=port, username=username, password=password
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        timeout=CONNECTION_TIMEOUT,
     )
 
     try:
+        # Connect to the device
         if not await controller.connect():
-            raise CannotConnect("Failed to connect to device")
+            _LOGGER.error("Failed to connect to device: %s:%s", host, port)
+            raise CannotConnect("Connection failed")
 
-        # Try to get device info
+        # Try to retrieve device information
         await controller.update()
 
-        if not controller.pdu_serial:
-            raise InvalidAuth("Failed to retrieve device information")
+        # Validate that we got some basic information
+        if not controller.pdu_name and not controller.pdu_model:
+            _LOGGER.error("Failed to retrieve device information")
+            await controller.disconnect()
+            raise CannotConnect("Failed to retrieve device information")
 
-        # Return device info for title
-        return {
-            "title": controller.pdu_name or f"RackLink PDU ({host})",
-            "serial": controller.pdu_serial,
+        # Get device information for the config entry title
+        info = {
+            "pdu_name": controller.pdu_name or "RackLink PDU",
+            "pdu_model": controller.pdu_model or "Unknown Model",
+            "pdu_firmware": controller.pdu_firmware or "Unknown Firmware",
+            "pdu_serial": controller.pdu_serial or "Unknown Serial",
+            "mac_address": controller.mac_address or "Unknown MAC",
         }
+
+        _LOGGER.info(
+            "Successfully connected to %s (%s)", info["pdu_name"], info["pdu_model"]
+        )
+
+        # Properly disconnect from the device
+        await controller.disconnect()
+        return info
+
+    except asyncio.TimeoutError:
+        _LOGGER.error("Timeout connecting to device: %s:%s", host, port)
+        await controller.disconnect()
+        raise CannotConnect("Connection timeout")
+    except (OSError, asyncio.exceptions.CancelledError) as err:
+        _LOGGER.error("Error connecting to device: %s", err)
+        await controller.disconnect()
+        raise CannotConnect(f"Connection error: {err}")
+    except ValueError as err:
+        _LOGGER.error("Authentication failed: %s", err)
+        await controller.disconnect()
+        raise InvalidAuth(f"Authentication failed: {err}")
     except Exception as err:
         _LOGGER.error("Error connecting to device: %s", err)
-        raise CannotConnect(f"Connection error: {err}")
-    finally:
         await controller.disconnect()
+        raise CannotConnect(f"Error connecting to device: {err}")
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Middle Atlantic RackLink."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "OptionsFlowHandler":
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -82,16 +138,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                device_info = await validate_connection(self.hass, user_input)
+                info = await validate_connection(self.hass, user_input)
 
-                # Check if already configured
-                await self.async_set_unique_id(device_info["serial"])
-                self._abort_if_unique_id_configured()
+                # Create a friendly title for the config entry
+                title = info["pdu_name"]
+                if info["pdu_model"] != "Unknown Model":
+                    title = f"{title} ({info['pdu_model']})"
 
-                return self.async_create_entry(
-                    title=device_info["title"],
-                    data=user_input,
-                )
+                return self.async_create_entry(title=title, data=user_input)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -100,18 +154,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        # Show form
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_HOST): str,
-                vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
-                vol.Required(CONF_PASSWORD): str,
-            }
-        )
-
         return self.async_show_form(
-            step_id="user", data_schema=data_schema, errors=errors
+            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
 
     async def async_step_import(
@@ -119,13 +163,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle import from configuration.yaml."""
         return await self.async_step_user(user_input)
-
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> "OptionsFlowHandler":
-        """Return the options flow."""
-        return OptionsFlowHandler(config_entry)
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
@@ -138,20 +175,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Manage the options."""
+        """Handle options flow."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        options = {
-            vol.Optional(
-                CONF_SCAN_INTERVAL,
-                default=self.config_entry.options.get(
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                ),
-            ): int,
-        }
+        data_schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_SCAN_INTERVAL,
+                    default=self.config_entry.options.get(
+                        CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                    ),
+                ): int,
+            }
+        )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(options))
+        return self.async_show_form(step_id="init", data_schema=data_schema)
 
 
 class CannotConnect(HomeAssistantError):

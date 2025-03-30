@@ -8,12 +8,13 @@ from homeassistant.const import Platform
 DOMAIN = "middle_atlantic_racklink"
 
 # Default values
-DEFAULT_PORT = 23
+DEFAULT_PORT = 6000
 DEFAULT_NAME = "Middle Atlantic Racklink"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 DEFAULT_TIMEOUT = 20
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
 DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
+DEFAULT_USERNAME = "admin"
 
 # Connection parameters
 MAX_RECONNECT_ATTEMPTS = 3
@@ -25,7 +26,6 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_DEVICE_ID = "device_id"
 CONF_MODEL = "model"
 CONF_PDU_NAME = "pdu_name"
-CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 
 # Supported models
@@ -144,3 +144,7 @@ MAX_CONNECTION_ATTEMPTS = 3
 
 # Maximum initial connection attempts
 MAX_INITIAL_CONNECTION_ATTEMPTS = 5
+
+# Device key for storing controller and coordinator
+DATA_CONTROLLER = "controller"
+DATA_COORDINATOR = "coordinator"

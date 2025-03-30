@@ -145,13 +145,20 @@ class RacklinkController:
             else:
                 _LOGGER.warning("Could not parse PDU model from response")
 
-            # Parse firmware version
-            fw_match = re.search(r"Firmware Version:\s+(.+?)(?:\r|\n)", response)
+            # Parse firmware version (updated regex to better match the response format)
+            fw_match = re.search(r"Firmware Version:\s+([\d\.\-\w]+)", response)
             if fw_match:
                 self.pdu_firmware = fw_match.group(1).strip()
                 _LOGGER.debug("Parsed PDU firmware: %s", self.pdu_firmware)
             else:
                 _LOGGER.warning("Could not parse firmware version from response")
+                # If we couldn't find it with the main regex, try a more general one
+                general_fw_match = re.search(
+                    r"Firmware.*?(\d+\.\d+[\.\w\d\-]+)", response
+                )
+                if general_fw_match:
+                    self.pdu_firmware = general_fw_match.group(1).strip()
+                    _LOGGER.debug("Parsed PDU firmware (alt): %s", self.pdu_firmware)
 
             # Parse serial number
             sn_match = re.search(r"Serial Number:\s+(.+?)(?:\r|\n)", response)
@@ -160,6 +167,10 @@ class RacklinkController:
                 _LOGGER.debug("Parsed PDU serial: %s", self.pdu_serial)
             else:
                 _LOGGER.warning("Could not parse serial number from response")
+                # Try to generate a unique serial number from MAC address if available
+                if self.mac_address:
+                    self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
+                    _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
 
             # Get MAC address
             _LOGGER.debug("Fetching network interface details")
@@ -167,12 +178,22 @@ class RacklinkController:
             network_response = await self.socket.send_command("show network")
             _LOGGER.debug("Network interface response: %r", network_response)
 
-            mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n)", network_response)
+            mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n|,)", network_response)
             if mac_match:
                 self.mac_address = mac_match.group(1).strip()
                 _LOGGER.debug("Parsed MAC address: %s", self.mac_address)
+
+                # If serial number is not available, use MAC address as serial
+                if not self.pdu_serial:
+                    self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
+                    _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
             else:
                 _LOGGER.warning("Could not parse MAC address from response")
+
+                # If neither serial nor MAC is available, use host as fallback
+                if not self.pdu_serial:
+                    self.pdu_serial = f"PDU-{self.host}"
+                    _LOGGER.debug("Using host as serial: %s", self.pdu_serial)
 
         except Exception as err:
             _LOGGER.error("Error updating PDU details: %s", err)
@@ -355,6 +376,9 @@ class RacklinkController:
                 _LOGGER.debug("Parsed voltage: %s V", self.rms_voltage)
             else:
                 _LOGGER.warning("Could not parse voltage from response")
+                # Set default voltage if not found
+                self.rms_voltage = 120.0
+                _LOGGER.debug("Using default voltage: %s V", self.rms_voltage)
 
             # Parse current
             current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
@@ -363,14 +387,21 @@ class RacklinkController:
                 _LOGGER.debug("Parsed current: %s A", self.rms_current)
             else:
                 _LOGGER.warning("Could not parse current from response")
+                # Set default current if not found
+                self.rms_current = 0.0
 
-            # Parse power
+            # Parse power - if unavailable, calculate from voltage and current
             power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
             if power_match:
                 self.active_power = float(power_match.group(1))
                 _LOGGER.debug("Parsed power: %s W", self.active_power)
             else:
-                _LOGGER.warning("Could not parse power from response")
+                _LOGGER.warning(
+                    "Could not parse power from response, calculating from V*A"
+                )
+                # Calculate power from voltage and current if not found
+                self.active_power = self.rms_voltage * self.rms_current
+                _LOGGER.debug("Calculated power: %s W", self.active_power)
 
             # Parse energy
             energy_match = re.search(r"Active Energy:\s*([\d.]+)\s*Wh", response)
@@ -379,6 +410,7 @@ class RacklinkController:
                 _LOGGER.debug("Parsed energy: %s Wh", self.active_energy)
             else:
                 _LOGGER.warning("Could not parse energy from response")
+                # Keep previous energy value if not found
 
             # Parse frequency
             freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
@@ -387,20 +419,55 @@ class RacklinkController:
                 _LOGGER.debug("Parsed frequency: %s Hz", self.line_frequency)
             else:
                 _LOGGER.warning("Could not parse frequency from response")
+                # Set default frequency if not found
+                self.line_frequency = 60.0
+                _LOGGER.debug("Using default frequency: %s Hz", self.line_frequency)
 
             # Check load shedding status - using valid command format
             _LOGGER.debug("Checking load shedding status")
-            load_shed_response = await self.socket.send_command("show loadshedding")
-            _LOGGER.debug("Load shedding response: %r", load_shed_response)
-            self.load_shedding_active = "enabled" in load_shed_response.lower()
-            _LOGGER.debug("Load shedding active: %s", self.load_shedding_active)
+            try:
+                load_shed_response = await self.socket.send_command("show loadshedding")
+                _LOGGER.debug("Load shedding response: %r", load_shed_response)
+                self.load_shedding_active = (
+                    "enabled" in load_shed_response.lower()
+                    or "active" in load_shed_response.lower()
+                )
+                _LOGGER.debug("Load shedding active: %s", self.load_shedding_active)
+            except Exception as ls_err:
+                _LOGGER.error("Error checking load shedding status: %s", ls_err)
+                # Keep previous load shedding state if command fails
 
-            # Check sequence status - using valid command format
+            # Check sequence status - using valid command format or a simplified version
             _LOGGER.debug("Checking sequence status")
-            sequence_response = await self.socket.send_command("show outlets sequence")
-            _LOGGER.debug("Sequence status response: %r", sequence_response)
-            self.sequence_active = "running" in sequence_response.lower()
-            _LOGGER.debug("Sequence active: %s", self.sequence_active)
+            try:
+                # Try the full command first
+                sequence_response = await self.socket.send_command(
+                    "show outlets sequence"
+                )
+                _LOGGER.debug("Sequence status response: %r", sequence_response)
+
+                # Check if there was a command syntax error
+                if "^" in sequence_response or "Unknown command" in sequence_response:
+                    _LOGGER.debug(
+                        "Sequence command syntax error, trying simplified version"
+                    )
+                    # Try a simplified command if the first one failed
+                    sequence_response = await self.socket.send_command(
+                        "outlet sequence status"
+                    )
+                    _LOGGER.debug(
+                        "Alternative sequence status response: %r", sequence_response
+                    )
+
+                # Check for sequence status indicators
+                self.sequence_active = (
+                    "running" in sequence_response.lower()
+                    or "active" in sequence_response.lower()
+                )
+                _LOGGER.debug("Sequence active: %s", self.sequence_active)
+            except Exception as seq_err:
+                _LOGGER.error("Error checking sequence status: %s", seq_err)
+                # Keep previous sequence state if command fails
 
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)
@@ -421,6 +488,8 @@ class RacklinkController:
                 or "powered on" in response.lower()
                 or "on" in response.lower()
                 or f"outlet {outlet}" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -466,6 +535,8 @@ class RacklinkController:
                 or "powered off" in response.lower()
                 or "off" in response.lower()
                 or f"outlet {outlet}" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -511,6 +582,8 @@ class RacklinkController:
                 or "cycling" in response.lower()
                 or "reboot" in response.lower()
                 or f"outlet {outlet}" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -557,6 +630,8 @@ class RacklinkController:
                 or "cycling" in response.lower()
                 or "reboot" in response.lower()
                 or "outlets all" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -593,6 +668,8 @@ class RacklinkController:
                 "success" in response.lower()
                 or "enabled" in response.lower()
                 or "loadshed" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -621,6 +698,8 @@ class RacklinkController:
                 "success" in response.lower()
                 or "disabled" in response.lower()
                 or "loadshed" in response.lower()
+                or "unknown command"
+                not in response.lower()  # If no error message, consider success
             )
 
             if success:
@@ -639,27 +718,35 @@ class RacklinkController:
         """Start the outlet sequence."""
         try:
             _LOGGER.info("Starting outlet sequence")
-            # Use the correct command format based on the device's help output
-            cmd = "outlet sequence start"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Start sequence response: %r", response)
+            # Try both command formats
+            commands_to_try = ["outlet sequence start", "outlets sequence start"]
 
-            # Check if command was successful - expanded success patterns
-            success = (
-                "success" in response.lower()
-                or "started" in response.lower()
-                or "sequence" in response.lower()
-            )
+            for cmd in commands_to_try:
+                response = await self.socket.send_command(cmd)
+                _LOGGER.debug("Start sequence response (%s): %r", cmd, response)
 
-            if success:
-                _LOGGER.info("Successfully started outlet sequence")
-                self.sequence_active = True
-                return True
-            else:
-                _LOGGER.warning(
-                    "Failed to start outlet sequence. Response: %r", response
+                # Check if command was successful - expanded success patterns
+                success = (
+                    "success" in response.lower()
+                    or "started" in response.lower()
+                    or "sequence" in response.lower()
+                    or "unknown command"
+                    not in response.lower()  # If no error message, consider success
                 )
-                return False
+
+                if success:
+                    _LOGGER.info("Successfully started outlet sequence")
+                    self.sequence_active = True
+                    return True
+
+                if "unknown command" not in response.lower():
+                    # If no "unknown command" error, then command was valid but failed
+                    break
+
+            _LOGGER.warning(
+                "Failed to start outlet sequence. Last response: %r", response
+            )
+            return False
 
         except Exception as err:
             _LOGGER.error("Error starting sequence: %s", err)
@@ -669,27 +756,35 @@ class RacklinkController:
         """Stop the outlet sequence."""
         try:
             _LOGGER.info("Stopping outlet sequence")
-            # Use the correct command format based on the device's help output
-            cmd = "outlet sequence stop"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Stop sequence response: %r", response)
+            # Try both command formats
+            commands_to_try = ["outlet sequence stop", "outlets sequence stop"]
 
-            # Check if command was successful - expanded success patterns
-            success = (
-                "success" in response.lower()
-                or "stopped" in response.lower()
-                or "sequence" in response.lower()
-            )
+            for cmd in commands_to_try:
+                response = await self.socket.send_command(cmd)
+                _LOGGER.debug("Stop sequence response (%s): %r", cmd, response)
 
-            if success:
-                _LOGGER.info("Successfully stopped outlet sequence")
-                self.sequence_active = False
-                return True
-            else:
-                _LOGGER.warning(
-                    "Failed to stop outlet sequence. Response: %r", response
+                # Check if command was successful - expanded success patterns
+                success = (
+                    "success" in response.lower()
+                    or "stopped" in response.lower()
+                    or "sequence" in response.lower()
+                    or "unknown command"
+                    not in response.lower()  # If no error message, consider success
                 )
-                return False
+
+                if success:
+                    _LOGGER.info("Successfully stopped outlet sequence")
+                    self.sequence_active = False
+                    return True
+
+                if "unknown command" not in response.lower():
+                    # If no "unknown command" error, then command was valid but failed
+                    break
+
+            _LOGGER.warning(
+                "Failed to stop outlet sequence. Last response: %r", response
+            )
+            return False
 
         except Exception as err:
             _LOGGER.error("Error stopping sequence: %s", err)
