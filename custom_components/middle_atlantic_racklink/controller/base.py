@@ -199,38 +199,23 @@ class BaseController:
                     if not future.done():
                         future.set_result(result)
 
-                except Exception as err:
+                except Exception as e:
                     # Set the exception
                     if not future.done():
-                        future.set_exception(err)
+                        future.set_exception(e)
 
-                # Mark the task as done
-                self._command_queue.task_done()
-
-                # Wait a short delay to prevent overwhelming the device
-                if not self._stopping:
-                    await asyncio.sleep(COMMAND_QUERY_DELAY)
-
-        except CancelledError:
-            # Handle normal cancellation
-            _LOGGER.debug("Command processor task cancelled")
-
-        except Exception as err:
-            # Handle unexpected errors
-            _LOGGER.error("Error in command processor: %s", err)
-
-        finally:
-            # Make sure all remaining commands are marked with an exception
-            while not self._command_queue.empty():
-                try:
-                    _, future = self._command_queue.get_nowait()
-                    if not future.done():
-                        future.set_exception(
-                            ConnectionError("Command processor stopped")
-                        )
+                finally:
+                    # Mark the command as done
                     self._command_queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
+
+                    # Add a delay between commands to not overwhelm the device
+                    # Increased from default to be more gentle
+                    await asyncio.sleep(1.0)  # Increased from 0.5 to 1.0 second
+
+        except asyncio.CancelledError:
+            _LOGGER.debug("Command processor task cancelled")
+        except Exception as e:
+            _LOGGER.error("Error in command processor: %s", e)
 
     async def queue_command(self, command: str) -> str:
         """Queue a command for execution by the command processor."""
@@ -255,144 +240,138 @@ class BaseController:
             raise
 
     async def _send_command(self, command: str) -> str:
-        """Send a command to the PDU and return the response."""
+        """Send a command to the device and return the response."""
         if not self._connected or not self._connection:
-            _LOGGER.warning("Cannot send command, not connected")
-            self._available = False
             raise ConnectionError("Not connected to device")
 
-        async with self._command_lock:
-            try:
-                response = await self._connection.send_command(command)
+        # Add a short delay before sending command to improve reliability
+        await asyncio.sleep(0.1)
 
-                # Check for errors in the response
-                if "error" in response.lower() or "unknown command" in response.lower():
-                    _LOGGER.warning(
-                        "Command error: %s - Response: %s", command, response
-                    )
-                    self._error_count += 1
-
-                    if self._error_count >= MAX_FAILED_COMMANDS:
-                        _LOGGER.error("Too many command errors, marking as unavailable")
-                        self._available = False
-                        raise ConnectionError("Too many command errors")
-                else:
-                    # Reset error count on successful command
-                    self._error_count = 0
-                    self._available = True
-
-                return response
-
-            except Exception as err:
-                _LOGGER.error("Error sending command %s: %s", command, err)
-                self._error_count += 1
-
-                if self._error_count >= MAX_FAILED_COMMANDS:
-                    _LOGGER.error("Too many command errors, marking as unavailable")
-                    self._available = False
-
-                raise
-
-    async def _get_device_info(self) -> bool:
-        """Get device information from the PDU."""
+        _LOGGER.debug("Sending command: %s", command)
         try:
-            # Try different commands for getting device info
-            commands = ["show device", "show system", "show pdu"]
-
-            for cmd in commands:
-                try:
-                    if not self._connected:
-                        return False
-
-                    response = await self._send_command(cmd)
-                    device_info = parse_device_info(response)
-
-                    if device_info:
-                        self.pdu_model = device_info.get("model")
-                        self.pdu_serial = device_info.get("serial")
-                        self.pdu_firmware = device_info.get("firmware")
-                        self.mac_address = device_info.get("mac")
-
-                        _LOGGER.info(
-                            "Device info: Model=%s, Serial=%s, Firmware=%s, MAC=%s",
-                            self.pdu_model,
-                            self.pdu_serial,
-                            self.pdu_firmware,
-                            self.mac_address,
-                        )
-                        return True
-
-                except Exception as err:
-                    _LOGGER.debug("Error getting device info with %s: %s", cmd, err)
-                    continue
-
-            _LOGGER.warning("Could not get device information with any command")
-            return False
-
+            response = await self._connection.send_command(command)
+            self._error_count = 0  # Reset error count on success
+            return response
         except Exception as err:
-            _LOGGER.error("Error getting device info: %s", err)
-            return False
+            self._error_count += 1
+            _LOGGER.error("Error sending command %s: %s", command, err)
 
-    async def _discover_available_commands(self) -> None:
-        """Discover available commands from the PDU."""
-        commands_discovered = False
+            if self._error_count >= MAX_FAILED_COMMANDS:
+                _LOGGER.error("Too many command errors, marking as unavailable")
+                self._available = False
 
-        for attempt in range(COMMAND_DISCOVERY_ATTEMPTS):
+            raise
+
+    async def _get_device_info(self) -> None:
+        """Get device information by trying multiple commands."""
+        # Commands to try for getting device info, in order of preference
+        device_info_commands = [
+            "show device",
+            "show system",
+            "show pdu",
+            "show pdu detail",
+            "show pdu details",
+            "info",
+            "status",
+        ]
+
+        # Try each command with increasing delays to not overwhelm the device
+        device_info_found = False
+        delay = 1.0  # Start with a 1 second delay
+
+        for cmd in device_info_commands:
             try:
-                _LOGGER.debug(
-                    "Discovering available commands (attempt %d)", attempt + 1
-                )
+                # Add delay between commands
+                await asyncio.sleep(delay)
+                delay += 0.5  # Increase delay for each subsequent command
 
-                # Try different help commands
-                help_commands = ["help", "?", "help all", "menu"]
+                _LOGGER.debug("Trying to get device info with: %s", cmd)
+                response = await self.queue_command(cmd)
 
-                for help_cmd in help_commands:
-                    try:
-                        response = await self._send_command(help_cmd)
-                        commands = parse_available_commands(response)
+                # Parse the response
+                info = parse_device_info(response)
 
-                        if commands:
-                            _LOGGER.info("Discovered %d commands", len(commands))
-                            self._available_commands = set(commands)
-                            self._command_discovery_complete = True
-                            commands_discovered = True
-                            break
+                if info and (info.get("model") or info.get("name")):
+                    # We found valid device info
+                    _LOGGER.debug("Successfully got device info with: %s", cmd)
 
-                    except Exception as err:
-                        _LOGGER.debug(
-                            "Error discovering commands with %s: %s", help_cmd, err
-                        )
-                        continue
+                    # Update device properties
+                    if "name" in info:
+                        self._pdu_name = info["name"]
+                    if "model" in info:
+                        self.pdu_model = info["model"]
+                    if "serial" in info:
+                        self.pdu_serial = info["serial"]
+                    if "firmware" in info:
+                        self.pdu_firmware = info["firmware"]
 
-                if commands_discovered:
+                    device_info_found = True
                     break
 
             except Exception as err:
-                _LOGGER.error(
-                    "Error discovering commands (attempt %d): %s", attempt + 1, err
-                )
+                _LOGGER.error("Error sending command %s: %s", cmd, err)
 
-            # Wait before retrying
-            await asyncio.sleep(1)
+        # Try to get network info for MAC address
+        if device_info_found:
+            try:
+                await asyncio.sleep(delay)  # Add delay before network command
+                response = await self.queue_command("show network")
+                network_info = parse_network_info(response)
 
-        if not commands_discovered:
+                if network_info and "mac_address" in network_info:
+                    self.mac_address = network_info["mac_address"]
+            except Exception as err:
+                _LOGGER.warning("Could not get network info: %s", err)
+
+        if not device_info_found:
+            _LOGGER.warning("Could not get device information with any command")
+
+    async def _discover_available_commands(self) -> None:
+        """Discover available commands on the device."""
+        _LOGGER.debug("Discovering available commands")
+
+        # Commands that could help discover available features
+        discovery_commands = [
+            "help",
+            "?",
+            "help all",
+            "menu",
+        ]
+
+        commands_found = False
+        error_count = 0
+
+        # Try each discovery command with more delay between attempts
+        for cmd in discovery_commands:
+            if error_count >= MAX_FAILED_COMMANDS:
+                _LOGGER.error("Too many command errors, marking as unavailable")
+                self._available = False
+                break
+
+            try:
+                _LOGGER.debug("Trying discovery command: %s", cmd)
+                # Add a longer delay between commands
+                await asyncio.sleep(2.0)
+
+                response = await self.queue_command(cmd)
+                parsed_commands = parse_available_commands(response)
+
+                if parsed_commands:
+                    self._available_commands.update(parsed_commands)
+                    commands_found = True
+                    _LOGGER.debug(
+                        "Found %d commands with '%s'", len(parsed_commands), cmd
+                    )
+                    break  # Stop if we found commands successfully
+
+            except Exception as err:
+                error_count += 1
+                _LOGGER.error("Error sending command %s: %s", cmd, err)
+
+        if not commands_found:
             _LOGGER.warning("Could not discover available commands, will use defaults")
-            # Set a default set of common commands
-            self._available_commands = {
-                "show",
-                "set",
-                "cycle",
-                "on",
-                "off",
-                "reboot",
-                "config",
-                "apply",
-                "outlet",
-                "pdu",
-                "power",
-            }
 
-        _LOGGER.debug("Available commands: %s", sorted(list(self._available_commands)))
+        self._command_discovery_complete = True
 
     def get_model_capabilities(self) -> Dict[str, Any]:
         """Get capabilities for the current PDU model."""
