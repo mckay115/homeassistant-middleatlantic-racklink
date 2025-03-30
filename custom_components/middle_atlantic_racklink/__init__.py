@@ -44,11 +44,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Create controller instance
     controller = RacklinkController(host, port, username, password, model)
 
-    # Start background connection with extended timeout
+    # Start background connection with timeout
     try:
-        # Attempt initial connection to device
+        # Attempt initial connection to device with timeout
         _LOGGER.debug("Starting background connection to %s", host)
-        await controller.start_background_connection()
+        connection_task = controller.start_background_connection()
+        # Set 15 second timeout for initial connection
+        try:
+            await asyncio.wait_for(connection_task, timeout=15)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Initial connection timed out, proceeding with setup")
+            # Continue anyway - entities will show as unavailable until connected
 
         # Ensure update method is implemented and ready
         # This will allow entity updates to function correctly
@@ -68,12 +74,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Add update method to controller
             controller.update = update_wrapper
 
-        # Wait for background connection to establish
-        await asyncio.sleep(5)
+        # Wait briefly for connection to establish - reduce from 5 to 2 seconds
+        await asyncio.sleep(2)
 
-        # Force an initial update to populate data
+        # Force an initial update to populate data with timeout
         _LOGGER.debug("Triggering initial data refresh for %s", host)
-        await controller.update()
+        try:
+            await asyncio.wait_for(controller.update(), timeout=10)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Initial data refresh timed out")
+            # Continue with setup - the coordinator will retry
 
     except Exception as e:
         _LOGGER.error("Error during initial setup: %s", e)
@@ -91,12 +101,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Check if controller is connected, if not, attempt reconnection
             if not controller.connected:
                 _LOGGER.debug("Controller not connected, attempting to connect")
-                await controller.connect()
+                try:
+                    await asyncio.wait_for(controller.connect(), timeout=10)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Connection attempt timed out")
+                    raise UpdateFailed("Connection attempt timed out")
 
             # Update all data from device
             if controller.connected:
                 _LOGGER.debug("Updating controller data from device")
-                await controller.update()
+                try:
+                    await asyncio.wait_for(controller.update(), timeout=10)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Data update timed out")
+                    raise UpdateFailed("Data update timed out")
 
                 # Return the data for entities to use
                 return {
@@ -120,7 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Convert exception into update failure for coordinator
             raise UpdateFailed(f"Error communicating with device: {e}")
 
-    # Create the update coordinator
+    # Create the update coordinator with longer initial_update_interval
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
@@ -129,8 +147,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=DEFAULT_SCAN_INTERVAL,
     )
 
-    # Start the initial refresh
-    await coordinator.async_refresh()
+    # Start the initial refresh with timeout
+    try:
+        await asyncio.wait_for(coordinator.async_refresh(), timeout=15)
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Initial coordinator refresh timed out, proceeding with setup")
+    except Exception as e:
+        _LOGGER.warning("Error during initial coordinator refresh: %s", e)
 
     # Store coordinator in the data dict
     hass.data[DOMAIN][entry.entry_id + "_coordinator"] = coordinator
@@ -143,9 +166,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Cycle power for all outlets."""
         try:
             _LOGGER.info("Cycling all outlets on %s", controller.pdu_name)
-            await controller.cycle_all_outlets()
+            await asyncio.wait_for(controller.cycle_all_outlets(), timeout=15)
             # Force a refresh to update the states after cycling
             await coordinator.async_request_refresh()
+        except asyncio.TimeoutError:
+            _LOGGER.error("Cycling all outlets timed out")
         except Exception as e:
             _LOGGER.error("Error cycling all outlets: %s", e)
 
@@ -178,9 +203,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name = call.data.get("name")
         if outlet is not None and name is not None:
             try:
-                await controller.set_outlet_name(outlet, name)
+                await asyncio.wait_for(
+                    controller.set_outlet_name(outlet, name), timeout=5
+                )
                 # Force refresh of coordinator after name change
                 await coordinator.async_request_refresh()
+            except asyncio.TimeoutError:
+                _LOGGER.error("Setting outlet name timed out")
             except Exception as e:
                 _LOGGER.error("Error setting outlet %s name to %s: %s", outlet, name, e)
 
@@ -192,9 +221,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name = call.data.get("name")
         if name is not None:
             try:
-                await controller.set_pdu_name(name)
+                await asyncio.wait_for(controller.set_pdu_name(name), timeout=5)
                 # Force refresh of coordinator after name change
                 await coordinator.async_request_refresh()
+            except asyncio.TimeoutError:
+                _LOGGER.error("Setting PDU name timed out")
             except Exception as e:
                 _LOGGER.error("Error setting PDU name to %s: %s", name, e)
 
@@ -204,7 +235,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_stop_controller(event):
         """Stop the controller when Home Assistant stops."""
         _LOGGER.debug("Shutting down Racklink controller for %s", host)
-        await controller.shutdown()
+        try:
+            await asyncio.wait_for(controller.shutdown(), timeout=5)
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Controller shutdown timed out")
+        except Exception as e:
+            _LOGGER.warning("Error during controller shutdown: %s", e)
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_stop_controller)
@@ -222,10 +258,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         controller = hass.data[DOMAIN].pop(entry.entry_id)
         # Use the new shutdown method to properly clean up resources
-        await controller.shutdown()
-        _LOGGER.info(
-            "Disconnected from Middle Atlantic Racklink at %s", entry.data["host"]
-        )
+        try:
+            await asyncio.wait_for(controller.shutdown(), timeout=5)
+            _LOGGER.info(
+                "Disconnected from Middle Atlantic Racklink at %s", entry.data["host"]
+            )
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Controller shutdown timed out during unload")
+        except Exception as e:
+            _LOGGER.warning("Error during controller shutdown: %s", e)
 
     return unload_ok
 

@@ -23,6 +23,7 @@ from .const import (
 from .racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
+CONNECTION_TIMEOUT = 15  # Timeout in seconds for connection validation
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -51,7 +52,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         try:
-            await controller.connect()
+            # Use timeout for connection to prevent UI from hanging
+            _LOGGER.debug(
+                "Attempting to connect to %s with timeout %s seconds",
+                user_input[CONF_HOST],
+                CONNECTION_TIMEOUT,
+            )
+
+            try:
+                await asyncio.wait_for(controller.connect(), timeout=CONNECTION_TIMEOUT)
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    "Connection to %s timed out after %s seconds",
+                    user_input[CONF_HOST],
+                    CONNECTION_TIMEOUT,
+                )
+                errors["base"] = "timeout"
+                return errors, device_info
+
+            # Check if basic device info was retrieved
+            if not controller.pdu_model or not controller.pdu_serial:
+                _LOGGER.error(
+                    "Connected but failed to retrieve device information from %s",
+                    user_input[CONF_HOST],
+                )
+                errors["base"] = "device_info_missing"
+                await controller.disconnect()
+                return errors, device_info
+
             device_info = {
                 "name": controller.pdu_name,
                 "model": controller.pdu_model,
@@ -78,7 +106,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 controller.pdu_model,
                 controller.pdu_serial,
             )
-            await controller.disconnect()
+
+            # Use timeout for disconnect as well
+            try:
+                await asyncio.wait_for(controller.disconnect(), timeout=5)
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Disconnect timed out, but validation succeeded")
+
         except ValueError as err:
             _LOGGER.error(
                 "Could not connect to device at %s: %s", user_input[CONF_HOST], err

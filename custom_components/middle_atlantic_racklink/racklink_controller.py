@@ -143,6 +143,7 @@ class RacklinkController:
     async def _telnet_write(self, data: bytes) -> None:
         """Write to telnet connection in a non-blocking way."""
         if not self.telnet:
+            _LOGGER.error("Cannot write to telnet: connection is None")
             raise ConnectionError("No telnet connection available")
 
         if data is None:
@@ -150,15 +151,26 @@ class RacklinkController:
 
         try:
             _LOGGER.debug("Writing %d bytes to telnet", len(data))
-            await asyncio.to_thread(self.telnet.write, data)
+            # Safety check - don't use a direct reference to self.telnet that could become None
+            telnet = self.telnet
+            if telnet is None:
+                raise ConnectionError("Telnet connection became None")
+
+            await asyncio.to_thread(telnet.write, data)
         except EOFError as exc:
             self._connected = False
+            self._available = False
             raise ConnectionError("Connection closed while writing data") from exc
         except asyncio.CancelledError:
             _LOGGER.warning("Telnet write operation was cancelled")
             raise
+        except AttributeError as exc:
+            self._connected = False
+            self._available = False
+            raise ConnectionError(f"Telnet connection lost: {exc}") from exc
         except Exception as exc:
             self._connected = False
+            self._available = False
             raise ConnectionError(f"Error writing to telnet: {exc}") from exc
 
     async def start_background_connection(self) -> None:
@@ -322,9 +334,20 @@ class RacklinkController:
             return
 
         async with self._connection_lock:
-            if self._connected:
+            if self._connected and self.telnet is not None:
                 _LOGGER.debug("Already connected to %s, skipping connection", self.host)
                 return
+
+            # Clean up any existing broken connection
+            if self.telnet is not None:
+                _LOGGER.debug("Cleaning up existing broken telnet connection")
+                try:
+                    await asyncio.to_thread(self.telnet.close)
+                except Exception as e:
+                    _LOGGER.debug("Error closing existing telnet connection: %s", e)
+                finally:
+                    self.telnet = None
+                    self._connected = False
 
             _LOGGER.info(
                 "Connecting to Middle Atlantic Racklink at %s:%s", self.host, self.port
@@ -340,323 +363,139 @@ class RacklinkController:
                         f"Failed to connect to {self.host}:{self.port}"
                     )
 
-                # Reset the telnet object's timeout to our command timeout
-                if hasattr(self.telnet, "timeout"):
-                    self.telnet.timeout = self._command_timeout
-
-                await self.login()
-                # Use the separate initial status loading method
-                asyncio.create_task(self._load_initial_data())
-
-                # Start the command processor task
-                if (
-                    self._command_processor_task is None
-                    or self._command_processor_task.done()
-                ):
-                    self._command_processor_task = asyncio.create_task(
-                        self._process_command_queue()
-                    )
-                    _LOGGER.debug("Started command processor task")
+                # Login with timeout
+                await asyncio.wait_for(self.login(), timeout=self._connection_timeout)
 
                 self._connected = True
                 self._available = True
                 self._last_error = None
                 self._last_error_time = None
                 self._reconnect_attempts = 0
+
+                # Start command queue processing task if not running
+                if (
+                    self._command_processor_task is None
+                    or self._command_processor_task.done()
+                ):
+                    _LOGGER.debug("Starting command processor task")
+                    self._command_processor_task = asyncio.create_task(
+                        self._process_command_queue()
+                    )
+
                 _LOGGER.info(
                     "Successfully connected to Middle Atlantic Racklink at %s",
                     self.host,
                 )
             except (asyncio.TimeoutError, ConnectionError) as e:
-                _LOGGER.error(
-                    "Connection to %s failed due to timeout or connection error: %s",
-                    self.host,
-                    e,
-                )
                 if self.telnet:
-                    _LOGGER.debug("Closing telnet connection due to connection error")
-                    await asyncio.to_thread(self.telnet.close)
+                    try:
+                        await asyncio.to_thread(self.telnet.close)
+                    except Exception as close_err:
+                        _LOGGER.debug(
+                            "Error closing telnet during connection failure: %s",
+                            close_err,
+                        )
                     self.telnet = None
                 self._connected = False
+                self._available = False
                 self._handle_error(f"Connection failed: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
             except Exception as e:
-                _LOGGER.error(
-                    "Connection to %s failed due to unexpected error: %s", self.host, e
-                )
                 if self.telnet:
-                    _LOGGER.debug("Closing telnet connection due to unexpected error")
-                    await asyncio.to_thread(self.telnet.close)
+                    try:
+                        await asyncio.to_thread(self.telnet.close)
+                    except Exception as close_err:
+                        _LOGGER.debug(
+                            "Error closing telnet during connection failure: %s",
+                            close_err,
+                        )
                     self.telnet = None
                 self._connected = False
+                self._available = False
                 self._handle_error(f"Unexpected error during connection: {e}")
                 raise ValueError(f"Connection failed: {e}") from e
-
-    async def reconnect(self) -> None:
-        """Reconnect to the device with backoff."""
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not reconnecting to %s", self.host)
-            return
-
-        if self._reconnect_attempts >= self._max_reconnect_attempts:
-            _LOGGER.warning(
-                "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
-                self._max_reconnect_attempts,
-                self.host,
-            )
-            return
-
-        self._reconnect_attempts += 1
-        backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
-        _LOGGER.info(
-            "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
-            self.host,
-            self._reconnect_attempts,
-            self._max_reconnect_attempts,
-            backoff,
-        )
-
-        await asyncio.sleep(backoff)
-        await self.disconnect()
-
-        try:
-            await asyncio.wait_for(self.connect(), timeout=self._telnet_timeout)
-            _LOGGER.info("Successfully reconnected to %s", self.host)
-        except (asyncio.TimeoutError, Exception) as e:
-            _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
-
-    async def send_command(self, cmd: str) -> str:
-        """Queue a command to be sent to the device and return the response."""
-        if self._shutdown_requested:
-            _LOGGER.debug("Shutdown requested, not sending command to %s", self.host)
-            return ""
-
-        if not self.connected:
-            _LOGGER.debug("Not connected, attempting to connect before sending command")
-            try:
-                # Use a longer timeout for connection attempts
-                await asyncio.wait_for(self.connect(), timeout=self._connection_timeout)
-            except asyncio.TimeoutError:
-                _LOGGER.error("Connection attempt timed out")
-                return ""
-            except Exception as err:
-                _LOGGER.error("Connection attempt failed: %s", err)
-                return ""
-
-            if not self.connected:
-                _LOGGER.error("Still not connected after connection attempt")
-                return ""
-
-        # Create a future to get the result
-        future = asyncio.get_running_loop().create_future()
-
-        # Add the command to the queue
-        await self._command_queue.put((cmd, future))
-
-        # Wait for the result
-        try:
-            response = await asyncio.wait_for(future, timeout=self._command_timeout)
-            return response
-        except asyncio.TimeoutError:
-            _LOGGER.error("Command timed out waiting for result: %s", cmd)
-            return ""
-        except Exception as e:
-            _LOGGER.error("Error waiting for command result: %s - %s", cmd, e)
-            return ""
-
-    async def _process_command_queue(self):
-        """Process commands from the queue with rate limiting."""
-        while not self._shutdown_requested:
-            try:
-                # Get the next command from the queue
-                cmd, future = await self._command_queue.get()
-
-                try:
-                    # Enforce delay between commands
-                    now = asyncio.get_event_loop().time()
-                    time_since_last = now - self._last_command_time
-                    if time_since_last < self._command_delay:
-                        delay = self._command_delay - time_since_last
-                        _LOGGER.debug(
-                            "Rate limiting: Waiting %.2f seconds before next command",
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-
-                    # Process the command
-                    result = await self._send_command_internal(cmd)
-                    self._last_command_time = asyncio.get_event_loop().time()
-
-                    # Set the result in the future
-                    if not future.done():
-                        future.set_result(result)
-                except Exception as e:
-                    if not future.done():
-                        future.set_exception(e)
-                finally:
-                    # Mark the task as done
-                    self._command_queue.task_done()
-
-            except asyncio.CancelledError:
-                _LOGGER.debug("Command processor task cancelled")
-                break
-            except Exception as e:
-                _LOGGER.error("Error in command processor: %s", e)
-                await asyncio.sleep(1)  # Prevent tight loop if there's an error
-
-        _LOGGER.debug("Command processor task exiting")
-
-    async def _send_command_internal(self, cmd: str) -> str:
-        """Send a command to the device and return the response."""
-        try:
-            _LOGGER.debug("Sending command: %s", cmd)
-            # Make sure we have a valid telnet connection
-            if not self.telnet:
-                _LOGGER.error("No telnet connection available, attempting to reconnect")
-                await self.reconnect()
-                if not self.connected or not self.telnet:
-                    _LOGGER.error("Failed to establish telnet connection")
-                    return ""
-
-            # Make sure to include CRLF - this is critical for telnet protocol
-            await self._telnet_write(f"{cmd}\r\n".encode())
-            self.last_cmd = cmd
-            self.context = cmd.replace(" ", "")
-
-            # Read until prompt character
-            _LOGGER.debug("Waiting for response to command: %s", cmd)
-            response = await asyncio.wait_for(
-                self._telnet_read_until(b"#", self._telnet_timeout),
-                timeout=self._command_timeout,  # Use a longer timeout for commands
-            )
-
-            if response:
-                # Decode and clean up the response
-                self.response_cache = response.decode("utf-8", errors="ignore")
-                _LOGGER.debug(
-                    "Response (first 100 chars): %s",
-                    self.response_cache[:100].replace("\r\n", " "),
-                )
-
-                # Add a small delay after receiving response to make sure device is ready for next command
-                await asyncio.sleep(0.2)
-
-                return self.response_cache
-            else:
-                _LOGGER.warning("Empty response for command: %s", cmd)
-                return ""
-
-        except asyncio.TimeoutError:
-            _LOGGER.error(
-                "Command timed out after %s seconds: %s",
-                self._command_timeout,
-                cmd,
-            )
-            self._handle_error(f"Command timed out: {cmd}")
-            # Attempt to reconnect on timeout
-            await self.reconnect()
-            # Don't attempt reconnect immediately on timeout, just return empty
-            return ""
-        except ConnectionError as e:
-            _LOGGER.error("Connection error while sending command: %s", e)
-            self._handle_error(f"Connection error while sending command: {e}")
-            await self.reconnect()
-            # After reconnection, try sending the command again if we're connected
-            if self.connected:
-                return await self.send_command(cmd)
-            return ""
-        except Exception as e:
-            _LOGGER.error("Unexpected error sending command: %s - %s", cmd, e)
-            self._handle_error(f"Error sending command: {e}")
-            await self.reconnect()
-            return ""
-
-    async def login(self) -> None:
-        """Login to the device."""
-        try:
-            # Wait for username prompt with timeout
-            _LOGGER.debug("Waiting for Username prompt")
-            response = await asyncio.wait_for(
-                self._telnet_read_until(b"Username:", self._connection_timeout),
-                timeout=self._connection_timeout,
-            )
-            _LOGGER.debug("Got Username prompt, sending username")
-
-            # Send username with CRLF
-            await self._telnet_write(f"{self.username}\r\n".encode())
-
-            # Wait for password prompt with timeout
-            _LOGGER.debug("Waiting for Password prompt")
-            response = await asyncio.wait_for(
-                self._telnet_read_until(b"Password:", self._connection_timeout),
-                timeout=self._connection_timeout,
-            )
-            _LOGGER.debug("Got Password prompt, sending password")
-
-            # Send password with CRLF
-            await self._telnet_write(f"{self.password}\r\n".encode())
-
-            # Wait for command prompt with timeout
-            _LOGGER.debug("Waiting for command prompt")
-            response = await asyncio.wait_for(
-                self._telnet_read_until(b"#", self._connection_timeout),
-                timeout=self._connection_timeout,
-            )
-            _LOGGER.debug("Got command prompt")
-
-            if b"#" not in response:
-                _LOGGER.error("Did not get command prompt after login")
-                raise ValueError("Login failed: Invalid credentials")
-
-            # Add a short delay after login to ensure device is ready for commands
-            await asyncio.sleep(1)
-
-        except asyncio.TimeoutError as exc:
-            _LOGGER.error("Login timed out - no response from device")
-            raise ConnectionError("Login timed out") from exc
-        except ConnectionError as e:
-            _LOGGER.error("Connection error during login: %s", e)
-            raise ConnectionError(f"Login failed: {e}") from e
-        except Exception as e:
-            _LOGGER.error("Unexpected error during login: %s", e)
-            self._handle_error(f"Login failed: {e}")
-            raise ValueError(f"Login failed: {e}") from e
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         async with self._connection_lock:
+            _LOGGER.debug("Disconnecting from %s", self.host)
+
+            # Cancel command processor task if running
+            if self._command_processor_task and not self._command_processor_task.done():
+                _LOGGER.debug("Cancelling command processor task")
+                try:
+                    self._command_processor_task.cancel()
+                    # Wait briefly for task to cancel
+                    try:
+                        await asyncio.wait_for(self._command_processor_task, timeout=1)
+                    except asyncio.TimeoutError:
+                        # Task didn't cancel in time, can proceed anyway
+                        pass
+                    except asyncio.CancelledError:
+                        # Task was successfully cancelled
+                        pass
+                    except Exception as e:
+                        _LOGGER.debug(
+                            "Error waiting for processor task cancellation: %s", e
+                        )
+                except Exception as e:
+                    _LOGGER.debug("Error cancelling command processor task: %s", e)
+
+            # Close telnet connection
             if self.telnet:
                 try:
-                    # Close telnet connection in a thread to avoid blocking
+                    # Send terminal exit command if still connected
+                    if self._connected:
+                        try:
+                            _LOGGER.debug("Sending exit command")
+                            await asyncio.wait_for(
+                                self._telnet_write("exit\r\n".encode()), timeout=2
+                            )
+                        except Exception as e:
+                            _LOGGER.debug("Error sending exit command: %s", e)
+
+                    # Close the connection
+                    _LOGGER.debug("Closing telnet connection")
                     await asyncio.to_thread(self.telnet.close)
                 except Exception as e:
-                    _LOGGER.warning("Error closing telnet connection: %s", e)
+                    _LOGGER.debug("Error during telnet disconnect: %s", e)
                 finally:
                     self.telnet = None
-                    self._connected = False
+
+            self._connected = False
+            _LOGGER.debug("Disconnected from %s", self.host)
 
     async def shutdown(self) -> None:
-        """Clean shutdown of the controller."""
-        _LOGGER.debug("Shutting down Racklink controller for %s", self.host)
+        """Shut down the controller and release resources."""
+        _LOGGER.info("Shutting down controller for %s", self.host)
         self._shutdown_requested = True
 
-        # Cancel command processor task
+        # Cancel all pending command futures
+        while not self._command_queue.empty():
+            try:
+                cmd, future = self._command_queue.get_nowait()
+                if not future.done():
+                    future.cancel()
+                self._command_queue.task_done()
+            except Exception:
+                break
+
+        # Cancel the command processor task if running
         if self._command_processor_task and not self._command_processor_task.done():
-            self._command_processor_task.cancel()
+            _LOGGER.debug("Cancelling command processor task")
             try:
-                await self._command_processor_task
-            except asyncio.CancelledError:
-                pass
+                self._command_processor_task.cancel()
+                try:
+                    # Wait briefly for task to cancel
+                    await asyncio.wait_for(self._command_processor_task, timeout=1)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    pass
+            except Exception as e:
+                _LOGGER.debug("Error cancelling command processor: %s", e)
 
-        # Cancel any pending connection task
-        if self._connection_task and not self._connection_task.done():
-            self._connection_task.cancel()
-            try:
-                await self._connection_task
-            except asyncio.CancelledError:
-                pass
-
+        # Disconnect from device
         await self.disconnect()
+        _LOGGER.info("Controller for %s has been shut down", self.host)
 
     async def get_initial_status(self):
         """Get initial device status."""

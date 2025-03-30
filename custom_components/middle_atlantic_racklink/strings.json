@@ -17,6 +17,7 @@
         "cannot_connect": "Failed to connect to the device. Please check the IP address and network connection.",
         "invalid_auth": "Invalid username or password. Please check your credentials.",
         "timeout": "Connection timed out. Please check the device is powered on and reachable.",
+        "device_info_missing": "Connected to device but failed to retrieve device information. Verify device is a compatible Middle Atlantic Racklink unit.",
         "unknown": "Unexpected error occurred. Please check the logs for more details."
       },
       "abort": {
@@ -48,6 +49,40 @@
       "cycle_all_outlets": {
         "name": "Cycle All Outlets",
         "description": "Cycle power to all outlets on the device"
+      },
+      "cycle_outlet": {
+        "name": "Cycle Outlet",
+        "description": "Cycle power to a specific outlet",
+        "fields": {
+          "outlet": {
+            "name": "Outlet Number",
+            "description": "The outlet number to cycle (1-8)"
+          }
+        }
+      },
+      "set_outlet_name": {
+        "name": "Set Outlet Name",
+        "description": "Change the name of a specific outlet",
+        "fields": {
+          "outlet": {
+            "name": "Outlet Number",
+            "description": "The outlet number to rename (1-8)"
+          },
+          "name": {
+            "name": "New Name",
+            "description": "The new name for the outlet"
+          }
+        }
+      },
+      "set_pdu_name": {
+        "name": "Set PDU Name",
+        "description": "Change the name of the PDU device",
+        "fields": {
+          "name": {
+            "name": "New Name",
+            "description": "The new name for the PDU"
+          }
+        }
       }
     },
     "options": {
