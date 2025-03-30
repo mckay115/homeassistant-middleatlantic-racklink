@@ -42,10 +42,10 @@ SUPPORTED_MODELS = [
 MODEL_DESCRIPTIONS = {
     "RLNK-P415": "RackLink P415 (4 outlets, 15A)",
     "RLNK-P420": "RackLink P420 (4 outlets, 20A)",
-    "RLNK-P915R": "RackLink P915R (9 outlets, 15A)",
-    "RLNK-P915R-SP": "RackLink P915R-SP (9 outlets, 15A, Surge Protected)",
-    "RLNK-P920R": "RackLink P920R (9 outlets, 20A)",
-    "RLNK-P920R-SP": "RackLink P920R-SP (9 outlets, 20A, Surge Protected)",
+    "RLNK-P915R": "RackLink P915R (8 outlets, 15A)",
+    "RLNK-P915R-SP": "RackLink P915R-SP (8 outlets, 15A, Surge Protected)",
+    "RLNK-P920R": "RackLink P920R (8 outlets, 20A)",
+    "RLNK-P920R-SP": "RackLink P920R-SP (8 outlets, 20A, Surge Protected)",
     "AUTO_DETECT": "Auto-detect model (recommended)",
 }
 
