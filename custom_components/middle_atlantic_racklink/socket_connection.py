@@ -56,49 +56,69 @@ class SocketConnection:
                     timeout=self.timeout,
                 )
 
-                # Wait for the initial prompt
-                initial_output = await asyncio.wait_for(
-                    self._read_until_pattern(b"Username:"), timeout=self.timeout
+                # Wait for the initial prompt to stabilize the connection
+                initial_data = await asyncio.wait_for(
+                    self._reader.read(1024), timeout=5.0
+                )
+                _LOGGER.debug(
+                    "Initial connection output: %r",
+                    initial_data.decode("utf-8", errors="ignore"),
                 )
 
-                _LOGGER.debug("Initial connection output: %s", initial_output)
+                # Wait briefly to make sure the connection is stable
+                await asyncio.sleep(1)
 
-                # Send username
-                _LOGGER.debug("Sending username: %s", self.username)
-                await self._send_data(f"{self.username}\r\n")
+                # Authenticate if needed
+                if self.username and self.password:
+                    # Send username
+                    _LOGGER.debug("Sending username: %s", self.username)
+                    await self._send_data(f"{self.username}\r\n")
+                    await asyncio.sleep(0.5)  # Wait for device to process
 
-                # Wait for password prompt
-                password_output = await asyncio.wait_for(
-                    self._read_until_pattern(b"Password:"), timeout=self.timeout
-                )
-                _LOGGER.debug("Got password prompt: %s", password_output)
+                    # Wait for password prompt
+                    password_prompt = await asyncio.wait_for(
+                        self._reader.read(1024), timeout=5.0
+                    )
+                    _LOGGER.debug(
+                        "Password prompt: %r",
+                        password_prompt.decode("utf-8", errors="ignore"),
+                    )
 
-                # Send password
-                _LOGGER.debug("Sending password")
-                await self._send_data(f"{self.password}\r\n")
+                    # Send password
+                    _LOGGER.debug("Sending password")
+                    await self._send_data(f"{self.password}\r\n")
+                    await asyncio.sleep(0.5)  # Wait for device to process
 
-                # Wait for command prompt
-                auth_response = await asyncio.wait_for(
-                    self._read_until_pattern(b"#"), timeout=self.timeout
-                )
+                    # Wait for command prompt
+                    auth_response = await asyncio.wait_for(
+                        self._reader.read(1024), timeout=5.0
+                    )
+                    _LOGGER.debug(
+                        "Authentication response: %r",
+                        auth_response.decode("utf-8", errors="ignore"),
+                    )
 
-                _LOGGER.debug("Authentication response RAW: %s", auth_response)
+                    # Check for authentication errors
+                    decoded_response = auth_response.decode(
+                        "utf-8", errors="ignore"
+                    ).lower()
+                    if "invalid" in decoded_response or "failed" in decoded_response:
+                        _LOGGER.error("Authentication failed: %r", auth_response)
+                        raise ValueError("Authentication failed")
 
-                # Check for authentication errors
-                if (
-                    "invalid" in auth_response.lower()
-                    or "failed" in auth_response.lower()
-                ):
-                    _LOGGER.error("Authentication failed: %s", auth_response)
-                    raise ValueError("Authentication failed")
+                # Clear buffer once more
+                await self._clear_buffer()
 
-                # Set as connected
-                self._connected = True
-                _LOGGER.info("Successfully connected to %s:%d", self.host, self.port)
+                # Send a newline to get to a clean prompt
+                await self._send_data("\r\n")
+                await asyncio.sleep(0.5)
 
                 # Clear any leftover data in the buffer
                 await self._clear_buffer()
 
+                # Set as connected
+                self._connected = True
+                _LOGGER.info("Successfully connected to %s:%d", self.host, self.port)
                 return True
 
             except asyncio.TimeoutError as err:
@@ -160,36 +180,93 @@ class SocketConnection:
                                 "Connection closed and reconnection failed"
                             )
 
-                    # Send the command
+                    # First clear the buffer to ensure we start with a clean state
+                    await self._clear_buffer()
+
+                    # Log the exact command we're about to send
                     _LOGGER.debug("RAW COMMAND >>: %r", command)
-                    full_command = f"{command}\r\n"
+
+                    # Format and send the full command, ensuring proper line endings
+                    # Make sure to append proper line ending
+                    cmd_line = command.strip()
+
+                    # Send the command with proper line endings
+                    full_command = f"{cmd_line}\r\n"
                     await self._send_data(full_command)
 
-                    # Read the response - first we need to skip any echoed command
-                    try:
-                        # Wait for the command echo (optional, some devices don't echo)
-                        echo = await asyncio.wait_for(
-                            self._reader.readuntil(b"\r\n"), timeout=1.0
-                        )
-                        _LOGGER.debug(
-                            "Command echo: %r", echo.decode("utf-8", errors="ignore")
-                        )
-                    except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-                        # It's okay if we don't get the echo
-                        _LOGGER.debug("No command echo received")
-                        pass
+                    # Short wait to ensure command is processed
+                    await asyncio.sleep(0.1)
 
-                    # Read the actual response until the prompt character
-                    response = await asyncio.wait_for(
-                        self._read_until_pattern(b"#"), timeout=self.timeout
-                    )
+                    # Start reading the response
+                    buffer = b""
+                    start_time = time.time()
 
-                    # Log the raw response
+                    # Wait for the prompt character to indicate completion
+                    while time.time() - start_time < self.timeout:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                self._reader.read(1024), timeout=1.0
+                            )
+
+                            if not chunk:
+                                _LOGGER.warning(
+                                    "Connection closed while reading response"
+                                )
+                                self._connected = False
+                                break
+
+                            buffer += chunk
+                            decoded = chunk.decode("utf-8", errors="ignore")
+                            _LOGGER.debug("Response chunk: %r", decoded)
+
+                            # If we see the prompt or a long pause, we're done
+                            if (
+                                "#" in decoded
+                                or ">" in decoded
+                                or decoded.endswith("]")
+                            ):
+                                _LOGGER.debug(
+                                    "Found prompt character, response complete"
+                                )
+                                break
+
+                            # If we've gotten a large amount of data, check for error patterns
+                            if len(buffer) > 4096:
+                                _LOGGER.debug(
+                                    "Received large buffer, checking if response is complete"
+                                )
+                                if "#" in buffer.decode(
+                                    "utf-8", errors="ignore"
+                                ) or ">" in buffer.decode("utf-8", errors="ignore"):
+                                    break
+
+                        except asyncio.TimeoutError:
+                            # If we've been waiting a while with no new data, we're probably done
+                            _LOGGER.debug(
+                                "Timeout reading chunk, response might be complete"
+                            )
+                            break
+
+                    # Decode the full response
+                    response = buffer.decode("utf-8", errors="ignore")
                     _LOGGER.debug("RAW RESPONSE <<: %r", response)
 
                     # Clean up the response
                     cleaned_response = self._clean_response(response, command)
                     _LOGGER.debug("CLEANED RESPONSE: %r", cleaned_response)
+
+                    # Check for "unknown command" responses
+                    if (
+                        "unknown command" in cleaned_response.lower()
+                        and retry_count < max_retries - 1
+                    ):
+                        _LOGGER.warning(
+                            "Unknown command response detected, retrying with full command"
+                        )
+                        retry_count += 1
+                        await asyncio.sleep(1)
+                        continue
+
                     return cleaned_response
 
                 except asyncio.TimeoutError:
@@ -242,46 +319,6 @@ class SocketConnection:
             self._connected = False
             raise ConnectionError(f"Error sending data: {err}")
 
-    async def _read_until_pattern(self, pattern: bytes, max_size: int = 8192) -> str:
-        """Read from the socket until a pattern is matched."""
-        if not self._reader:
-            raise ConnectionError("Not connected to device")
-
-        buffer = b""
-
-        while True:
-            try:
-                chunk = await self._reader.read(1024)
-                if not chunk:
-                    _LOGGER.warning("Connection closed while reading")
-                    self._connected = False
-                    break
-
-                buffer += chunk
-
-                # Log what we're receiving for debugging
-                _LOGGER.debug(
-                    "Received chunk: %r", chunk.decode("utf-8", errors="ignore")
-                )
-
-                if pattern in buffer:
-                    break
-
-                # Safety check to prevent buffer growth
-                if len(buffer) > max_size:
-                    _LOGGER.warning(
-                        "Buffer size exceeded max_size (%d bytes), truncating", max_size
-                    )
-                    # Keep the last portion that might contain what we're looking for
-                    buffer = buffer[-4096:]
-
-            except Exception as err:
-                _LOGGER.error("Error reading from socket: %s", err)
-                self._connected = False
-                raise
-
-        return buffer.decode("utf-8", errors="ignore")
-
     async def _clear_buffer(self) -> None:
         """Clear any data in the read buffer."""
         if not self._reader:
@@ -289,11 +326,10 @@ class SocketConnection:
 
         try:
             # Set a small timeout for this operation
-            self._reader.set_read_limit(8192)
             while True:
                 try:
                     # Try to read with a short timeout
-                    chunk = await asyncio.wait_for(self._reader.read(1024), timeout=0.1)
+                    chunk = await asyncio.wait_for(self._reader.read(1024), timeout=0.2)
                     if not chunk:
                         break
                     _LOGGER.debug(
@@ -314,39 +350,59 @@ class SocketConnection:
         # If the command is a multi-line command, only use the first line for matching
         first_command_line = command.split("\n")[0] if "\n" in command else command
 
-        # Remove the command echo from the beginning of the response
-        response_lines = response.split("\n")
+        # Create a list of lines from the response, being careful about different line endings
+        response_lines = re.split(r"\r\n|\r|\n", response)
         cleaned_lines = []
         command_found = False
+        prompt_found = False
 
+        # Look for lines that we want to keep
         for line in response_lines:
-            stripped_line = line.strip()
+            line = line.rstrip()
 
-            # Skip lines until we find the echoed command
-            if not command_found and (
-                first_command_line in stripped_line
-                or stripped_line.startswith(first_command_line)
-            ):
+            # Skip empty lines
+            if not line:
+                continue
+
+            # Skip the echoed command
+            if not command_found and first_command_line in line:
                 command_found = True
-                _LOGGER.debug("Found command echo in response: %r", stripped_line)
+                _LOGGER.debug("Skipped command echo: %r", line)
                 continue
 
-            # Skip empty lines at the beginning
-            if not command_found and not stripped_line:
+            # Stop when we hit the prompt
+            if line.endswith("#") or line.endswith(">") or "]" in line:
+                prompt_found = True
+                _LOGGER.debug("Found prompt, stopping: %r", line)
+                break
+
+            # Skip 'unknown command' message lines
+            if "unknown command" in line.lower():
+                _LOGGER.debug("Detected 'unknown command' message: %r", line)
                 continue
 
-            # Include all remaining lines
-            if command_found or stripped_line:
-                cleaned_lines.append(line)
+            # Skip command help menus
+            if "available commands:" in line.lower():
+                _LOGGER.debug("Skipping command help menu")
+                break
 
-        # Join the cleaned lines
+            # Skip command syntax lines (often start with carets)
+            if line.startswith("^"):
+                _LOGGER.debug("Skipping command syntax line: %r", line)
+                continue
+
+            # Keep this line
+            cleaned_lines.append(line)
+
+        # Join all the cleaned lines
         cleaned_response = "\n".join(cleaned_lines)
 
-        # Remove the prompt from the end of the response
-        if cleaned_response.endswith("#"):
-            cleaned_response = cleaned_response[:-1]
-
-        # Remove any trailing whitespace
-        cleaned_response = cleaned_response.strip()
+        # If we didn't find any useful content, but we got "unknown command"
+        if not cleaned_lines and (
+            "unknown command" in response.lower()
+            or "available commands:" in response.lower()
+        ):
+            _LOGGER.warning("Command not recognized by device: %r", command)
+            return "ERROR: Command not recognized"
 
         return cleaned_response
