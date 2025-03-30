@@ -44,6 +44,14 @@ class RacklinkController:
         self.outlet_current: Dict[int, float] = {}
         self.outlet_energy: Dict[int, float] = {}
         self.outlet_power_factor: Dict[int, float] = {}
+        self.outlet_apparent_power: Dict[int, float] = {}
+        self.outlet_voltage: Dict[int, float] = {}
+        self.outlet_line_frequency: Dict[int, float] = {}
+        self.outlet_cycling_period: Dict[int, int] = {}
+        self.outlet_non_critical: Dict[int, bool] = {}
+        self.outlet_receptacle_type: Dict[int, str] = {}
+        self.outlet_rated_current: Dict[int, float] = {}
+        self.outlet_operating_voltage: Dict[int, str] = {}
         self.sensors: Dict[str, float] = {}
         self._connected = False
         self._last_update = 0
@@ -737,6 +745,138 @@ class RacklinkController:
                                 _LOGGER.warning(
                                     "Invalid power factor value for outlet %d", outlet
                                 )
+
+                        # Extract apparent power (VA)
+                        apparent_power_match = re.search(
+                            r"Apparent Power:\s*([\d.]+)\s*VA", section, re.IGNORECASE
+                        )
+                        if apparent_power_match:
+                            try:
+                                apparent_power = float(
+                                    apparent_power_match.group(1).strip()
+                                )
+                                self.outlet_apparent_power[outlet] = apparent_power
+                                _LOGGER.debug(
+                                    "Outlet %d apparent power: %.2f VA",
+                                    outlet,
+                                    apparent_power,
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid apparent power value for outlet %d", outlet
+                                )
+
+                        # Extract RMS Voltage
+                        voltage_match = re.search(
+                            r"RMS Voltage:\s*([\d.]+)\s*V", section, re.IGNORECASE
+                        )
+                        if voltage_match:
+                            try:
+                                voltage = float(voltage_match.group(1).strip())
+                                self.outlet_voltage[outlet] = voltage
+                                _LOGGER.debug(
+                                    "Outlet %d voltage: %.1f V", outlet, voltage
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid voltage value for outlet %d", outlet
+                                )
+
+                        # Extract Line Frequency
+                        freq_match = re.search(
+                            r"Line Frequency:\s*([\d.]+)\s*Hz", section, re.IGNORECASE
+                        )
+                        if freq_match:
+                            try:
+                                frequency = float(freq_match.group(1).strip())
+                                self.outlet_line_frequency[outlet] = frequency
+                                _LOGGER.debug(
+                                    "Outlet %d frequency: %.1f Hz", outlet, frequency
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid frequency value for outlet %d", outlet
+                                )
+
+                        # Extract Cycling power off period
+                        cycle_match = re.search(
+                            r"Cycling power off period:.*?(\d+)\s*s",
+                            section,
+                            re.IGNORECASE,
+                        )
+                        if cycle_match:
+                            try:
+                                cycling_period = int(cycle_match.group(1).strip())
+                                self.outlet_cycling_period[outlet] = cycling_period
+                                _LOGGER.debug(
+                                    "Outlet %d cycling period: %d s",
+                                    outlet,
+                                    cycling_period,
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid cycling period value for outlet %d", outlet
+                                )
+
+                        # Extract Non-critical flag
+                        non_critical_match = re.search(
+                            r"Non critical:\s*(True|False|Yes|No)",
+                            section,
+                            re.IGNORECASE,
+                        )
+                        if non_critical_match:
+                            non_critical_value = (
+                                non_critical_match.group(1).strip().lower()
+                            )
+                            is_non_critical = non_critical_value in ["true", "yes"]
+                            self.outlet_non_critical[outlet] = is_non_critical
+                            _LOGGER.debug(
+                                "Outlet %d non-critical: %s", outlet, is_non_critical
+                            )
+
+                        # Extract Receptacle type
+                        receptacle_match = re.search(
+                            r"Receptacle type:\s*(.+?)[\r\n]", section, re.IGNORECASE
+                        )
+                        if receptacle_match:
+                            receptacle_type = receptacle_match.group(1).strip()
+                            self.outlet_receptacle_type[outlet] = receptacle_type
+                            _LOGGER.debug(
+                                "Outlet %d receptacle type: %s", outlet, receptacle_type
+                            )
+
+                        # Extract Rated current
+                        rated_current_match = re.search(
+                            r"Rated current:\s*([\d.]+)\s*A", section, re.IGNORECASE
+                        )
+                        if rated_current_match:
+                            try:
+                                rated_current = float(
+                                    rated_current_match.group(1).strip()
+                                )
+                                self.outlet_rated_current[outlet] = rated_current
+                                _LOGGER.debug(
+                                    "Outlet %d rated current: %.1f A",
+                                    outlet,
+                                    rated_current,
+                                )
+                            except ValueError:
+                                _LOGGER.warning(
+                                    "Invalid rated current value for outlet %d", outlet
+                                )
+
+                        # Extract Operating voltage
+                        op_voltage_match = re.search(
+                            r"Operating voltage:\s*(.+?)[\r\n]", section, re.IGNORECASE
+                        )
+                        if op_voltage_match:
+                            operating_voltage = op_voltage_match.group(1).strip()
+                            self.outlet_operating_voltage[outlet] = operating_voltage
+                            _LOGGER.debug(
+                                "Outlet %d operating voltage: %s",
+                                outlet,
+                                operating_voltage,
+                            )
 
                     except Exception as err:
                         _LOGGER.error("Error parsing outlet %d: %s", outlet, err)

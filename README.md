@@ -72,6 +72,9 @@ After adding the integration, your RackLink device will appear with the followin
 - **Frequency**: Power frequency in Hz
 - **Power Factor**: Power factor percentage
 - **Per-Outlet Metrics**: Each outlet gets its own power, current, energy, and power factor sensors
+- **Apparent Power**: Apparent power of each outlet in VA
+- **Voltage**: Individual outlet voltage in V
+- **Line Frequency**: Frequency measurement at each outlet in Hz
 
 ### Switches
 - **Outlets 1-8**: Individual outlet control (on/off)
@@ -80,6 +83,7 @@ After adding the integration, your RackLink device will appear with the followin
 
 ### Binary Sensors
 - **Surge Protection**: Status of the surge protection feature
+- **Outlet Non-Critical**: Non-critical status flag for each outlet (ON = non-critical, can be used for load shedding)
 
 ## Available Services
 
@@ -160,6 +164,58 @@ pip install homeassistant
 pytest tests/
 ```
 
+### RackLink CLI Protocol Reference
+
+The integration communicates with RackLink devices using their command-line interface (CLI) over a TCP socket connection (default port 6000). Below is a reference of the available commands and data that can be retrieved:
+
+#### Authentication
+
+The device expects telnet-style authentication:
+```
+Username: admin
+Password: [your-password]
+```
+
+#### Power Control Commands
+
+- `power outlets <outlet_num> on /y` - Turn specific outlet on
+- `power outlets <outlet_num> off /y` - Turn specific outlet off
+- `power outlets <outlet_num> cycle /y` - Power cycle specific outlet (off then on)
+
+#### Information Commands
+
+- `show outlets <outlet_num> details` - Get detailed information for a specific outlet
+- `show outlets all` - List basic status for all outlets
+- `show outlets all details` - Get detailed status for all outlets
+
+#### Available Data Per Outlet
+
+Each outlet provides the following data points:
+- **Power state**: On/Off status
+- **RMS Current**: Amperage in A (e.g., 0.114 A)
+- **RMS Voltage**: Voltage in V (e.g., 120 V)
+- **Line Frequency**: Frequency in Hz (e.g., 60.0 Hz)
+- **Active Power**: Power consumption in W (e.g., 7 W)
+- **Apparent Power**: VA rating (e.g., 14 VA)
+- **Power Factor**: Efficiency ratio (e.g., 0.53)
+- **Active Energy**: Total energy consumption in Wh (e.g., 632210 Wh)
+- **Cycling power off period**: Duration in seconds (e.g., 5 s)
+- **Non-critical flag**: True/False
+- **Receptacle type**: Outlet type (e.g., NEMA 5-20R)
+- **Rated current**: Maximum current rating in A (e.g., 16 A)
+- **Operating voltage**: Voltage range (e.g., 100-150 V)
+
+#### Testing Connection
+
+A simple Python script (`test_racklink_socket.py`) is included in the repository to test communication with a RackLink device:
+
+```bash
+# Modify the script with your device's IP address, username, and password
+python test_racklink_socket.py
+```
+
+The script performs basic operations (checking status, turning outlets on/off, cycling power) and collects detailed information about the device's capabilities.
+
 ### Deploying to a test Home Assistant instance
 
 The repository includes a GitHub Actions workflow for automated deployment to a test Home Assistant instance. To use it:
@@ -188,6 +244,55 @@ If you encounter issues with the integration:
    ```
 4. **Check Firmware**: Make sure your RackLink device is running supported firmware
 5. **Report Issues**: If problems persist, [create an issue](https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues) with your logs and device information
+
+## Technical Implementation Notes
+
+### Device Communication
+
+This integration connects to Middle Atlantic RackLink devices using a TCP socket connection (default port 6000) and communicates with the device's telnet-based CLI interface. The device uses the following command structure:
+
+```
+# Power control
+power outlets <outlet_num> on /y
+power outlets <outlet_num> off /y
+power outlets <outlet_num> cycle /y
+
+# Information retrieval
+show outlets <outlet_num> details
+show outlets all
+show outlets all details
+```
+
+### Data Availability
+
+The RackLink devices provide a wealth of data for each outlet, including:
+
+- Power state (On/Off)
+- RMS Current (Amps)
+- RMS Voltage (Volts)
+- Line Frequency (Hz)
+- Active Power (Watts)
+- Apparent Power (VA)
+- Power Factor
+- Active Energy (Wh)
+- Cycling power off period (seconds)
+- Non-critical flag (True/False)
+- Receptacle type (e.g., NEMA 5-20R)
+- Rated current (Amps)
+- Operating voltage range (e.g., 100-150V)
+
+### Future Improvements
+
+Potential improvements to the integration include:
+
+- Exposing receptacle type, rated current, and operating voltage as device attributes
+- Adding cycling period as a configurable value
+- Implementing load shedding capabilities using the non-critical flags
+- Supporting more device commands discovered through the `help` command
+- Improving connection stability with better error recovery
+- Optimizing data updates to reduce telnet traffic and improve responsiveness
+
+The `test_racklink_socket.py` script is included in the repository for testing connection and data collection directly from RackLink devices.
 
 ## License
 

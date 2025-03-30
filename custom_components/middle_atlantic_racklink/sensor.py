@@ -60,6 +60,9 @@ async def async_setup_entry(
                 RacklinkOutletCurrent(controller, i),
                 RacklinkOutletEnergy(controller, i),
                 RacklinkOutletPowerFactor(controller, i),
+                RacklinkOutletApparentPower(controller, i),
+                RacklinkOutletVoltage(controller, i),
+                RacklinkOutletLineFrequency(controller, i),
             ]
         )
 
@@ -576,6 +579,138 @@ class RacklinkOutletPowerFactor(RacklinkSensor):
         except Exception as err:
             _LOGGER.error(
                 "Error updating outlet power factor sensor %d: %s", self._outlet, err
+            )
+            self._state = None
+            self._attr_available = False
+
+
+class RacklinkOutletApparentPower(RacklinkSensor):
+    """Outlet apparent power sensor."""
+
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the apparent power sensor."""
+        self._outlet = outlet
+        super().__init__(
+            controller,
+            f"Outlet {outlet} Apparent Power",
+            "VA",
+            f"outlet_{outlet}_apparent_power",
+            SensorDeviceClass.APPARENT_POWER,
+            SensorStateClass.MEASUREMENT,
+        )
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            self._state = self._controller.outlet_apparent_power.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
+            self._attr_available = (
+                self._controller.connected
+                and self._controller.available
+                and self._state is not None
+            )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d apparent power data is missing, may need refresh",
+                    self._outlet,
+                )
+        except Exception as err:
+            _LOGGER.error(
+                "Error updating outlet %d apparent power sensor: %s", self._outlet, err
+            )
+            self._state = None
+            self._attr_available = False
+
+
+class RacklinkOutletVoltage(RacklinkSensor):
+    """Outlet voltage sensor."""
+
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the voltage sensor."""
+        self._outlet = outlet
+        super().__init__(
+            controller,
+            f"Outlet {outlet} Voltage",
+            UnitOfElectricPotential.VOLT,
+            f"outlet_{outlet}_voltage",
+            SensorDeviceClass.VOLTAGE,
+            SensorStateClass.MEASUREMENT,
+        )
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            self._state = self._controller.outlet_voltage.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
+            self._attr_available = (
+                self._controller.connected
+                and self._controller.available
+                and self._state is not None
+            )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d voltage data is missing, may need refresh",
+                    self._outlet,
+                )
+        except Exception as err:
+            _LOGGER.error(
+                "Error updating outlet %d voltage sensor: %s", self._outlet, err
+            )
+            self._state = None
+            self._attr_available = False
+
+
+class RacklinkOutletLineFrequency(RacklinkSensor):
+    """Outlet line frequency sensor."""
+
+    def __init__(self, controller, outlet: int) -> None:
+        """Initialize the line frequency sensor."""
+        self._outlet = outlet
+        super().__init__(
+            controller,
+            f"Outlet {outlet} Line Frequency",
+            "Hz",
+            f"outlet_{outlet}_frequency",
+            SensorDeviceClass.FREQUENCY,
+            SensorStateClass.MEASUREMENT,
+        )
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        if not self._controller.connected:
+            self._attr_available = False
+            return
+
+        try:
+            self._state = self._controller.outlet_line_frequency.get(self._outlet)
+            # Only consider available if we have a value and controller is connected
+            self._attr_available = (
+                self._controller.connected
+                and self._controller.available
+                and self._state is not None
+            )
+
+            # Add diagnostic log for missing data
+            if self._state is None and self._controller.connected:
+                _LOGGER.debug(
+                    "Outlet %d frequency data is missing, may need refresh",
+                    self._outlet,
+                )
+        except Exception as err:
+            _LOGGER.error(
+                "Error updating outlet %d frequency sensor: %s", self._outlet, err
             )
             self._state = None
             self._attr_available = False
