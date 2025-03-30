@@ -84,14 +84,12 @@ async def validate_input(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str,
         raise CannotConnect(f"Unexpected error: {err}")
 
 
-class RacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Middle Atlantic RackLink."""
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    async def async_step_user(self, user_input: Dict[str, Any] = None) -> FlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
