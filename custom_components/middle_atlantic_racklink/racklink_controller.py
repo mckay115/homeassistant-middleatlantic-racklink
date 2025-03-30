@@ -599,44 +599,15 @@ class RacklinkController:
             _LOGGER.error("Error loading initial PDU data: %s", e)
 
     def _normalize_model_name(self, model_string: str) -> str:
-        """Normalize model name from various formats to a standard format.
-
-        This handles differences in how model names are reported by the device.
         """
-        if not model_string:
-            return "DEFAULT"
+        DEPRECATED: This method is now provided by the parser module.
+        Use parser.normalize_model_name() instead.
 
-        # Remove any whitespace and convert to uppercase
-        model = model_string.strip().upper()
+        This method is kept for backward compatibility but will be removed in a future version.
+        """
+        from .parser import normalize_model_name
 
-        # Check for common patterns in model numbers
-        # If it's just "RLNK" or "RACKLINK", use default
-        if model in ["RLNK", "RACKLINK"]:
-            return "RLNK-P920R"  # Default to common model
-
-        # Handle model variations
-        if "RLNK-P" in model:
-            # For Premium series PDUs
-            return model
-        elif "RLNK-" in model:
-            # For standard series, normalize the format
-            return model
-        elif "RLNK" in model:
-            # Some models might be reported as RLNKP920 instead of RLNK-P920
-            # Insert hyphen if missing
-            if "RLNKP" in model and "-" not in model:
-                return model.replace("RLNKP", "RLNK-P")
-            # Other normalization
-            return model
-        elif "P920" in model or "P915" in model:
-            # Sometimes just the model number is reported
-            return f"RLNK-{model}"
-
-        # If no match, return the original with RLNK- prefix
-        if not model.startswith("RLNK-"):
-            return f"RLNK-{model}"
-
-        return model
+        return normalize_model_name(model_string)
 
     async def get_device_info(self) -> dict:
         """Get device information."""
@@ -653,56 +624,41 @@ class RacklinkController:
             _LOGGER.info("Fetching PDU details")
 
             try:
+                # Import parser module here to avoid circular imports
+                from .parser import (
+                    parse_device_info,
+                    parse_network_info,
+                    normalize_model_name,
+                )
+
                 # Get PDU details
                 details_cmd = "show pdu details"
                 details_response = await self.send_command(details_cmd)
 
                 if details_response:
-                    # Parse PDU name first - from two possible formats:
-                    # 1. PDU 'Name'
-                    # 2. Name: 'Name'
-                    name_match = re.search(
-                        r"PDU\s+'([^']+)'|Name:\s+'([^']+)'",
-                        details_response,
-                        re.IGNORECASE,
-                    )
-                    if name_match:
-                        self._pdu_name = name_match.group(1) or name_match.group(2)
+                    # Use the parser to extract device info
+                    device_info = parse_device_info(details_response)
+
+                    # Update internal data from parsed results
+                    if "name" in device_info:
+                        self._pdu_name = device_info["name"]
                         _LOGGER.debug("Found PDU name: %s", self._pdu_name)
 
-                    # Parse model with multiple patterns to handle variations
-                    model_match = re.search(
-                        r"Model:\s*(.+?)(?:\r|\n)",
-                        details_response,
-                        re.IGNORECASE,
-                    )
-                    if model_match:
-                        raw_model = model_match.group(1).strip()
-                        self._model = self._normalize_model_name(raw_model)
+                    if "model" in device_info:
+                        raw_model = device_info["model"]
+                        self._model = normalize_model_name(raw_model)
                         _LOGGER.debug(
                             "Found PDU model: %s (normalized from %s)",
                             self._model,
                             raw_model,
                         )
 
-                    # Parse serial number
-                    sn_match = re.search(
-                        r"Serial Number:\s*(.+?)(?:\r|\n)",
-                        details_response,
-                        re.IGNORECASE,
-                    )
-                    if sn_match:
-                        self._serial_number = sn_match.group(1).strip()
+                    if "serial" in device_info:
+                        self._serial_number = device_info["serial"]
                         _LOGGER.debug("Found PDU serial: %s", self._serial_number)
 
-                    # Parse firmware version
-                    fw_match = re.search(
-                        r"Firmware Version:\s*(.+?)(?:\r|\n)",
-                        details_response,
-                        re.IGNORECASE,
-                    )
-                    if fw_match:
-                        self._firmware_version = fw_match.group(1).strip()
+                    if "firmware" in device_info:
+                        self._firmware_version = device_info["firmware"]
                         _LOGGER.debug("Found PDU firmware: %s", self._firmware_version)
 
                 # Get MAC address if we don't have it
@@ -712,13 +668,9 @@ class RacklinkController:
                     net_response = await self.send_command(net_cmd)
 
                     if net_response:
-                        mac_match = re.search(
-                            r"MAC address:\s*(.+?)(?:\r|\n)",
-                            net_response,
-                            re.IGNORECASE,
-                        )
-                        if mac_match:
-                            self._mac_address = mac_match.group(1).strip()
+                        network_info = parse_network_info(net_response)
+                        if "mac_address" in network_info:
+                            self._mac_address = network_info["mac_address"]
                             _LOGGER.debug(
                                 "Found PDU MAC address: %s", self._mac_address
                             )
@@ -728,13 +680,9 @@ class RacklinkController:
                         net_response = await self.send_command(net_cmd)
 
                         if net_response:
-                            mac_match = re.search(
-                                r"MAC address:\s*(.+?)(?:\r|\n)",
-                                net_response,
-                                re.IGNORECASE,
-                            )
-                            if mac_match:
-                                self._mac_address = mac_match.group(1).strip()
+                            network_info = parse_network_info(net_response)
+                            if "mac_address" in network_info:
+                                self._mac_address = network_info["mac_address"]
                                 _LOGGER.debug(
                                     "Found PDU MAC address: %s", self._mac_address
                                 )
@@ -1081,113 +1029,14 @@ class RacklinkController:
         """
         Parse outlet details response to extract power metrics.
 
-        Based on improvements from diagnostic script.
+        DEPRECATED: This method is maintained for backward compatibility.
+        Use the parser module's parse_outlet_details() function instead.
         """
-        outlet_data = {"outlet_number": outlet_num}
+        # Import parser here to avoid circular imports
+        from .parser import parse_outlet_details
 
-        # Parse power state (for switch entities)
-        # Example line: "Power state:        On"
-        state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
-        if state_match:
-            state = state_match.group(1)
-            outlet_data["state"] = state.lower()
-            self._outlet_states[outlet_num] = state.lower() == "on"
-            _LOGGER.debug("Parsed outlet %s state: %s", outlet_num, state)
-        else:
-            _LOGGER.debug("Could not find outlet state in response")
-
-        # Parse current (for current sensor)
-        # Example line: "RMS Current:        0.114 A"
-        current_match = re.search(
-            r"RMS Current:\s*([\d.]+)\s*A", response, re.IGNORECASE
-        )
-        if current_match:
-            try:
-                current = float(current_match.group(1))
-                outlet_data["current"] = current
-                self._outlet_current[outlet_num] = current
-                _LOGGER.debug("Parsed outlet %s current: %s A", outlet_num, current)
-            except ValueError:
-                _LOGGER.error(
-                    "Could not convert current value: %s", current_match.group(1)
-                )
-
-        # Parse voltage (for voltage sensor)
-        # Example line: "RMS Voltage:        122.1 V"
-        voltage_match = re.search(
-            r"RMS Voltage:\s*([\d.]+)\s*V", response, re.IGNORECASE
-        )
-        if voltage_match:
-            try:
-                voltage = float(voltage_match.group(1))
-                outlet_data["voltage"] = voltage
-                self._outlet_voltage[outlet_num] = voltage
-                _LOGGER.debug("Parsed outlet %s voltage: %s V", outlet_num, voltage)
-            except ValueError:
-                _LOGGER.error(
-                    "Could not convert voltage value: %s", voltage_match.group(1)
-                )
-
-        # Parse power (for power sensor)
-        # Example line: "Active Power:        7 W"
-        power_match = re.search(
-            r"Active Power:\s*([\d.]+)\s*W", response, re.IGNORECASE
-        )
-        if power_match:
-            try:
-                power = float(power_match.group(1))
-                outlet_data["power"] = power
-                self._outlet_power[outlet_num] = power
-                _LOGGER.debug("Parsed outlet %s power: %s W", outlet_num, power)
-            except ValueError:
-                _LOGGER.error("Could not convert power value: %s", power_match.group(1))
-
-        # Parse energy (for energy sensor)
-        # Example line: "Active Energy:        632210 Wh"
-        energy_match = re.search(
-            r"Active Energy:\s*([\d.]+)\s*Wh", response, re.IGNORECASE
-        )
-        if energy_match:
-            try:
-                energy = float(energy_match.group(1))
-                outlet_data["energy"] = energy
-                self._outlet_energy[outlet_num] = energy
-                _LOGGER.debug("Parsed outlet %s energy: %s Wh", outlet_num, energy)
-            except ValueError:
-                _LOGGER.error(
-                    "Could not convert energy value: %s", energy_match.group(1)
-                )
-
-        # Parse power factor
-        # Example line: "Power Factor:        0.53"
-        pf_match = re.search(r"Power Factor:\s*([\d.]+)", response, re.IGNORECASE)
-        if pf_match:
-            try:
-                power_factor = float(pf_match.group(1))
-                outlet_data["power_factor"] = power_factor
-                self._outlet_power_factor[outlet_num] = power_factor
-                _LOGGER.debug(
-                    "Parsed outlet %s power factor: %s", outlet_num, power_factor
-                )
-            except ValueError:
-                _LOGGER.error("Could not convert power factor: %s", pf_match.group(1))
-
-        # Parse line frequency
-        # Example line: "Line Frequency:        60.0 Hz"
-        freq_match = re.search(
-            r"Line Frequency:\s*([\d.]+)\s*Hz", response, re.IGNORECASE
-        )
-        if freq_match:
-            try:
-                frequency = float(freq_match.group(1))
-                outlet_data["frequency"] = frequency
-                _LOGGER.debug(
-                    "Parsed outlet %s frequency: %s Hz", outlet_num, frequency
-                )
-            except ValueError:
-                _LOGGER.error("Could not convert frequency: %s", freq_match.group(1))
-
-        return outlet_data
+        # Use the dedicated parser function
+        return parse_outlet_details(response, outlet_num)
 
     async def get_outlet_power_data(self, outlet_num: int) -> dict:
         """Get detailed power metrics for a specific outlet."""
@@ -2007,17 +1856,26 @@ class RacklinkController:
                 _LOGGER.error("No response getting outlet state")
                 return False
 
-            state_match = re.search(r"Power state:\s*(\w+)", response, re.IGNORECASE)
-            if state_match:
-                state = state_match.group(1).lower() == "on"
+            # Import parser here to avoid circular imports
+            from .parser import parse_outlet_state
+
+            # Use the robust parser function
+            state = parse_outlet_state(response, outlet_num)
+
+            if state is not None:
+                # Update our internal state
                 self._outlet_states[outlet_num] = state
                 _LOGGER.debug(
                     "Outlet %d state: %s", outlet_num, "ON" if state else "OFF"
                 )
                 return state
             else:
-                _LOGGER.error("Could not parse outlet state from response")
-                return False
+                _LOGGER.error(
+                    "Could not parse outlet state from response for outlet %d",
+                    outlet_num,
+                )
+                # Return last known state if available, otherwise default to False
+                return self._outlet_states.get(outlet_num, False)
 
         except Exception as e:
             _LOGGER.error("Error getting outlet state: %s", e)
@@ -2038,34 +1896,21 @@ class RacklinkController:
                 _LOGGER.error("No response getting all outlet states")
                 return self._outlet_states
 
-            # Parse outlet status blocks
-            # Format: "Outlet X - Name:\nPower state: On/Off"
-            outlet_blocks = re.findall(
-                r"Outlet (\d+)(?: - ([^:]*))?:\s*\r?\nPower state:\s*(\w+)",
-                response,
-                re.MULTILINE,
-            )
+            # Import parser here to avoid circular imports
+            from .parser import parse_all_outlet_states, parse_outlet_names
 
-            # Process each found outlet
-            for match in outlet_blocks:
-                outlet_num = int(match[0])
-                outlet_name = (
-                    match[1].strip()
-                    if len(match) > 1 and match[1]
-                    else f"Outlet {outlet_num}"
-                )
-                state = match[2].lower() == "on"
+            # Parse states and names
+            outlet_states = parse_all_outlet_states(response)
+            outlet_names = parse_outlet_names(response)
 
-                # Update our cached data
-                self._outlet_states[outlet_num] = state
-                self._outlet_names[outlet_num] = outlet_name
+            # Update our cached data
+            if outlet_states:
+                self._outlet_states.update(outlet_states)
+                _LOGGER.debug("Updated %d outlet states", len(outlet_states))
 
-                _LOGGER.debug(
-                    "Found outlet %d (%s): %s",
-                    outlet_num,
-                    outlet_name,
-                    "ON" if state else "OFF",
-                )
+            if outlet_names:
+                self._outlet_names.update(outlet_names)
+                _LOGGER.debug("Updated %d outlet names", len(outlet_names))
 
             return self._outlet_states
 
@@ -2192,6 +2037,9 @@ class RacklinkController:
             return self._sensors
 
         try:
+            # Import parser here to avoid circular imports
+            from .parser import parse_pdu_power_data, parse_pdu_temperature
+
             # Get the capabilities for this model
             capabilities = self.get_model_capabilities()
 
@@ -2203,49 +2051,11 @@ class RacklinkController:
                     power_response = await self.send_command(pdu_cmd)
 
                     if power_response:
-                        # Parse power
-                        power_match = re.search(
-                            r"Power:\s*([\d.]+)\s*W", power_response
-                        )
-                        if power_match:
-                            try:
-                                self._sensors["power"] = float(power_match.group(1))
-                            except (ValueError, TypeError):
-                                pass
-
-                        # Parse current
-                        current_match = re.search(
-                            r"Current:\s*([\d.]+)\s*A", power_response
-                        )
-                        if current_match:
-                            try:
-                                self._sensors["current"] = float(current_match.group(1))
-                            except (ValueError, TypeError):
-                                pass
-
-                        # Parse voltage
-                        voltage_match = re.search(
-                            r"Voltage:\s*([\d.]+)\s*V", power_response
-                        )
-                        if voltage_match:
-                            try:
-                                self._sensors["voltage"] = float(voltage_match.group(1))
-                            except (ValueError, TypeError):
-                                pass
-
-                        # Parse energy
-                        energy_match = re.search(
-                            r"Energy:\s*([\d.]+)\s*(?:kW|W)h", power_response
-                        )
-                        if energy_match:
-                            try:
-                                # Convert kWh to Wh if needed
-                                energy_value = float(energy_match.group(1))
-                                if "kWh" in power_response:
-                                    energy_value *= 1000
-                                self._sensors["energy"] = energy_value
-                            except (ValueError, TypeError):
-                                pass
+                        # Parse power data
+                        power_data = parse_pdu_power_data(power_response)
+                        if power_data:
+                            # Update sensors with parsed data
+                            self._sensors.update(power_data)
                 except Exception as e:
                     _LOGGER.error("Error getting PDU power data: %s", e)
 
@@ -2257,17 +2067,11 @@ class RacklinkController:
                     temp_response = await self.send_command(temp_cmd)
 
                     if temp_response:
-                        # Parse temperature
-                        temp_match = re.search(
-                            r"Temperature:\s*([\d.]+)\s*[CF]", temp_response
-                        )
-                        if temp_match:
-                            try:
-                                self._sensors["temperature"] = float(
-                                    temp_match.group(1)
-                                )
-                            except (ValueError, TypeError):
-                                pass
+                        # Parse temperature data
+                        temp_data = parse_pdu_temperature(temp_response)
+                        if temp_data:
+                            # Update sensors with parsed data
+                            self._sensors.update(temp_data)
                 except Exception as e:
                     _LOGGER.error("Error getting PDU temperature data: %s", e)
 
