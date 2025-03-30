@@ -71,7 +71,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return errors, device_info
 
             # Check if basic device info was retrieved
-            if not controller.pdu_model or not controller.pdu_serial:
+            if not controller.pdu_info.get("model") or not controller.pdu_info.get(
+                "serial"
+            ):
                 _LOGGER.error(
                     "Connected but failed to retrieve device information from %s",
                     user_input[CONF_HOST],
@@ -81,16 +83,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return errors, device_info
 
             device_info = {
-                "name": controller.pdu_name,
-                "model": controller.pdu_model,
-                "firmware": controller.pdu_firmware,
-                "serial": controller.pdu_serial,
-                "mac": controller.pdu_mac,
+                "name": controller.pdu_info.get(
+                    "model", f"RackLink PDU ({user_input[CONF_HOST]})"
+                ),
+                "model": controller.pdu_info.get("model", "Unknown"),
+                "firmware": controller.pdu_info.get("firmware", "Unknown"),
+                "serial": controller.pdu_info.get(
+                    "serial", f"{user_input[CONF_HOST]}_{user_input[CONF_PORT]}"
+                ),
+                "mac": controller.pdu_info.get("mac", ""),
             }
 
             # Verify model selection if not on auto-detect
             if user_input.get(CONF_MODEL) != "AUTO_DETECT":
-                detected_model = controller.pdu_model
+                detected_model = controller.pdu_info.get("model", "")
                 selected_model = user_input.get(CONF_MODEL)
 
                 if selected_model not in detected_model:
@@ -103,8 +109,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.info(
                 "Successfully validated connection to %s (%s - %s)",
                 user_input[CONF_HOST],
-                controller.pdu_model,
-                controller.pdu_serial,
+                device_info["model"],
+                device_info["serial"],
             )
 
             # Use timeout for disconnect as well

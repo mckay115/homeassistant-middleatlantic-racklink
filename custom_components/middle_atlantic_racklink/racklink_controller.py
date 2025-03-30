@@ -49,7 +49,7 @@ class RacklinkController:
     def __init__(
         self,
         host: str,
-        port: int = 23,
+        port: int = 6000,
         username: str = None,
         password: str = None,
         model: str = None,
@@ -64,6 +64,13 @@ class RacklinkController:
         self._model = model
         self._socket_timeout = socket_timeout
         self._command_timeout = command_timeout
+        self._connection_lock = asyncio.Lock()
+        self._connection_timeout = 20  # Longer timeout for initial connection
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 3
+        self._last_error = None
+        self._last_error_time = None
+        self._command_processor_task = None
 
         # Socket connection
         self._socket = None
@@ -73,9 +80,10 @@ class RacklinkController:
         self._available = False
         self._reconnect_tries = 0
 
-        # Command queue
-        self._command_queue = []
+        # Command queue - use an asyncio.Queue for better thread safety
+        self._command_queue = asyncio.Queue()
         self._processing_commands = False
+        self._simple_command_queue = []  # For commands without futures
 
         # Device info
         self.pdu_info = {
@@ -83,6 +91,7 @@ class RacklinkController:
             "firmware": None,
             "serial": None,
             "num_outlets": None,
+            "mac": None,
         }
 
         # Data storage
@@ -97,6 +106,7 @@ class RacklinkController:
         # Status tracking
         self._last_update = 0
         self._shutdown_requested = False
+        self._read_buffer = b""  # Buffer for socket reads
 
         # Start connection in background
         self._connection_task = asyncio.create_task(self._background_connect())
@@ -279,23 +289,82 @@ class RacklinkController:
 
     async def _background_connect(self):
         """Connect to the PDU in the background."""
+        # If we're already connected, no need to reconnect
+        if self._connected and self._reader and self._writer:
+            return
+
         try:
+            _LOGGER.debug("Attempting background connection to %s", self._host)
             await self._connect()
+
             if self._socket:
                 self._connected = True
+                self._available = True
                 _LOGGER.info("Connected to %s", self._host)
                 self._reconnect_tries = 0
-                await self._load_initial_data()
-                await self._send_queued_commands()
+
+                # Start command processing if we have queued commands
+                if not self._command_queue.empty() or self._simple_command_queue:
+                    asyncio.create_task(self._send_queued_commands())
+
+                # Load initial data in a separate task to not block
+                asyncio.create_task(self._load_initial_data())
+            else:
+                _LOGGER.error("Failed to establish socket connection to %s", self._host)
+                self._schedule_reconnect()
+
+        except asyncio.CancelledError:
+            # Task was cancelled - exit gracefully
+            _LOGGER.debug("Background connection task was cancelled")
+            return
         except Exception as e:
             _LOGGER.error("Error connecting to %s: %s", self._host, e)
             self._connected = False
-            self._reconnect_tries += 1
-            # Exponential backoff up to a max of 5 minutes
-            delay = min(300, 2 ** min(self._reconnect_tries, 8))
-            _LOGGER.info("Will retry in %s seconds", delay)
-            # Schedule reconnection
-            asyncio.create_task(self._delayed_reconnect(delay))
+            self._available = False
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self):
+        """Schedule a reconnection with exponential backoff."""
+        self._reconnect_tries += 1
+
+        # Calculate backoff delay with max of 5 minutes (300 seconds)
+        delay = min(300, 2 ** min(self._reconnect_tries, 8))
+
+        _LOGGER.info("Will attempt to reconnect to %s in %s seconds", self._host, delay)
+
+        # Schedule reconnection
+        asyncio.create_task(self._delayed_reconnect(delay))
+
+    async def _delayed_reconnect(self, delay):
+        """Reconnect after a delay."""
+        _LOGGER.debug("Scheduled reconnection to %s in %s seconds", self._host, delay)
+        try:
+            await asyncio.sleep(delay)
+
+            # Only reconnect if we're still not connected
+            if not self._connected:
+                _LOGGER.debug("Attempting scheduled reconnection to %s", self._host)
+
+                # Try to connect with a reasonable timeout
+                try:
+                    await asyncio.wait_for(
+                        self._background_connect(), timeout=self._connection_timeout
+                    )
+                except asyncio.TimeoutError:
+                    _LOGGER.error("Scheduled reconnection to %s timed out", self._host)
+                    self._schedule_reconnect()  # Try again with increased backoff
+                except Exception as e:
+                    _LOGGER.error(
+                        "Error in scheduled reconnection to %s: %s", self._host, e
+                    )
+                    self._schedule_reconnect()  # Try again with increased backoff
+            else:
+                _LOGGER.debug("Already connected, skipping scheduled reconnection")
+        except asyncio.CancelledError:
+            _LOGGER.debug("Delayed reconnection task was cancelled")
+        except Exception as e:
+            _LOGGER.error("Error in delayed reconnection: %s", e)
+            self._schedule_reconnect()  # Try again with increased backoff
 
     async def _connect(self):
         """Connect to the PDU."""
@@ -395,16 +464,6 @@ class RacklinkController:
             self._writer = None
             raise
 
-    async def _delayed_reconnect(self, delay):
-        """Reconnect after a delay."""
-        _LOGGER.debug("Scheduling reconnection in %s seconds", delay)
-        try:
-            await asyncio.sleep(delay)
-            _LOGGER.debug("Attempting reconnection to %s", self._host)
-            await self._background_connect()
-        except Exception as e:
-            _LOGGER.error("Error in delayed reconnection: %s", e)
-
     async def _load_initial_data(self):
         """Load initial data from the PDU."""
         _LOGGER.debug("Loading initial PDU data")
@@ -425,6 +484,7 @@ class RacklinkController:
             "firmware": None,
             "serial": None,
             "num_outlets": None,
+            "mac": None,
         }
 
         # Get system information
@@ -447,6 +507,14 @@ class RacklinkController:
             if serial_match:
                 self.pdu_info["serial"] = serial_match.group(1).strip()
                 _LOGGER.debug("PDU Serial: %s", self.pdu_info["serial"])
+
+        # Get MAC address
+        network_info = await self.send_command("show network interface eth1")
+        if network_info:
+            mac_match = re.search(r"MAC address:\s*([^\r\n]+)", network_info)
+            if mac_match:
+                self.pdu_info["mac"] = mac_match.group(1).strip()
+                _LOGGER.debug("PDU MAC: %s", self.pdu_info["mac"])
 
         # Get outlet count
         outlets_info = await self.send_command("show outlets")
@@ -713,7 +781,7 @@ class RacklinkController:
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         async with self._connection_lock:
-            _LOGGER.debug("Disconnecting from %s", self.host)
+            _LOGGER.debug("Disconnecting from %s", self._host)
 
             # Cancel command processor task if running
             if self._command_processor_task and not self._command_processor_task.done():
@@ -737,7 +805,7 @@ class RacklinkController:
                     _LOGGER.debug("Error cancelling command processor task: %s", e)
 
             # Close socket connection
-            if self.socket:
+            if self._socket:
                 try:
                     # Send terminal exit command if still connected
                     if self._connected:
@@ -759,15 +827,15 @@ class RacklinkController:
                         except Exception as close_err:
                             _LOGGER.debug("Error closing socket: %s", close_err)
 
-                    await asyncio.to_thread(close_socket, self.socket)
+                    await asyncio.to_thread(close_socket, self._socket)
                 except Exception as e:
                     _LOGGER.debug("Error during socket disconnect: %s", e)
                 finally:
-                    self.socket = None
+                    self._socket = None
                     self._read_buffer = b""  # Clear buffer on disconnect
 
             self._connected = False
-            _LOGGER.debug("Disconnected from %s", self.host)
+            _LOGGER.debug("Disconnected from %s", self._host)
 
     async def reconnect(self) -> None:
         """Attempt to reconnect to the device."""
@@ -779,7 +847,7 @@ class RacklinkController:
         # Prevent concurrent reconnections
         async with self._connection_lock:
             # Close and clean up any existing connection
-            if self.socket is not None:
+            if self._socket is not None:
                 _LOGGER.debug("Closing existing socket connection before reconnecting")
                 try:
                     # Close socket in a thread
@@ -789,11 +857,11 @@ class RacklinkController:
                         except Exception as close_err:
                             _LOGGER.debug("Error closing socket: %s", close_err)
 
-                    await asyncio.to_thread(close_socket, self.socket)
+                    await asyncio.to_thread(close_socket, self._socket)
                 except Exception as e:
                     _LOGGER.debug("Error closing socket connection: %s", e)
                 finally:
-                    self.socket = None
+                    self._socket = None
                     self._connected = False
                     self._read_buffer = b""  # Clear buffer on reconnect
 
@@ -802,7 +870,7 @@ class RacklinkController:
                 _LOGGER.warning(
                     "Maximum reconnection attempts (%s) reached for %s, will not try again until next update cycle",
                     self._max_reconnect_attempts,
-                    self.host,
+                    self._host,
                 )
                 return
 
@@ -810,7 +878,7 @@ class RacklinkController:
             backoff = min(2**self._reconnect_attempts, 300)  # Max 5 minutes
             _LOGGER.info(
                 "Attempting to reconnect to %s (attempt %s/%s) in %s seconds...",
-                self.host,
+                self._host,
                 self._reconnect_attempts,
                 self._max_reconnect_attempts,
                 backoff,
@@ -821,21 +889,21 @@ class RacklinkController:
             try:
                 # Create fresh socket connection
                 _LOGGER.debug("Creating new socket connection during reconnect")
-                self.socket = await asyncio.wait_for(
+                self._socket = await asyncio.wait_for(
                     self._create_socket_connection(), timeout=self._socket_timeout
                 )
 
-                if not self.socket:
+                if not self._socket:
                     _LOGGER.error("Failed to create socket connection during reconnect")
                     return
 
                 await asyncio.wait_for(self.login(), timeout=self._socket_timeout)
                 self._connected = True
                 self._available = True
-                _LOGGER.info("Successfully reconnected to %s", self.host)
+                _LOGGER.info("Successfully reconnected to %s", self._host)
             except (asyncio.TimeoutError, Exception) as e:
-                _LOGGER.error("Failed to reconnect to %s: %s", self.host, e)
-                if self.socket:
+                _LOGGER.error("Failed to reconnect to %s: %s", self._host, e)
+                if self._socket:
                     try:
                         # Close socket in a thread
                         def close_socket(sock):
@@ -844,13 +912,13 @@ class RacklinkController:
                             except Exception as close_err:
                                 _LOGGER.debug("Error closing socket: %s", close_err)
 
-                        await asyncio.to_thread(close_socket, self.socket)
+                        await asyncio.to_thread(close_socket, self._socket)
                     except Exception as close_err:
                         _LOGGER.debug(
                             "Error closing socket during reconnect failure: %s",
                             close_err,
                         )
-                    self.socket = None
+                    self._socket = None
                 self._connected = False
                 self._available = False
 
@@ -859,8 +927,8 @@ class RacklinkController:
         if not self._connected:
             _LOGGER.warning("Cannot send command, not connected: %s", command)
             # Queue commands if not connected
-            self._command_queue.append(command)
-            _LOGGER.debug("Queued command for later: %s", command)
+            self._simple_command_queue.append(command)
+            _LOGGER.debug("Queued simple command for later: %s", command)
             return None
 
         if not command:
@@ -869,7 +937,7 @@ class RacklinkController:
 
         # Add command to queue to ensure serialized execution
         future = asyncio.Future()
-        self._command_queue.append((command, future))
+        await self._command_queue.put((command, future))
 
         # Process the command queue if we're not already processing
         if not self._processing_commands:
@@ -893,36 +961,70 @@ class RacklinkController:
         self._processing_commands = True
 
         try:
-            while self._command_queue and self._connected:
-                item = self._command_queue.pop(0)
-
-                # Handle simple string commands (no future)
-                if isinstance(item, str):
-                    command = item
-                    _LOGGER.debug("Processing queued command (no future): %s", command)
+            # First process any simple commands that were queued while disconnected
+            if self._connected and self._simple_command_queue:
+                _LOGGER.debug(
+                    "Processing %d simple queued commands",
+                    len(self._simple_command_queue),
+                )
+                for command in self._simple_command_queue:
                     try:
                         await self._send_command_direct(command)
                     except Exception as e:
                         _LOGGER.error(
-                            "Error sending queued command: %s - %s", command, e
+                            "Error sending simple queued command: %s - %s", command, e
                         )
-                    continue
+                    # Brief delay between commands
+                    await asyncio.sleep(0.1)
+                self._simple_command_queue = []  # Clear the queue after processing
 
-                # Handle command with future
-                command, future = item
-
-                _LOGGER.debug("Processing queued command: %s", command)
+            # Then process the main command queue
+            while not self._command_queue.empty() and self._connected:
                 try:
-                    response = await self._send_command_direct(command)
-                    if not future.done():
-                        future.set_result(response)
-                except Exception as e:
-                    _LOGGER.error("Error sending command: %s - %s", command, e)
-                    if not future.done():
-                        future.set_exception(e)
+                    # Get the next command from the queue with a short timeout
+                    command, future = await asyncio.wait_for(
+                        self._command_queue.get(), timeout=0.5
+                    )
 
-                # Small delay between commands to avoid overwhelming the device
-                await asyncio.sleep(0.1)
+                    # Check if this is a command without a future (added while disconnected)
+                    if future is None:
+                        _LOGGER.debug(
+                            "Processing queued command (no future): %s", command
+                        )
+                        try:
+                            await self._send_command_direct(command)
+                        except Exception as e:
+                            _LOGGER.error(
+                                "Error sending queued command: %s - %s", command, e
+                            )
+                        finally:
+                            self._command_queue.task_done()
+                        continue
+
+                    # Otherwise, it's a command with a future
+                    _LOGGER.debug("Processing queued command: %s", command)
+                    try:
+                        response = await self._send_command_direct(command)
+                        if not future.done():
+                            future.set_result(response)
+                    except Exception as e:
+                        _LOGGER.error("Error sending command: %s - %s", command, e)
+                        if not future.done():
+                            future.set_exception(e)
+                    finally:
+                        # Mark the task as done in the queue
+                        self._command_queue.task_done()
+
+                    # Small delay between commands to avoid overwhelming the device
+                    await asyncio.sleep(0.1)
+
+                except asyncio.TimeoutError:
+                    # No commands in the queue, break the loop
+                    break
+                except Exception as e:
+                    _LOGGER.error("Error processing command from queue: %s", e)
+                    # Small delay to avoid tight loop on persistent errors
+                    await asyncio.sleep(0.5)
 
         except Exception as e:
             _LOGGER.error("Error processing command queue: %s", e)
@@ -930,11 +1032,12 @@ class RacklinkController:
             self._processing_commands = False
 
             # If there are still commands in the queue, process them
-            if self._command_queue and self._connected:
+            if not self._command_queue.empty() and self._connected:
                 asyncio.create_task(self._send_queued_commands())
 
     async def _send_command_direct(self, command):
         """Send a command directly to the PDU and get the response."""
+        # Validate our connection state
         if not self._connected or not self._writer or not self._reader:
             _LOGGER.warning("Cannot send command, connection not ready: %s", command)
             raise ConnectionError("Not connected")
@@ -943,12 +1046,36 @@ class RacklinkController:
             # Send the command
             _LOGGER.debug("Sending command: %s", command)
             self._writer.write(f"{command}\r\n".encode())
-            await self._writer.drain()
+
+            # Ensure the command is sent to the device
+            try:
+                await asyncio.wait_for(
+                    self._writer.drain(), timeout=self._command_timeout / 2
+                )
+            except (ConnectionError, TimeoutError) as e:
+                _LOGGER.error("Error sending command data: %s", e)
+                self._handle_connection_loss()
+                raise
 
             # Read the response with a timeout
-            response_bytes = await asyncio.wait_for(
-                self._read_response(), timeout=self._command_timeout
-            )
+            try:
+                response_bytes = await asyncio.wait_for(
+                    self._read_response(), timeout=self._command_timeout
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout reading response for command: %s", command)
+                # Don't close connection on timeout, just return None
+                raise TimeoutError(f"Command timed out: {command}")
+
+            if not response_bytes:
+                _LOGGER.error("Empty response for command: %s", command)
+                # Empty response could indicate connection issues
+                if self._check_connection_state():
+                    # Connection seems okay but got empty response
+                    raise ValueError("Empty response received")
+                else:
+                    # Connection appears to be lost
+                    raise ConnectionError("Connection lost while reading response")
 
             # Decode the response
             response = response_bytes.decode(errors="ignore")
@@ -960,81 +1087,72 @@ class RacklinkController:
                 )
 
             # Check if we got a prompt at the end (command completed)
-            if not response.strip().endswith(("#", ">")):
+            if not any(response.strip().endswith(prompt) for prompt in ["#", ">"]):
                 _LOGGER.debug("Response doesn't end with prompt, may be incomplete")
 
             return response
 
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout reading response for command: %s", command)
-            # Don't close connection on timeout, just return None
-            raise TimeoutError(f"Command timed out: {command}")
-
+        except (ConnectionError, OSError) as e:
+            _LOGGER.error("Connection error sending command: %s - %s", command, e)
+            self._handle_connection_loss()
+            raise
+        except TimeoutError:
+            # Timeouts already logged above
+            raise
         except Exception as e:
-            _LOGGER.error("Error sending command: %s - %s", command, e)
+            _LOGGER.error("Unexpected error sending command: %s - %s", command, e)
             # If connection seems broken, mark as disconnected
             if isinstance(e, (ConnectionError, OSError)):
-                _LOGGER.warning("Connection seems broken, marking as disconnected")
-                self._connected = False
-                # Close the connection
-                if self._writer:
-                    try:
-                        self._writer.close()
-                        await self._writer.wait_closed()
-                    except Exception:
-                        pass
-                self._reader = None
-                self._writer = None
-                # Schedule reconnection
-                asyncio.create_task(self._delayed_reconnect(5))
+                self._handle_connection_loss()
             raise
 
-    async def _read_response(self):
-        """Read response from the device until prompt or timeout."""
-        buffer = b""
-        start_time = time.time()
-        prompt_patterns = [b"#", b">"]
+    def _handle_connection_loss(self):
+        """Handle connection loss by cleaning up and scheduling reconnect."""
+        _LOGGER.warning("Connection appears to be lost, marking as disconnected")
+        self._connected = False
+        self._available = False
 
-        while time.time() - start_time < self._command_timeout:
+        # Close the connection cleanly
+        if self._writer:
             try:
-                # Try to read a chunk
-                chunk = await asyncio.wait_for(
-                    self._reader.read(4096), timeout=1.0  # Short timeout for each read
-                )
-
-                if not chunk:
-                    # Connection closed
-                    _LOGGER.warning("Connection closed while reading response")
-                    self._connected = False
-                    break
-
-                buffer += chunk
-
-                # Check if we've reached a prompt (end of response)
-                if any(buffer.rstrip().endswith(prompt) for prompt in prompt_patterns):
-                    break
-
-                # Continue reading if we haven't reached a prompt yet
-
-            except asyncio.TimeoutError:
-                # No more data available within timeout
-                if buffer:
-                    # We have some data, so return it
-                    break
-                # Otherwise, continue waiting for more data
-
+                self._writer.close()
+                # Don't wait for it to close - that might block
+                asyncio.create_task(self._safe_wait_closed())
             except Exception as e:
-                _LOGGER.error("Error reading response: %s", e)
-                if buffer:
-                    # Return what we have so far
-                    break
-                raise
+                _LOGGER.debug("Error closing writer: %s", e)
 
-        return buffer
+        self._reader = None
+        self._writer = None
+
+        # Schedule reconnection
+        self._schedule_reconnect()
+
+    async def _safe_wait_closed(self):
+        """Safely wait for the writer to close with a timeout."""
+        if self._writer:
+            try:
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=2.0)
+            except Exception as e:
+                _LOGGER.debug("Error waiting for writer to close: %s", e)
+
+    def _check_connection_state(self):
+        """Check if the connection appears to be valid."""
+        # Check for closed writer
+        if self._writer and self._writer.is_closing():
+            _LOGGER.debug("Writer is closing")
+            return False
+
+        # Check for None objects
+        if not self._reader or not self._writer:
+            _LOGGER.debug("Reader or writer is None")
+            return False
+
+        # Otherwise assume connection is okay
+        return True
 
     async def shutdown(self) -> None:
         """Shut down the controller and release resources."""
-        _LOGGER.info("Shutting down controller for %s", self.host)
+        _LOGGER.info("Shutting down controller for %s", self._host)
         self._shutdown_requested = True
 
         # Cancel all pending command futures
@@ -1062,7 +1180,7 @@ class RacklinkController:
 
         # Disconnect from device
         await self.disconnect()
-        _LOGGER.info("Controller for %s has been shut down", self.host)
+        _LOGGER.info("Controller for %s has been shut down", self._host)
 
     async def get_initial_status(self):
         """Get initial device status."""
@@ -1095,10 +1213,13 @@ class RacklinkController:
             if not response:
                 _LOGGER.error("No response when getting PDU details")
                 # Set basic fallback values to prevent further errors
-                if not self.pdu_name or self.pdu_name == f"Racklink PDU ({self.host})":
-                    self.pdu_name = f"Racklink PDU ({self.host})"
-                if not self.pdu_serial or self.pdu_serial == f"{self.host}_{self.port}":
-                    self.pdu_serial = f"{self.host}_{self.port}"
+                if not self.pdu_name or self.pdu_name == f"Racklink PDU ({self._host})":
+                    self.pdu_name = f"Racklink PDU ({self._host})"
+                if (
+                    not self.pdu_serial
+                    or self.pdu_serial == f"{self._host}_{self._port}"
+                ):
+                    self.pdu_serial = f"{self._host}_{self._port}"
                 if not self.pdu_model or self.pdu_model == "Racklink PDU":
                     self.pdu_model = "Racklink PDU"
                 self.pdu_firmware = self.pdu_firmware or "Unknown"
@@ -1188,10 +1309,10 @@ class RacklinkController:
         except Exception as e:
             _LOGGER.error("Error getting PDU details: %s", e)
             # Set basic fallback values to prevent further errors
-            if not self.pdu_name or self.pdu_name == f"Racklink PDU ({self.host})":
-                self.pdu_name = f"Racklink PDU ({self.host})"
-            if not self.pdu_serial or self.pdu_serial == f"{self.host}_{self.port}":
-                self.pdu_serial = f"{self.host}_{self.port}"
+            if not self.pdu_name or self.pdu_name == f"Racklink PDU ({self._host})":
+                self.pdu_name = f"Racklink PDU ({self._host})"
+            if not self.pdu_serial or self.pdu_serial == f"{self._host}_{self._port}":
+                self.pdu_serial = f"{self._host}_{self._port}"
             if not self.pdu_model or self.pdu_model == "Racklink PDU":
                 self.pdu_model = "Racklink PDU"
             self.pdu_firmware = self.pdu_firmware or "Unknown"
@@ -1752,15 +1873,16 @@ class RacklinkController:
     async def get_device_info(self) -> Dict[str, Any]:
         """Get device information."""
         return {
-            "name": self.pdu_name,
-            "model": self.pdu_model,
-            "firmware": self.pdu_firmware,
-            "serial": self.pdu_serial,
-            "mac": self.pdu_mac,
+            "name": self.pdu_info.get("model", f"RackLink PDU ({self._host})"),
+            "model": self.pdu_info.get("model", "Unknown"),
+            "firmware": self.pdu_info.get("firmware", "Unknown"),
+            "serial": self.pdu_info.get("serial", f"{self._host}_{self._port}"),
+            "mac": self.pdu_info.get("mac", ""),
             "available": self._available,
             "last_error": self._last_error,
             "last_error_time": self._last_error_time,
             "last_update": datetime.fromtimestamp(self._last_update, timezone.utc),
+            "num_outlets": self.pdu_info.get("num_outlets", 8),
         }
 
     def get_model_capabilities(self) -> Dict[str, Any]:
@@ -1856,3 +1978,46 @@ class RacklinkController:
             _LOGGER.error("Error during update: %s", e)
             # Don't mark as unavailable on a single error
             return False
+
+    async def _read_response(self):
+        """Read response from the device until prompt or timeout."""
+        buffer = b""
+        start_time = time.time()
+        prompt_patterns = [b"#", b">"]
+
+        while time.time() - start_time < self._command_timeout:
+            try:
+                # Try to read a chunk
+                chunk = await asyncio.wait_for(
+                    self._reader.read(4096), timeout=1.0  # Short timeout for each read
+                )
+
+                if not chunk:
+                    # Connection closed
+                    _LOGGER.warning("Connection closed while reading response")
+                    self._connected = False
+                    break
+
+                buffer += chunk
+
+                # Check if we've reached a prompt (end of response)
+                if any(buffer.rstrip().endswith(prompt) for prompt in prompt_patterns):
+                    break
+
+                # Continue reading if we haven't reached a prompt yet
+
+            except asyncio.TimeoutError:
+                # No more data available within timeout
+                if buffer:
+                    # We have some data, so return it
+                    break
+                # Otherwise, continue waiting for more data
+
+            except Exception as e:
+                _LOGGER.error("Error reading response: %s", e)
+                if buffer:
+                    # Return what we have so far
+                    break
+                raise
+
+        return buffer

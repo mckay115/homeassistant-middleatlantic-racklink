@@ -100,45 +100,82 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             # Check if controller is connected, if not, attempt reconnection
             if not controller.connected:
-                _LOGGER.debug("Controller not connected, attempting to connect")
+                _LOGGER.debug("Controller not connected, attempting reconnection")
                 try:
-                    await asyncio.wait_for(controller.connect(), timeout=10)
-                except asyncio.TimeoutError:
-                    _LOGGER.warning("Connection attempt timed out")
-                    raise UpdateFailed("Connection attempt timed out")
+                    # Start a background connection attempt instead of blocking
+                    controller.start_background_connection()
+                    # Wait briefly but don't block indefinitely
+                    await asyncio.sleep(0.5)
 
-            # Update all data from device
+                    # If still not connected, raise exception but let coordinator handle it
+                    if not controller.connected:
+                        _LOGGER.warning(
+                            "Connection not immediately available, will retry later"
+                        )
+                        raise UpdateFailed("Device connection unavailable")
+                except Exception as e:
+                    _LOGGER.warning("Error during reconnection attempt: %s", e)
+                    raise UpdateFailed(f"Connection error: {e}")
+
+            # Check connection again before attempting update
             if controller.connected:
                 _LOGGER.debug("Updating controller data from device")
                 try:
-                    await asyncio.wait_for(controller.update(), timeout=10)
+                    # Use a timeout to prevent blocking indefinitely
+                    success = await asyncio.wait_for(controller.update(), timeout=15)
+
+                    if not success:
+                        _LOGGER.warning(
+                            "Controller update returned unsuccessful status"
+                        )
+                        # We'll still return data, but log the issue
+
                 except asyncio.TimeoutError:
                     _LOGGER.warning("Data update timed out")
                     raise UpdateFailed("Data update timed out")
+                except Exception as e:
+                    _LOGGER.error("Error during controller update: %s", e)
+                    raise UpdateFailed(f"Update error: {e}")
 
-                # Return the data for entities to use
+                # Get the latest device info
+                device_info = await controller.get_device_info()
+
+                # Collect updated data for entities
                 return {
-                    "outlet_states": controller.outlet_states,
-                    "outlet_names": controller.outlet_names,
-                    "outlet_power": controller.outlet_power,
-                    "outlet_current": controller.outlet_current,
-                    "outlet_energy": controller.outlet_energy,
-                    "outlet_power_factor": controller.outlet_power_factor,
-                    "outlet_apparent_power": controller.outlet_apparent_power,
-                    "outlet_voltage": controller.outlet_voltage,
-                    "outlet_line_frequency": controller.outlet_line_frequency,
-                    "outlet_cycling_period": controller.outlet_cycling_period,
-                    "outlet_non_critical": controller.outlet_non_critical,
-                    "sensors": controller.sensors,
+                    "device_info": device_info,
+                    "available": controller.available,
+                    "outlet_states": controller.outlet_states.copy(),
+                    "outlet_names": controller.outlet_names.copy(),
+                    "outlet_power": (
+                        getattr(controller, "outlet_power", {}).copy()
+                        if hasattr(controller, "outlet_power")
+                        else {}
+                    ),
+                    "outlet_current": (
+                        getattr(controller, "outlet_current", {}).copy()
+                        if hasattr(controller, "outlet_current")
+                        else {}
+                    ),
                     "last_update": controller._last_update,
+                    "pdu_info": (
+                        controller.pdu_info.copy()
+                        if hasattr(controller, "pdu_info")
+                        else {}
+                    ),
                 }
-            return None
+            else:
+                _LOGGER.warning("Controller is not connected, cannot update data")
+                raise UpdateFailed("Device not connected")
+
+        except UpdateFailed:
+            # Re-raise UpdateFailed exceptions without modification
+            raise
         except Exception as e:
-            _LOGGER.error("Error updating from device: %s", e)
+            _LOGGER.error("Unexpected error updating from device: %s", e)
             # Convert exception into update failure for coordinator
             raise UpdateFailed(f"Error communicating with device: {e}")
 
-    # Create the update coordinator with longer initial_update_interval
+    # Create the update coordinator with reasonable update interval
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
