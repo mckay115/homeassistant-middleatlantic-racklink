@@ -45,7 +45,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 # Data schema for the options flow
 OPTIONS_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
+        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
+            vol.Coerce(int), vol.Range(min=5, max=300)
+        ),
     }
 )
 
@@ -186,7 +188,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     default=self.config_entry.options.get(
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
-                ): int,
+                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
             }
         )
 

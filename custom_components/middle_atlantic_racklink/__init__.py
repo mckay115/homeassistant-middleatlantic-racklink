@@ -24,7 +24,7 @@ from .coordinator import RacklinkCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "middle_atlantic_racklink"
-DEFAULT_SCAN_INTERVAL = 30
+DEFAULT_SCAN_INTERVAL = 10
 
 PLATFORMS = [
     Platform.SWITCH,

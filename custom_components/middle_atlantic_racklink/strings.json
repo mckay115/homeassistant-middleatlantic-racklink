@@ -90,7 +90,7 @@
         "init": {
           "title": "Configure Racklink Options",
           "data": {
-            "update_interval": "Update interval in seconds (10-300)"
+            "update_interval": "Update interval in seconds (5-300)"
           }
         }
       }

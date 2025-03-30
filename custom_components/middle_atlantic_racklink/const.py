@@ -10,7 +10,7 @@ DOMAIN = "middle_atlantic_racklink"
 # Default values
 DEFAULT_PORT = 6000
 DEFAULT_NAME = "Middle Atlantic Racklink"
-DEFAULT_SCAN_INTERVAL = 30  # seconds
+DEFAULT_SCAN_INTERVAL = 10  # seconds (changed from 30 to 10)
 DEFAULT_TIMEOUT = 20
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
 DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
