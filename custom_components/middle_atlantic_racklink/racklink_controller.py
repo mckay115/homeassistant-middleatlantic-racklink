@@ -1222,6 +1222,56 @@ class RacklinkController:
                         response_text[:100],
                     )
 
+                # Log more details about pattern matching to help with power state issues
+                if "show outlets" in command and "details" in command:
+                    _LOGGER.info(
+                        "Detailed outlet command response length: %d bytes",
+                        len(response_text),
+                    )
+                    # Extract outlet number for more contextual logging
+                    outlet_match = re.search(r"show outlets (\d+)", command)
+                    outlet_num = outlet_match.group(1) if outlet_match else "unknown"
+
+                    # Log key patterns that might help with parsing
+                    power_state_match = re.search(
+                        r"Power state:\s*(\w+)", response_text, re.IGNORECASE
+                    )
+                    if power_state_match:
+                        _LOGGER.info(
+                            "Found 'Power state: %s' for outlet %s",
+                            power_state_match.group(1),
+                            outlet_num,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "No 'Power state:' pattern found for outlet %s", outlet_num
+                        )
+
+                        # Look for alternative patterns in the response
+                        status_match = re.search(
+                            r"Status:\s*(\w+)", response_text, re.IGNORECASE
+                        )
+                        if status_match:
+                            _LOGGER.info(
+                                "Found alternative 'Status: %s' for outlet %s",
+                                status_match.group(1),
+                                outlet_num,
+                            )
+
+                        # Try to extract relevant context around the outlet mention
+                        outlet_context = re.search(
+                            r"Outlet\s+%s.*?(?:\n.*?){0,5}" % outlet_num,
+                            response_text,
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        if outlet_context:
+                            context_text = outlet_context.group(0).replace("\n", " | ")
+                            _LOGGER.info(
+                                "Context for outlet %s: %s",
+                                outlet_num,
+                                context_text[:100],
+                            )
+
                 # Verify the response contains evidence of command execution
                 # For safety, ensure we have a valid response before proceeding
                 if not response_text or (
@@ -1509,7 +1559,7 @@ class RacklinkController:
         patterns = [pattern]
         if pattern == b"#":
             # Add command prompt pattern with bracket: [DeviceName] #
-            patterns.extend([b"]\s+#", b">", b"$", b":", b"RackLink>", b"admin>"])
+            patterns.extend([rb"]\s+#", b">", b"$", b":", b"RackLink>", b"admin>"])
         elif pattern == b"Username:":
             patterns = [b"Username:", b"login:"]  # Username prompts
         elif pattern == b"Password:":
@@ -1529,7 +1579,7 @@ class RacklinkController:
             for ptn in patterns:
                 if ptn in buffer:
                     # Special check for bracket pattern
-                    if ptn == b"]\s+#":
+                    if ptn == rb"]\s+#":
                         # Look for complete prompt pattern [DeviceName] #
                         prompt_matches = re.findall(rb"\[.+?\]\s+#", buffer)
                         if prompt_matches:
@@ -1808,13 +1858,23 @@ class RacklinkController:
             return False
 
         try:
-            _LOGGER.debug("Getting state for outlet %d", outlet_num)
+            _LOGGER.info("Getting state for outlet %d", outlet_num)
             command = f"show outlets {outlet_num} details"
+            _LOGGER.debug("Sending command to get outlet state: %s", command)
             response = await self.send_command(command)
 
             if not response:
-                _LOGGER.error("No response getting outlet state")
+                _LOGGER.error(
+                    "No response getting outlet state for outlet %d", outlet_num
+                )
                 return False
+
+            # Log response length for debugging
+            _LOGGER.debug(
+                "Received response of length %d for outlet %d",
+                len(response),
+                outlet_num,
+            )
 
             # Import parser here to avoid circular imports
             from .parser import parse_outlet_state
@@ -1825,20 +1885,28 @@ class RacklinkController:
             if state is not None:
                 # Update our internal state
                 self._outlet_states[outlet_num] = state
-                _LOGGER.debug(
-                    "Outlet %d state: %s", outlet_num, "ON" if state else "OFF"
+                _LOGGER.info(
+                    "Outlet %d state determined successfully: %s",
+                    outlet_num,
+                    "ON" if state else "OFF",
                 )
                 return state
             else:
                 _LOGGER.error(
-                    "Could not parse outlet state from response for outlet %d",
+                    "Could not parse outlet state from response for outlet %d - check parser logs for details",
                     outlet_num,
                 )
                 # Return last known state if available, otherwise default to False
-                return self._outlet_states.get(outlet_num, False)
+                last_state = self._outlet_states.get(outlet_num, False)
+                _LOGGER.info(
+                    "Using last known state for outlet %d: %s",
+                    outlet_num,
+                    "ON" if last_state else "OFF",
+                )
+                return last_state
 
         except Exception as e:
-            _LOGGER.error("Error getting outlet state: %s", e)
+            _LOGGER.error("Error getting outlet state for outlet %d: %s", outlet_num, e)
             return False
 
     async def get_all_outlet_states(self, force_refresh: bool = False) -> dict:
@@ -1848,13 +1916,23 @@ class RacklinkController:
             return self._outlet_states
 
         try:
-            _LOGGER.debug("Getting all outlet states")
+            _LOGGER.info("Getting all outlet states")
             command = "show outlets all"
+            _LOGGER.debug("Sending command: %s", command)
             response = await self.send_command(command)
 
             if not response:
-                _LOGGER.error("No response getting all outlet states")
+                _LOGGER.error("No response when getting all outlet states")
                 return self._outlet_states
+
+            # Log the response length for debugging
+            _LOGGER.debug("Received response of length %d bytes", len(response))
+
+            # Log the first part of the response to help with debugging
+            _LOGGER.debug(
+                "First 200 characters of response: %s",
+                response[:200].replace("\n", " "),
+            )
 
             # Import parser here to avoid circular imports
             from .parser import parse_all_outlet_states, parse_outlet_names
@@ -1863,14 +1941,29 @@ class RacklinkController:
             outlet_states = parse_all_outlet_states(response)
             outlet_names = parse_outlet_names(response)
 
-            # Update our cached data
+            # Log detailed results
             if outlet_states:
+                states_str = ", ".join(
+                    [
+                        f"{outlet}: {'ON' if state else 'OFF'}"
+                        for outlet, state in outlet_states.items()
+                    ]
+                )
+                _LOGGER.info("Parsed outlet states: %s", states_str)
                 self._outlet_states.update(outlet_states)
                 _LOGGER.debug("Updated %d outlet states", len(outlet_states))
+            else:
+                _LOGGER.warning("No outlet states could be parsed from the response")
 
             if outlet_names:
+                names_str = ", ".join(
+                    [f"{outlet}: {name}" for outlet, name in outlet_names.items()]
+                )
+                _LOGGER.debug("Parsed outlet names: %s", names_str)
                 self._outlet_names.update(outlet_names)
                 _LOGGER.debug("Updated %d outlet names", len(outlet_names))
+            else:
+                _LOGGER.debug("No outlet names could be parsed from the response")
 
             return self._outlet_states
 
