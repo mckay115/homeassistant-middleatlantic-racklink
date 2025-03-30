@@ -56,3 +56,5 @@ logs/
 
 # Build artifacts
 build/ 
+middle-atlantic.lua
+test_racklink_socket.py
