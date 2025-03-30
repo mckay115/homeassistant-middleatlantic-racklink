@@ -84,6 +84,8 @@ class RacklinkController:
         self._outlet_power_factor = {}
         self._sensor_values = {}
         self._pdu_info = {}  # Initialize PDU info dictionary
+        self._outlet_non_critical = {}  # Initialize outlet non-critical flag dictionary
+        self._sensors = {}  # Initialize sensors dictionary for PDU-level sensors
 
         self._last_update = None
         self._last_error = None
@@ -192,6 +194,16 @@ class RacklinkController:
     def outlet_power_factor(self) -> dict:
         """Return outlet power factor data."""
         return self._outlet_power_factor
+
+    @property
+    def outlet_non_critical(self) -> dict:
+        """Return outlet non-critical status."""
+        return self._outlet_non_critical
+
+    @property
+    def sensors(self) -> dict:
+        """Return PDU sensor data."""
+        return self._sensors
 
     @property
     def pdu_info(self) -> dict:
@@ -637,66 +649,46 @@ class RacklinkController:
         return self._pdu_info
 
     def get_model_capabilities(self) -> Dict[str, Any]:
-        """Get capabilities based on model number."""
-        # Default capabilities
-        capabilities = {
-            "num_outlets": 8,  # Default to 8 outlets
-            "supports_power_monitoring": True,
-            "supports_outlet_switching": True,
-            "supports_energy_monitoring": True,
-            "supports_outlet_scheduling": False,  # Most models don't support this
-            "max_current": 15,  # Default to 15A
-            "has_surge_protection": False,
-            "has_temperature_sensor": True,
-        }
+        """Get the capabilities for the current model."""
+        model = self._model or "DEFAULT"
+        # Use the model-specific capabilities or fallback to default
+        base_capabilities = MODEL_CAPABILITIES.get(model, MODEL_CAPABILITIES["DEFAULT"])
 
-        # Update based on model
-        model = self._model
+        # Start with base capabilities for this model
+        capabilities = base_capabilities.copy()
 
-        if not model or model == "AUTO_DETECT" or model == "Racklink PDU":
-            # Use controller response to determine outlet count
-            outlet_count = (
-                max(list(self._outlet_states.keys())) if self._outlet_states else 8
+        # For P series (newer models) we can infer some capabilities
+        if model.startswith("RLNK-P"):
+            capabilities.update(
+                {
+                    "supports_power_monitoring": True,
+                    "supports_outlet_switching": True,
+                    "supports_energy_monitoring": True,
+                    "supports_outlet_scheduling": False,
+                    "max_current": 20,  # Most models are 20A, adjust if needed
+                    "has_surge_protection": False,
+                    "has_temperature_sensor": True,  # Most Pro models have temperature sensing
+                }
             )
-            capabilities["num_outlets"] = outlet_count
-            _LOGGER.debug(
-                "Auto-detected %d outlets from device responses", outlet_count
+
+        # For RLNK-P920R model specifically
+        if model == "RLNK-P920R":
+            capabilities.update(
+                {
+                    "num_outlets": 9,
+                    "supports_power_monitoring": True,
+                    "supports_outlet_switching": True,
+                    "supports_energy_monitoring": True,
+                    "supports_outlet_scheduling": False,
+                    "max_current": 20,
+                    "has_surge_protection": False,
+                    "has_temperature_sensor": True,
+                }
             )
-            return capabilities
 
-        # RLNK-P415: 4 outlets, 15A
-        if "P415" in model:
-            capabilities["num_outlets"] = 4
-            capabilities["max_current"] = 15
-
-        # RLNK-P420: 4 outlets, 20A
-        elif "P420" in model:
-            capabilities["num_outlets"] = 4
-            capabilities["max_current"] = 20
-
-        # RLNK-P915R: 9 outlets, 15A
-        elif "P915R" in model and "SP" not in model:
-            capabilities["num_outlets"] = 9
-            capabilities["max_current"] = 15
-
-        # RLNK-P915R-SP: 9 outlets, 15A, surge protection
-        elif "P915R-SP" in model:
-            capabilities["num_outlets"] = 9
-            capabilities["max_current"] = 15
-            capabilities["has_surge_protection"] = True
-
-        # RLNK-P920R: 9 outlets, 20A
-        elif "P920R" in model and "SP" not in model:
-            capabilities["num_outlets"] = 9
-            capabilities["max_current"] = 20
-
-        # RLNK-P920R-SP: 9 outlets, 20A, surge protection
-        elif "P920R-SP" in model:
-            capabilities["num_outlets"] = 9
-            capabilities["max_current"] = 20
-            capabilities["has_surge_protection"] = True
-        else:
-            # Try to extract number from model string if it follows a pattern
+        # Extract additional capabilities from model name
+        if "num_outlets" not in capabilities and isinstance(model, str):
+            # Extract outlet count from model name (e.g., RLNK-920 -> 9 outlets)
             match = re.search(r"P(\d+)", model)
             if match:
                 num_str = match.group(1)
@@ -733,6 +725,10 @@ class RacklinkController:
                         state = match[1].lower() == "on"
                         self._outlet_states[outlet_num] = state
 
+                        # Default all outlets to non-critical = False
+                        if outlet_num not in self._outlet_non_critical:
+                            self._outlet_non_critical[outlet_num] = False
+
                         # Extract outlet name if available
                         name_match = re.search(
                             rf"Outlet {outlet_num}: ([^\n]+)", all_outlets_response
@@ -756,6 +752,87 @@ class RacklinkController:
                 await self.get_all_power_data(
                     sample_size=3
                 )  # Get power data for 3 outlets per update
+
+            # Try to get global PDU sensor data if available
+            try:
+                if self.get_model_capabilities().get(
+                    "supports_power_monitoring", False
+                ):
+                    # Get voltage from any outlet as they all report the same line voltage
+                    if self._outlet_voltage and 1 in self._outlet_voltage:
+                        self._sensors["voltage"] = self._outlet_voltage[1]
+
+                    # Try to get global PDU metrics if available
+                    pdu_stats_response = await self.send_command("show pdu power")
+                    if pdu_stats_response:
+                        # Parse power data
+                        power_match = re.search(
+                            r"Power:\s*([\d.]+)\s*W", pdu_stats_response
+                        )
+                        if power_match:
+                            try:
+                                self._sensors["power"] = float(power_match.group(1))
+                            except ValueError:
+                                pass
+
+                        # Parse current
+                        current_match = re.search(
+                            r"Current:\s*([\d.]+)\s*A", pdu_stats_response
+                        )
+                        if current_match:
+                            try:
+                                self._sensors["current"] = float(current_match.group(1))
+                            except ValueError:
+                                pass
+
+                        # Parse energy
+                        energy_match = re.search(
+                            r"Energy:\s*([\d.]+)\s*kWh", pdu_stats_response
+                        )
+                        if energy_match:
+                            try:
+                                self._sensors["energy"] = (
+                                    float(energy_match.group(1)) * 1000
+                                )  # Convert to Wh
+                            except ValueError:
+                                pass
+
+                        # Parse power factor
+                        pf_match = re.search(
+                            r"Power Factor:\s*([\d.]+)", pdu_stats_response
+                        )
+                        if pf_match:
+                            try:
+                                self._sensors["power_factor"] = float(pf_match.group(1))
+                            except ValueError:
+                                pass
+
+                        # Parse frequency
+                        freq_match = re.search(
+                            r"Frequency:\s*([\d.]+)\s*Hz", pdu_stats_response
+                        )
+                        if freq_match:
+                            try:
+                                self._sensors["frequency"] = float(freq_match.group(1))
+                            except ValueError:
+                                pass
+
+                # Get temperature if supported
+                if self.get_model_capabilities().get("has_temperature_sensor", False):
+                    temp_response = await self.send_command("show pdu temperature")
+                    if temp_response:
+                        temp_match = re.search(
+                            r"Temperature:\s*([\d.]+)\s*C", temp_response
+                        )
+                        if temp_match:
+                            try:
+                                self._sensors["temperature"] = float(
+                                    temp_match.group(1)
+                                )
+                            except ValueError:
+                                pass
+            except Exception as e:
+                _LOGGER.error("Error updating PDU sensor data: %s", e)
 
             # Mark as available since we could communicate
             self._available = True
@@ -1445,3 +1522,63 @@ class RacklinkController:
         # Save the buffer for future reads
         self._buffer = buffer
         return buffer
+
+    async def cycle_outlet(self, outlet_num: int) -> bool:
+        """Cycle power for a specific outlet."""
+        if not self._connected:
+            _LOGGER.warning("Not connected, cannot cycle outlet %d", outlet_num)
+            return False
+
+        try:
+            _LOGGER.info("Cycling power for outlet %d", outlet_num)
+
+            # First turn the outlet off
+            off_command = f"power outlets {outlet_num} off /y"
+            await self.send_command(off_command)
+
+            # Wait 5 seconds
+            await asyncio.sleep(5)
+
+            # Then turn it back on
+            on_command = f"power outlets {outlet_num} on /y"
+            await self.send_command(on_command)
+
+            # Update internal state
+            self._outlet_states[outlet_num] = True
+
+            return True
+        except Exception as e:
+            _LOGGER.error("Error cycling outlet %d: %s", outlet_num, e)
+            return False
+
+    async def cycle_all_outlets(self) -> bool:
+        """Cycle power for all outlets."""
+        if not self._connected:
+            _LOGGER.warning("Not connected, cannot cycle all outlets")
+            return False
+
+        try:
+            capabilities = self.get_model_capabilities()
+            outlet_count = capabilities.get("num_outlets", 8)
+
+            _LOGGER.info("Cycling power for all %d outlets", outlet_count)
+
+            # Turn all outlets off
+            off_command = "power outlets all off /y"
+            await self.send_command(off_command)
+
+            # Wait 5 seconds
+            await asyncio.sleep(5)
+
+            # Turn all outlets back on
+            on_command = "power outlets all on /y"
+            await self.send_command(on_command)
+
+            # Update internal states
+            for i in range(1, outlet_count + 1):
+                self._outlet_states[i] = True
+
+            return True
+        except Exception as e:
+            _LOGGER.error("Error cycling all outlets: %s", e)
+            return False
