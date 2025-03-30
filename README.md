@@ -2,6 +2,8 @@
 
 This integration allows Home Assistant to control and monitor Middle Atlantic RackLink PDUs (Power Distribution Units).
 
+**Important Note:** This integration works exclusively with the Premium+ Series PDUs. Standard Premium Series or other model lines are not supported.
+
 ## Features
 
 - 🔌 Control outlets (turn on, turn off, cycle power)
@@ -13,7 +15,7 @@ This integration allows Home Assistant to control and monitor Middle Atlantic Ra
 
 ## Supported Devices
 
-This integration supports the following Middle Atlantic RackLink PDU models:
+This integration supports the following Middle Atlantic RackLink Premium+ PDU models:
 
 - RLNK-P415
 - RLNK-P420
