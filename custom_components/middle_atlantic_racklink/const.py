@@ -8,8 +8,7 @@ from homeassistant.const import Platform
 DOMAIN = "middle_atlantic_racklink"
 
 # Default values
-DEFAULT_PORT = 6000  # Changed from 23 to 6000 to match the middleware-atlantic.lua
-DEFAULT_USERNAME = "admin"  # Default username from middleware-atlantic.lua
+DEFAULT_PORT = 23
 DEFAULT_NAME = "Middle Atlantic Racklink"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 DEFAULT_TIMEOUT = 20
@@ -26,6 +25,7 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_DEVICE_ID = "device_id"
 CONF_MODEL = "model"
 CONF_PDU_NAME = "pdu_name"
+CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 
 # Supported models

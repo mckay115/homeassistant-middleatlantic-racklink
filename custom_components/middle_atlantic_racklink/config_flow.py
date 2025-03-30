@@ -19,114 +19,139 @@ from homeassistant.helpers.selector import TextSelector
 from .const import (
     CONF_MODEL,
     CONF_PDU_NAME,
-    CONF_SCAN_INTERVAL,
     DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_USERNAME,
     DOMAIN,
     MODEL_DESCRIPTIONS,
     SUPPORTED_MODELS,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
 )
 from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 15  # Timeout in seconds for connection validation
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_HOST): str,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
-        vol.Optional(CONF_PASSWORD): str,
-        vol.Optional(CONF_PDU_NAME): str,
-    }
-)
+DEFAULT_USERNAME = "admin"
 
 
-async def validate_input(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate the user input allows us to connect."""
+async def validate_connection(
+    hass: HomeAssistant, data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Validate the connection by attempting to connect to the device."""
     host = data[CONF_HOST]
     port = data.get(CONF_PORT, DEFAULT_PORT)
-    username = data.get(CONF_USERNAME)
-    password = data.get(CONF_PASSWORD)
-    pdu_name = data.get(CONF_PDU_NAME)
+    username = data.get(CONF_USERNAME, DEFAULT_USERNAME)
+    password = data[CONF_PASSWORD]
 
     controller = RacklinkController(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        pdu_name=pdu_name,
+        host=host, port=port, username=username, password=password
     )
 
     try:
-        # Try to connect to the device
         if not await controller.connect():
-            raise CannotConnect("Failed to connect to the PDU")
+            raise CannotConnect("Failed to connect to device")
 
-        # Get device information
-        info = {
-            "pdu_name": controller.pdu_name,
-            "pdu_model": controller.pdu_model,
-            "pdu_serial": controller.pdu_serial,
-            "pdu_firmware": controller.pdu_firmware,
-            "mac_address": controller.mac_address,
+        # Try to get device info
+        await controller.update()
+
+        if not controller.pdu_serial:
+            raise InvalidAuth("Failed to retrieve device information")
+
+        # Return device info for title
+        return {
+            "title": controller.pdu_name or f"RackLink PDU ({host})",
+            "serial": controller.pdu_serial,
         }
-
-        # Disconnect before returning
+    except Exception as err:
+        _LOGGER.error("Error connecting to device: %s", err)
+        raise CannotConnect(f"Connection error: {err}")
+    finally:
         await controller.disconnect()
 
-        return info
 
-    except asyncio.TimeoutError:
-        raise CannotConnect("Connection timeout")
-    except Exception as err:
-        _LOGGER.exception("Unexpected error validating connection: %s", err)
-        raise CannotConnect(f"Unexpected error: {err}")
-
-
-class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Middle Atlantic RackLink."""
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: Dict[str, Any] = None) -> FlowResult:
+    async def async_step_user(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
         if user_input is not None:
             try:
-                info = await validate_input(self.hass, user_input)
+                device_info = await validate_connection(self.hass, user_input)
 
-                # Use serial number as the unique ID if available
-                if info.get("pdu_serial"):
-                    await self.async_set_unique_id(info["pdu_serial"])
-                    self._abort_if_unique_id_configured()
-                else:
-                    # If no serial, use host/port combination
-                    unique_id = f"{user_input[CONF_HOST]}:{user_input.get(CONF_PORT, DEFAULT_PORT)}"
-                    await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
+                # Check if already configured
+                await self.async_set_unique_id(device_info["serial"])
+                self._abort_if_unique_id_configured()
 
-                # Create the config entry
-                title = (
-                    info.get("pdu_name")
-                    or user_input.get(CONF_PDU_NAME)
-                    or f"RackLink PDU ({user_input[CONF_HOST]})"
+                return self.async_create_entry(
+                    title=device_info["title"],
+                    data=user_input,
                 )
-                return self.async_create_entry(title=title, data=user_input)
-
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:
+            except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        # Show form
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST): str,
+                vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
+                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
         )
+
+        return self.async_show_form(
+            step_id="user", data_schema=data_schema, errors=errors
+        )
+
+    async def async_step_import(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle import from configuration.yaml."""
+        return await self.async_step_user(user_input)
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "OptionsFlowHandler":
+        """Return the options flow."""
+        return OptionsFlowHandler(config_entry)
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for Middle Atlantic RackLink."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = {
+            vol.Optional(
+                CONF_SCAN_INTERVAL,
+                default=self.config_entry.options.get(
+                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                ),
+            ): int,
+        }
+
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(options))
 
 
 class CannotConnect(HomeAssistantError):
@@ -135,7 +160,3 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
-
-
-# Add ConfigFlow as an alias for MiddleAtlanticRacklinkConfigFlow for backward compatibility with tests
-ConfigFlow = MiddleAtlanticRacklinkConfigFlow

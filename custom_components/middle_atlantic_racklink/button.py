@@ -1,18 +1,17 @@
-"""Button platform for Middle Atlantic Racklink."""
+"""Button platform for the Middle Atlantic RackLink integration."""
 
-import asyncio
+from __future__ import annotations
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller.racklink_controller import RacklinkController
+from . import DOMAIN
 from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,137 +22,157 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Middle Atlantic Racklink buttons from config entry."""
-    controller = hass.data[DOMAIN][config_entry.entry_id]
+    """Set up the Middle Atlantic RackLink buttons from config entry."""
+    coordinator: RacklinkCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    # Add buttons for all on/off control
-    buttons = [
-        RacklinkAllOnButton(controller),
-        RacklinkAllOffButton(controller),
-        RacklinkCycleAllButton(controller),
-    ]
+    entities = []
 
-    # Add individual cycle buttons for each outlet
-    capabilities = controller.get_model_capabilities()
-    outlet_count = capabilities.get("num_outlets", 8)  # Default to 8 if not determined
+    # Add outlet cycle buttons
+    for outlet_num in coordinator.outlet_data:
+        entities.append(RacklinkOutletCycleButton(coordinator, outlet_num))
 
-    for outlet in range(1, outlet_count + 1):
-        buttons.append(RacklinkOutletCycleButton(controller, outlet))
+    # Add system-wide buttons
+    entities.extend(
+        [
+            RacklinkAllOutletsCycleButton(coordinator),
+            RacklinkStartLoadSheddingButton(coordinator),
+            RacklinkStopLoadSheddingButton(coordinator),
+            RacklinkStartSequenceButton(coordinator),
+            RacklinkStopSequenceButton(coordinator),
+        ]
+    )
 
-    async_add_entities(buttons)
+    async_add_entities(entities)
 
 
-class RacklinkButtonBase(ButtonEntity):
-    """Base class for Racklink button entities."""
+class RacklinkButtonBase(CoordinatorEntity, ButtonEntity):
+    """Base class for Middle Atlantic RackLink button entities."""
 
     def __init__(
-        self, controller: RacklinkController, name: str, unique_id_suffix: str
+        self,
+        coordinator: RacklinkCoordinator,
+        key: str,
+        name: str,
+        press_action: Callable,
+        entity_category: str = None,
     ) -> None:
         """Initialize the button."""
-        self._controller = controller
+        super().__init__(coordinator)
+        self._key = key
+        self._press_action = press_action
+
+        # Set entity attributes
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{key}"
         self._attr_name = name
-        self._attr_unique_id = f"{controller.pdu_serial}_{unique_id_suffix}"
-        self._attr_available = False
+        self._attr_entity_category = entity_category
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device info."""
-        device_info = {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
-            "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
-        }
-
-        # Add MAC address as a connection info if available
-        if self._controller.mac_address:
-            device_info["connections"] = {("mac", self._controller.mac_address)}
-
-        return device_info
+        """Return device information."""
+        return self.coordinator.device_info
 
     @property
     def available(self) -> bool:
-        """Return if button is available."""
-        return self._controller.connected and self._controller.available
-
-    async def async_update(self) -> None:
-        """Update availability."""
-        self._attr_available = self._controller.connected and self._controller.available
-
-
-class RacklinkAllOnButton(RacklinkButtonBase):
-    """Button to turn all outlets on."""
-
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the all on button."""
-        super().__init__(controller, "All Outlets On", "all_on_button")
+        """Return True if entity is available."""
+        return self.coordinator.available
 
     async def async_press(self) -> None:
-        """Handle the button press. Turn all outlets on."""
-        try:
-            _LOGGER.debug("Turning on all outlets")
-            await asyncio.wait_for(self._controller.set_all_outlets(True), timeout=10)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout turning on all outlets")
-        except Exception as err:
-            _LOGGER.error("Error turning on all outlets: %s", err)
-
-
-class RacklinkAllOffButton(RacklinkButtonBase):
-    """Button to turn all outlets off."""
-
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the all off button."""
-        super().__init__(controller, "All Outlets Off", "all_off_button")
-
-    async def async_press(self) -> None:
-        """Handle the button press. Turn all outlets off."""
-        try:
-            _LOGGER.debug("Turning off all outlets")
-            await asyncio.wait_for(self._controller.set_all_outlets(False), timeout=10)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout turning off all outlets")
-        except Exception as err:
-            _LOGGER.error("Error turning off all outlets: %s", err)
-
-
-class RacklinkCycleAllButton(RacklinkButtonBase):
-    """Button to cycle all outlets."""
-
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the cycle all button."""
-        super().__init__(controller, "Cycle All Outlets", "cycle_all_button")
-
-    async def async_press(self) -> None:
-        """Handle the button press. Cycle all outlets."""
-        try:
-            _LOGGER.debug("Cycling all outlets")
-            await asyncio.wait_for(self._controller.cycle_all_outlets(), timeout=10)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout cycling all outlets")
-        except Exception as err:
-            _LOGGER.error("Error cycling all outlets: %s", err)
+        """Press the button."""
+        await self._press_action()
 
 
 class RacklinkOutletCycleButton(RacklinkButtonBase):
-    """Button to cycle a specific outlet."""
+    """Button to cycle power for a specific outlet."""
 
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
+    def __init__(self, coordinator: RacklinkCoordinator, outlet_number: int) -> None:
         """Initialize the outlet cycle button."""
-        super().__init__(
-            controller, f"Cycle Outlet {outlet}", f"cycle_outlet_{outlet}_button"
-        )
-        self._outlet = outlet
 
-    async def async_press(self) -> None:
-        """Handle the button press. Cycle the outlet."""
-        try:
-            _LOGGER.debug("Cycling outlet %d", self._outlet)
-            await asyncio.wait_for(
-                self._controller.cycle_outlet(self._outlet), timeout=10
-            )
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout cycling outlet %d", self._outlet)
-        except Exception as err:
-            _LOGGER.error("Error cycling outlet %d: %s", self._outlet, err)
+        async def cycle_this_outlet():
+            await coordinator.cycle_outlet(outlet_number)
+
+        super().__init__(
+            coordinator=coordinator,
+            key=f"outlet_{outlet_number}_cycle",
+            name=f"Cycle Outlet {outlet_number}",
+            press_action=cycle_this_outlet,
+        )
+        self._outlet_number = outlet_number
+
+    @property
+    def name(self) -> str:
+        """Return the name of the button."""
+        outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
+        outlet_name = outlet_data.get("name")
+        if outlet_name and outlet_name != f"Outlet {self._outlet_number}":
+            return f"Cycle {outlet_name}"
+        return self._attr_name
+
+
+class RacklinkAllOutletsCycleButton(RacklinkButtonBase):
+    """Button to cycle power for all outlets."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the all outlets cycle button."""
+        super().__init__(
+            coordinator=coordinator,
+            key="all_outlets_cycle",
+            name="Cycle All Outlets",
+            press_action=coordinator.cycle_all_outlets,
+            entity_category=EntityCategory.CONFIG,
+        )
+
+
+class RacklinkStartLoadSheddingButton(RacklinkButtonBase):
+    """Button to start load shedding."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the start load shedding button."""
+        super().__init__(
+            coordinator=coordinator,
+            key="start_load_shedding",
+            name="Start Load Shedding",
+            press_action=coordinator.start_load_shedding,
+            entity_category=EntityCategory.CONFIG,
+        )
+
+
+class RacklinkStopLoadSheddingButton(RacklinkButtonBase):
+    """Button to stop load shedding."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the stop load shedding button."""
+        super().__init__(
+            coordinator=coordinator,
+            key="stop_load_shedding",
+            name="Stop Load Shedding",
+            press_action=coordinator.stop_load_shedding,
+            entity_category=EntityCategory.CONFIG,
+        )
+
+
+class RacklinkStartSequenceButton(RacklinkButtonBase):
+    """Button to start the outlet sequence."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the start sequence button."""
+        super().__init__(
+            coordinator=coordinator,
+            key="start_sequence",
+            name="Start Sequence",
+            press_action=coordinator.start_sequence,
+            entity_category=EntityCategory.CONFIG,
+        )
+
+
+class RacklinkStopSequenceButton(RacklinkButtonBase):
+    """Button to stop the outlet sequence."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the stop sequence button."""
+        super().__init__(
+            coordinator=coordinator,
+            key="stop_sequence",
+            name="Stop Sequence",
+            press_action=coordinator.stop_sequence,
+            entity_category=EntityCategory.CONFIG,
+        )

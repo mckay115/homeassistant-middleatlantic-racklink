@@ -1,17 +1,17 @@
-"""Main controller class for Middle Atlantic RackLink integration."""
+"""Controller for Middle Atlantic RackLink PDUs."""
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+import re
+from typing import Dict, Optional, Any
 
-from .base import BaseController
-from .config import ConfigMixin
+from ..socket_connection import SocketConnection
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class RacklinkController(BaseController, ConfigMixin):
-    """Controller for Middle Atlantic RackLink PDU."""
+class RacklinkController:
+    """Controller class for Middle Atlantic RackLink PDUs."""
 
     def __init__(
         self,
@@ -19,181 +19,290 @@ class RacklinkController(BaseController, ConfigMixin):
         port: int,
         username: str,
         password: str,
-        pdu_name: str = None,
-        connection_timeout: int = None,
-        command_timeout: int = None,
+        timeout: int = 20,
     ) -> None:
-        """Initialize the controller with all required information."""
-        # Initialize the base controller
-        BaseController.__init__(
-            self,
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            pdu_name=pdu_name,
-            connection_timeout=connection_timeout,
-            command_timeout=command_timeout,
-        )
+        """Initialize the controller.
 
-        self._background_task = None
-        self._shutdown = False
+        Args:
+            host: Hostname or IP address of the device
+            port: Port number for the connection
+            username: Username for authentication
+            password: Password for authentication
+            timeout: Timeout for socket operations in seconds
+        """
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.timeout = timeout
+        self.socket = SocketConnection(host, port, username, password, timeout)
 
-        _LOGGER.info(
-            "Initialized RackLink controller for %s:%s (%s)",
-            host,
-            port,
-            pdu_name or "Unnamed PDU",
-        )
+        # Device information
+        self.pdu_name: str = ""
+        self.pdu_model: str = ""
+        self.pdu_firmware: str = ""
+        self.pdu_serial: str = ""
+        self.mac_address: str = ""
 
-    async def start_background_connection(self) -> None:
-        """Start background connection task."""
-        if self._background_task is None or self._background_task.done():
-            self._shutdown = False
-            self._background_task = asyncio.create_task(
-                self._background_connection_loop()
+        # System power data
+        self.rms_voltage: float = 0.0
+        self.rms_current: float = 0.0
+        self.active_power: float = 0.0
+        self.active_energy: float = 0.0
+        self.line_frequency: float = 0.0
+
+        # Outlet data
+        self.outlet_states: Dict[int, bool] = {}
+        self.outlet_names: Dict[int, str] = {}
+
+        # Status flags
+        self.connected: bool = False
+        self.available: bool = False
+        self.load_shedding_active: bool = False
+        self.sequence_active: bool = False
+
+    async def connect(self) -> bool:
+        """Connect to the PDU."""
+        try:
+            _LOGGER.debug("Connecting to RackLink PDU at %s:%d", self.host, self.port)
+            self.connected = await self.socket.connect()
+            if self.connected:
+                self.available = True
+                _LOGGER.info("Successfully connected to RackLink PDU")
+            else:
+                _LOGGER.error("Failed to connect to RackLink PDU")
+                self.available = False
+            return self.connected
+        except Exception as err:
+            _LOGGER.error("Error connecting to RackLink PDU: %s", err)
+            self.connected = False
+            self.available = False
+            return False
+
+    async def disconnect(self) -> None:
+        """Disconnect from the PDU."""
+        await self.socket.disconnect()
+        self.connected = False
+        self.available = False
+
+    async def update(self) -> bool:
+        """Update PDU data."""
+        try:
+            if not self.connected:
+                if not await self.connect():
+                    return False
+
+            # Get PDU details
+            await self._update_pdu_details()
+
+            # Get outlet states
+            await self._update_outlet_states()
+
+            # Get system status
+            await self._update_system_status()
+
+            self.available = True
+            return True
+        except Exception as err:
+            _LOGGER.error("Error updating PDU data: %s", err)
+            self.available = False
+            return False
+
+    async def _update_pdu_details(self) -> None:
+        """Update PDU details."""
+        try:
+            response = await self.socket.send_command("show pdu details")
+
+            # Parse PDU model
+            model_match = re.search(r"Model:\s*(.+?)(?:\r|\n)", response)
+            if model_match:
+                self.pdu_model = model_match.group(1).strip()
+
+            # Parse firmware version
+            fw_match = re.search(r"Firmware Version:\s*(.+?)(?:\r|\n)", response)
+            if fw_match:
+                self.pdu_firmware = fw_match.group(1).strip()
+
+            # Parse serial number
+            sn_match = re.search(r"Serial Number:\s*(.+?)(?:\r|\n)", response)
+            if sn_match:
+                self.pdu_serial = sn_match.group(1).strip()
+
+            # Parse PDU name
+            name_match = re.search(r"Name:\s*'(.+?)'", response)
+            if name_match:
+                self.pdu_name = name_match.group(1)
+
+            # Get MAC address
+            network_response = await self.socket.send_command(
+                "show network interface eth1"
             )
-            _LOGGER.debug("Started background connection task")
+            mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n)", network_response)
+            if mac_match:
+                self.mac_address = mac_match.group(1).strip()
 
-    async def shutdown(self) -> None:
-        """Shutdown the controller and all background tasks."""
-        self._shutdown = True
-        if self._background_task and not self._background_task.done():
-            try:
-                self._background_task.cancel()
-                await self._background_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as err:
-                _LOGGER.error("Error cancelling background task: %s", err)
+        except Exception as err:
+            _LOGGER.error("Error updating PDU details: %s", err)
+            raise
 
-        await self.disconnect()
-        _LOGGER.debug("Controller shutdown complete")
+    async def _update_outlet_states(self) -> None:
+        """Update outlet states."""
+        try:
+            response = await self.socket.send_command("show outlets all")
 
-    async def _background_connection_loop(self) -> None:
-        """Background task that maintains connection to the PDU."""
-        retry_delay = 10  # Start with 10 seconds
-        max_retry_delay = 300  # Cap at 5 minutes
+            # Find all outlets and their states
+            outlet_pattern = r"Outlet (\d+):[^\n]*\n\s+(\w+)"
+            matches = re.findall(outlet_pattern, response)
 
-        while not self._shutdown:
-            try:
-                if not self.connected:
-                    _LOGGER.debug("Attempting to connect in background task")
-                    if await self.connect():
-                        _LOGGER.info("Successfully connected to %s", self.host)
-                        retry_delay = 10  # Reset delay on successful connection
-                    else:
-                        # Increase retry delay with exponential backoff
-                        retry_delay = min(retry_delay * 1.5, max_retry_delay)
-                        _LOGGER.debug(
-                            "Connection failed, retrying in %d seconds", retry_delay
-                        )
+            # Update outlets dictionary
+            for match in matches:
+                outlet_num = int(match[0])
+                state = match[1].lower() == "on"
+                self.outlet_states[outlet_num] = state
 
-                # Wait before checking connection again
-                await asyncio.sleep(retry_delay)
+                # Extract the outlet name while we're at it
+                name_match = re.search(
+                    f"Outlet {outlet_num}: (.*?)$", response, re.MULTILINE
+                )
+                if name_match:
+                    self.outlet_names[outlet_num] = name_match.group(1).strip()
+                else:
+                    self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
 
-            except asyncio.CancelledError:
-                _LOGGER.debug("Background connection task cancelled")
-                break
-            except Exception as err:
-                _LOGGER.error("Error in background connection task: %s", err)
-                # Wait before trying again after error
-                await asyncio.sleep(retry_delay)
-                # Increase retry delay with exponential backoff
-                retry_delay = min(retry_delay * 1.5, max_retry_delay)
+        except Exception as err:
+            _LOGGER.error("Error updating outlet states: %s", err)
+            raise
 
-        _LOGGER.debug("Background connection task ended")
+    async def _update_system_status(self) -> None:
+        """Update system status including power data."""
+        try:
+            # Get inlet details
+            response = await self.socket.send_command("show inlets all details")
 
-    async def async_turn_outlet_on(self, outlet: int) -> bool:
-        """Turn on an outlet. Returns True if successful."""
-        if not self.connected:
-            _LOGGER.warning("Cannot turn on outlet %d: not connected", outlet)
+            # Parse voltage
+            voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
+            if voltage_match:
+                self.rms_voltage = float(voltage_match.group(1))
+
+            # Parse current
+            current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
+            if current_match:
+                self.rms_current = float(current_match.group(1))
+
+            # Parse power
+            power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
+            if power_match:
+                self.active_power = float(power_match.group(1))
+
+            # Parse energy
+            energy_match = re.search(r"Active Energy:\s*([\d.]+)\s*Wh", response)
+            if energy_match:
+                self.active_energy = float(energy_match.group(1))
+
+            # Parse frequency
+            freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
+            if freq_match:
+                self.line_frequency = float(freq_match.group(1))
+
+            # Check load shedding status
+            load_shed_response = await self.socket.send_command("show loadshed")
+            self.load_shedding_active = "enabled" in load_shed_response.lower()
+
+            # Check sequence status
+            sequence_response = await self.socket.send_command("show outlet sequence")
+            self.sequence_active = "running" in sequence_response.lower()
+
+        except Exception as err:
+            _LOGGER.error("Error updating system status: %s", err)
+            raise
+
+    async def turn_outlet_on(self, outlet: int) -> bool:
+        """Turn an outlet on."""
+        try:
+            cmd = f"power outlets {outlet} on /y"
+            await self.socket.send_command(cmd)
+            self.outlet_states[outlet] = True
+            return True
+        except Exception as err:
+            _LOGGER.error("Error turning outlet %d on: %s", outlet, err)
             return False
 
+    async def turn_outlet_off(self, outlet: int) -> bool:
+        """Turn an outlet off."""
         try:
-            # Try different command formats based on the device type
-            commands_to_try = [
-                f"on {outlet}",  # Simple format
-                f"outlet {outlet} on",  # Newer format
-                f"set outlet {outlet} state on",  # Full syntax
-            ]
+            cmd = f"power outlets {outlet} off /y"
+            await self.socket.send_command(cmd)
+            self.outlet_states[outlet] = False
+            return True
+        except Exception as err:
+            _LOGGER.error("Error turning outlet %d off: %s", outlet, err)
+            return False
 
-            success = False
-            for cmd in commands_to_try:
-                try:
-                    _LOGGER.debug("Turning on outlet %d with command: %s", outlet, cmd)
-                    response = await self.queue_command(cmd)
+    async def cycle_outlet(self, outlet: int) -> bool:
+        """Cycle an outlet."""
+        try:
+            cmd = f"power outlets {outlet} cycle /y"
+            await self.socket.send_command(cmd)
+            # The outlet will be on after cycling
+            self.outlet_states[outlet] = True
+            return True
+        except Exception as err:
+            _LOGGER.error("Error cycling outlet %d: %s", outlet, err)
+            return False
 
-                    # Check if command was successful
-                    if "success" in response.lower() or "on" in response.lower():
-                        success = True
-                        break
-
-                except Exception as err:
-                    _LOGGER.debug(
-                        "Error turning on outlet %d with command %s: %s",
-                        outlet,
-                        cmd,
-                        err,
-                    )
-                    continue
-
-            if success:
-                # Update the outlet state in our local cache
+    async def cycle_all_outlets(self) -> bool:
+        """Cycle all outlets."""
+        try:
+            cmd = "power outlets all cycle /y"
+            await self.socket.send_command(cmd)
+            # Update all outlets to on
+            for outlet in self.outlet_states:
                 self.outlet_states[outlet] = True
-                _LOGGER.info("Successfully turned on outlet %d", outlet)
-                return True
-            else:
-                _LOGGER.warning("Failed to turn on outlet %d with any command", outlet)
-                return False
-
+            return True
         except Exception as err:
-            _LOGGER.error("Error turning on outlet %d: %s", outlet, err)
+            _LOGGER.error("Error cycling all outlets: %s", err)
             return False
 
-    async def async_turn_outlet_off(self, outlet: int) -> bool:
-        """Turn off an outlet. Returns True if successful."""
-        if not self.connected:
-            _LOGGER.warning("Cannot turn off outlet %d: not connected", outlet)
-            return False
-
+    async def start_load_shedding(self) -> bool:
+        """Start load shedding."""
         try:
-            # Try different command formats based on the device type
-            commands_to_try = [
-                f"off {outlet}",  # Simple format
-                f"outlet {outlet} off",  # Newer format
-                f"set outlet {outlet} state off",  # Full syntax
-            ]
-
-            success = False
-            for cmd in commands_to_try:
-                try:
-                    _LOGGER.debug("Turning off outlet %d with command: %s", outlet, cmd)
-                    response = await self.queue_command(cmd)
-
-                    # Check if command was successful
-                    if "success" in response.lower() or "off" in response.lower():
-                        success = True
-                        break
-
-                except Exception as err:
-                    _LOGGER.debug(
-                        "Error turning off outlet %d with command %s: %s",
-                        outlet,
-                        cmd,
-                        err,
-                    )
-                    continue
-
-            if success:
-                # Update the outlet state in our local cache
-                self.outlet_states[outlet] = False
-                _LOGGER.info("Successfully turned off outlet %d", outlet)
-                return True
-            else:
-                _LOGGER.warning("Failed to turn off outlet %d with any command", outlet)
-                return False
-
+            cmd = "config\nloadshed enable\napply"
+            await self.socket.send_command(cmd)
+            self.load_shedding_active = True
+            return True
         except Exception as err:
-            _LOGGER.error("Error turning off outlet %d: %s", outlet, err)
+            _LOGGER.error("Error starting load shedding: %s", err)
+            return False
+
+    async def stop_load_shedding(self) -> bool:
+        """Stop load shedding."""
+        try:
+            cmd = "config\nloadshed disable\napply"
+            await self.socket.send_command(cmd)
+            self.load_shedding_active = False
+            return True
+        except Exception as err:
+            _LOGGER.error("Error stopping load shedding: %s", err)
+            return False
+
+    async def start_sequence(self) -> bool:
+        """Start the outlet sequence."""
+        try:
+            cmd = "outlet sequence start /y"
+            await self.socket.send_command(cmd)
+            self.sequence_active = True
+            return True
+        except Exception as err:
+            _LOGGER.error("Error starting sequence: %s", err)
+            return False
+
+    async def stop_sequence(self) -> bool:
+        """Stop the outlet sequence."""
+        try:
+            cmd = "outlet sequence stop /y"
+            await self.socket.send_command(cmd)
+            self.sequence_active = False
+            return True
+        except Exception as err:
+            _LOGGER.error("Error stopping sequence: %s", err)
             return False

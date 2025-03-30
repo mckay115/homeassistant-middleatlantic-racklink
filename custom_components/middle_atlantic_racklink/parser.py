@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,35 +14,23 @@ def parse_device_info(response: str) -> Dict[str, Any]:
 
     result = {}
 
-    # Log full response for debugging
-    _LOGGER.debug("Response for device info parsing: %s", response[:200])
-
-    # Parse PDU name - from multiple possible formats:
+    # Parse PDU name - from two possible formats:
     # 1. PDU 'Name'
     # 2. Name: 'Name'
-    # 3. PDU Name: Name
     name_match = re.search(
-        r"PDU\s+'([^']+)'|Name:\s+'([^']+)'|PDU Name:\s*(.+?)(?:\r|\n)",
+        r"PDU\s+'([^']+)'|Name:\s+'([^']+)'",
         response,
         re.IGNORECASE,
     )
     if name_match:
-        result["name"] = (
-            name_match.group(1) or name_match.group(2) or name_match.group(3)
-        ).strip()
+        result["name"] = name_match.group(1) or name_match.group(2)
         _LOGGER.debug("Found PDU name: %s", result["name"])
-    else:
-        # Try alternate format from the lua file: "PDU Name: Name"
-        alt_name_match = re.search(r"'(.+)'", response, re.IGNORECASE)
-        if alt_name_match:
-            result["name"] = alt_name_match.group(1).strip()
-            _LOGGER.debug("Found PDU name (alt format): %s", result["name"])
 
-    # Parse model - try format from lua file first
+    # Parse model
     model_match = re.search(
-        r"Model:\s*(.+?)(?:\r|\n|Firmware)",
+        r"Model:\s*(.+?)(?:\r|\n)",
         response,
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
     if model_match:
         result["model"] = model_match.group(1).strip()
@@ -50,9 +38,9 @@ def parse_device_info(response: str) -> Dict[str, Any]:
 
     # Parse serial number
     sn_match = re.search(
-        r"Serial Number:\s*(.+?)(?:\r|\n|Board)",
+        r"Serial Number:\s*(.+?)(?:\r|\n)",
         response,
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
     if sn_match:
         result["serial"] = sn_match.group(1).strip()
@@ -60,9 +48,9 @@ def parse_device_info(response: str) -> Dict[str, Any]:
 
     # Parse firmware version
     fw_match = re.search(
-        r"Firmware Version:\s*(.+?)(?:\r|\n|Serial)",
+        r"Firmware Version:\s*(.+?)(?:\r|\n)",
         response,
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
     if fw_match:
         result["firmware"] = fw_match.group(1).strip()
@@ -78,28 +66,24 @@ def parse_network_info(response: str) -> Dict[str, Any]:
 
     result = {}
 
-    # Log response for debugging
-    _LOGGER.debug("Response for network info parsing: %s", response[:200])
-
-    # Parse MAC address from different formats
+    # Parse MAC address
     mac_match = re.search(
-        r"MAC address:\s*(.+?)(?:\r|\n)|MAC addr(?:ess)?:\s*(.+?)(?:\r|\n)",
+        r"MAC address:\s*(.+?)(?:\r|\n)",
         response,
         re.IGNORECASE,
     )
     if mac_match:
-        result["mac_address"] = (mac_match.group(1) or mac_match.group(2)).strip()
+        result["mac_address"] = mac_match.group(1).strip()
         _LOGGER.debug("Found PDU MAC address: %s", result["mac_address"])
 
-    # Parse IP address from different formats
+    # Parse IP address
     ip_match = re.search(
-        r"IPv4 address:\s*(.+?)(?:\r|\n)|IP addr(?:ess)?:\s*(.+?)(?:\r|\n)",
+        r"IPv4 address:\s*(.+?)(?:\r|\n)",
         response,
         re.IGNORECASE,
     )
     if ip_match:
-        result["ip_address"] = (ip_match.group(1) or ip_match.group(2)).strip()
-        _LOGGER.debug("Found PDU IP address: %s", result["ip_address"])
+        result["ip_address"] = ip_match.group(1).strip()
 
     return result
 

@@ -29,7 +29,7 @@ jobs:
           isort --check-only --profile=black custom_components/middle_atlantic_racklink
       - name: Run pylint
         run: |
-          pylint --fail-under=8.0 custom_components/middle_atlantic_racklink
+          pylint custom_components/middle_atlantic_racklink
       - name: Run mypy
         run: |
           mypy custom_components/middle_atlantic_racklink

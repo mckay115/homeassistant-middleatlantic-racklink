@@ -2,7 +2,7 @@
 
 import logging
 from datetime import timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -31,7 +31,8 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         self.controller = controller
         self._data = {
             "outlets": {},
-            "sensors": {},
+            "system": {},
+            "status": {},
         }
 
     @property
@@ -44,7 +45,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         """Return device information."""
         return {
             "identifiers": {("middle_atlantic_racklink", self.controller.pdu_serial)},
-            "name": self.controller.pdu_name,
+            "name": self.controller.pdu_name or "RackLink PDU",
             "manufacturer": "Legrand - Middle Atlantic",
             "model": self.controller.pdu_model or "RackLink PDU",
             "sw_version": self.controller.pdu_firmware,
@@ -63,10 +64,17 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         return {}
 
     @property
-    def sensor_data(self) -> Dict[str, Any]:
-        """Return sensor data."""
-        if "sensors" in self.data:
-            return self.data["sensors"]
+    def system_data(self) -> Dict[str, Any]:
+        """Return system power data."""
+        if "system" in self.data:
+            return self.data["system"]
+        return {}
+
+    @property
+    def status_data(self) -> Dict[str, Any]:
+        """Return status information."""
+        if "status" in self.data:
+            return self.data["status"]
         return {}
 
     async def _async_update_data(self) -> Dict[str, Any]:
@@ -75,35 +83,19 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             # Check connection status and try to connect if needed
             if not self.controller.connected:
                 _LOGGER.debug("Coordinator: Controller not connected, connecting...")
-                try:
-                    if not await self.controller.connect():
-                        _LOGGER.error("Coordinator: Failed to connect to PDU")
-                        # Return empty data instead of raising an exception for the initial setup
-                        return self._get_empty_data_structure()
-                except Exception as connect_err:
-                    _LOGGER.error(
-                        "Coordinator: Error connecting to PDU: %s", connect_err
-                    )
-                    # Return empty data instead of raising an exception for the initial setup
-                    return self._get_empty_data_structure()
+                if not await self.controller.connect():
+                    _LOGGER.error("Coordinator: Failed to connect to PDU")
+                    raise UpdateFailed("Failed to connect to PDU")
 
             # Update the PDU data
             _LOGGER.debug("Coordinator: Updating PDU data")
-            try:
-                success = await self.controller.update()
-            except Exception as update_err:
-                _LOGGER.error("Coordinator: Error during update call: %s", update_err)
-                success = False
+            success = await self.controller.update()
 
             if not success:
                 _LOGGER.warning("Coordinator: Failed to update PDU data")
-                if (
-                    not self.data
-                ):  # If we don't have any data yet, return empty structure instead of failing
-                    return self._get_empty_data_structure()
-                return self.data  # Return existing data if we have it
+                raise UpdateFailed("Failed to update PDU data")
 
-            # Process the data for outlets
+            # Process outlet data
             outlets = {}
             for outlet_num, state in self.controller.outlet_states.items():
                 outlets[outlet_num] = {
@@ -111,21 +103,28 @@ class RacklinkCoordinator(DataUpdateCoordinator):
                     "name": self.controller.outlet_names.get(
                         outlet_num, f"Outlet {outlet_num}"
                     ),
-                    "power": self.controller.outlet_power.get(outlet_num),
-                    "current": self.controller.outlet_current.get(outlet_num),
-                    "voltage": self.controller.outlet_voltage.get(outlet_num),
-                    "energy": self.controller.outlet_energy.get(outlet_num),
-                    "power_factor": self.controller.outlet_power_factor.get(outlet_num),
-                    "frequency": self.controller.outlet_line_frequency.get(outlet_num),
                 }
 
-            # Process the data for sensors
-            sensors = self.controller.sensors.copy()
+            # Process system power data
+            system = {
+                "voltage": self.controller.rms_voltage,
+                "current": self.controller.rms_current,
+                "power": self.controller.active_power,
+                "energy": self.controller.active_energy,
+                "frequency": self.controller.line_frequency,
+            }
+
+            # Process status information
+            status = {
+                "load_shedding_active": self.controller.load_shedding_active,
+                "sequence_active": self.controller.sequence_active,
+            }
 
             # Build the complete data structure
             data = {
                 "outlets": outlets,
-                "sensors": sensors,
+                "system": system,
+                "status": status,
             }
 
             self._data = data
@@ -133,42 +132,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             _LOGGER.error("Coordinator: Error during update: %s", err)
-
-            # Instead of raising an exception, return empty data for the initial setup
-            # or existing data if we already have some
-            if not self.data:
-                return self._get_empty_data_structure()
-            return self.data
-
-    def _get_empty_data_structure(self) -> Dict[str, Any]:
-        """Return an empty data structure suitable for initial setup."""
-        empty_data = {
-            "outlets": {},
-            "sensors": {},
-        }
-
-        # Create empty default outlets based on model
-        num_outlets = 8  # Default to 8 outlets
-        if self.controller.pdu_model:
-            model = self.controller.pdu_model.lower()
-            if "415" in model:
-                num_outlets = 4
-            elif "915" in model or "920" in model:
-                num_outlets = 9
-
-        for i in range(1, num_outlets + 1):
-            empty_data["outlets"][i] = {
-                "state": False,
-                "name": f"Outlet {i}",
-                "power": None,
-                "current": None,
-                "voltage": None,
-                "energy": None,
-                "power_factor": None,
-                "frequency": None,
-            }
-
-        return empty_data
+            raise UpdateFailed(f"Error communicating with PDU: {err}")
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""
@@ -194,14 +158,26 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         await self.controller.cycle_all_outlets()
         await self.async_refresh()
 
-    async def set_outlet_name(self, outlet: int, name: str) -> None:
-        """Set the name of an outlet and refresh data."""
-        _LOGGER.debug("Coordinator: Setting outlet %d name to '%s'", outlet, name)
-        await self.controller.set_outlet_name(outlet, name)
+    async def start_load_shedding(self) -> None:
+        """Start load shedding and refresh data."""
+        _LOGGER.debug("Coordinator: Starting load shedding")
+        await self.controller.start_load_shedding()
         await self.async_refresh()
 
-    async def set_pdu_name(self, name: str) -> None:
-        """Set the name of the PDU and refresh data."""
-        _LOGGER.debug("Coordinator: Setting PDU name to '%s'", name)
-        await self.controller.set_pdu_name(name)
+    async def stop_load_shedding(self) -> None:
+        """Stop load shedding and refresh data."""
+        _LOGGER.debug("Coordinator: Stopping load shedding")
+        await self.controller.stop_load_shedding()
+        await self.async_refresh()
+
+    async def start_sequence(self) -> None:
+        """Start the outlet sequence and refresh data."""
+        _LOGGER.debug("Coordinator: Starting outlet sequence")
+        await self.controller.start_sequence()
+        await self.async_refresh()
+
+    async def stop_sequence(self) -> None:
+        """Stop the outlet sequence and refresh data."""
+        _LOGGER.debug("Coordinator: Stopping outlet sequence")
+        await self.controller.stop_sequence()
         await self.async_refresh()
