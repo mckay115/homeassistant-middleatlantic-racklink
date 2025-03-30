@@ -46,7 +46,7 @@ async def async_setup_entry(
     # Add switches even if device is not yet available
     # They will show as unavailable until connection is established
     for outlet in range(1, outlet_count + 1):
-        switches.append(RacklinkOutlet(coordinator, config_entry, outlet))
+        switches.append(RacklinkOutlet(coordinator, controller, config_entry, outlet))
 
     async_add_entities(switches)
 
@@ -71,10 +71,10 @@ async def async_setup_entry(
 class RacklinkOutlet(CoordinatorEntity, SwitchEntity):
     """Representation of a Racklink outlet switch."""
 
-    def __init__(self, coordinator, config_entry, outlet):
+    def __init__(self, coordinator, controller, config_entry, outlet):
         """Initialize the outlet switch."""
         super().__init__(coordinator)
-        self._controller = coordinator.data["controller"]
+        self._controller = controller
         self._config_entry = config_entry
         self._outlet = outlet
         self._pending_update = False
