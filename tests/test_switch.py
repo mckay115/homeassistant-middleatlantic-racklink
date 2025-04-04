@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.components.switch import SwitchDeviceClass
 
-from custom_components.middle_atlantic_racklink.switch import RacklinkOutlet
+from custom_components.middle_atlantic_racklink.switch import (
+    RacklinkOutletSwitch as RacklinkOutlet,
+)
 
 
 @pytest.fixture
