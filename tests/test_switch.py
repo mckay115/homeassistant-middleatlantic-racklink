@@ -1,10 +1,10 @@
 """Test for the Middle Atlantic RackLink switch platform."""
 
-import pytest
+from custom_components.middle_atlantic_racklink.coordinator import RacklinkCoordinator
+from custom_components.middle_atlantic_racklink.switch import RacklinkOutletSwitch
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from custom_components.middle_atlantic_racklink.switch import RacklinkOutletSwitch
-from custom_components.middle_atlantic_racklink.coordinator import RacklinkCoordinator
+import pytest
 
 
 @pytest.fixture

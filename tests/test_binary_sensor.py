@@ -1,13 +1,12 @@
 """Test the binary sensors."""
 
-from unittest.mock import AsyncMock, patch
-
-import pytest
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-
 from custom_components.middle_atlantic_racklink.binary_sensor import (
     RacklinkSurgeProtection,
 )
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 @pytest.fixture

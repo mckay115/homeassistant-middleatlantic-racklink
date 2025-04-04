@@ -1,6 +1,6 @@
 """Controller for Middle Atlantic RackLink PDUs."""
 
-from ..socket_connection import SocketConnection, SocketConfig
+from ..socket_connection import SocketConfig, SocketConnection
 from typing import Any, Dict, Optional
 
 import asyncio

@@ -1,7 +1,7 @@
 """Parser for Middle Atlantic Racklink responses."""
 
-from typing import Any, Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import logging
 import re

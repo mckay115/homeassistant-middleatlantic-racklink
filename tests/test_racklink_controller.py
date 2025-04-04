@@ -1,9 +1,9 @@
 """Test the RackLink controller."""
 
-from unittest.mock import AsyncMock, patch, MagicMock
+from homeassistant.exceptions import ConfigEntryNotReady
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.exceptions import ConfigEntryNotReady
 
 # Skip controller import that would create import errors
 # from custom_components.middle_atlantic_racklink.racklink_controller import RacklinkController

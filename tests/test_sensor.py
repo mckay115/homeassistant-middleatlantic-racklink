@@ -1,18 +1,15 @@
 """Test for the Middle Atlantic RackLink sensor platform."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorStateClass,
-)
-
 from custom_components.middle_atlantic_racklink.sensor import (
     RacklinkCurrentSensor,
     RacklinkFrequencySensor,
     RacklinkPowerSensor,
     RacklinkVoltageSensor,
 )
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture

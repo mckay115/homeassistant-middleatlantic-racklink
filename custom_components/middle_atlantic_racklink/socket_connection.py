@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from typing import Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -1,16 +1,15 @@
 """Configuration for pytest."""
 
-import os
-import sys
-from pathlib import Path
-import tempfile
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import asyncio
+import os
+import pytest
+import sys
+import tempfile
 
 # Add the repository root to the Python path if needed
 ROOT_DIR = Path(__file__).parent.parent

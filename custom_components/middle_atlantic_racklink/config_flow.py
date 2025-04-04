@@ -2,17 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from typing import Any, Dict, Optional
-
-import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import callback, HomeAssistant
-from homeassistant.data_entry_flow import AbortFlow, FlowResult
-from homeassistant.exceptions import HomeAssistantError
-
 from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_PORT,
@@ -21,6 +10,16 @@ from .const import (
     DOMAIN,
 )
 from .controller.racklink_controller import RacklinkController
+from homeassistant import config_entries
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
+from homeassistant.exceptions import HomeAssistantError
+from typing import Any, Dict, Optional
+
+import asyncio
+import logging
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 30  # Timeout in seconds for connection validation
