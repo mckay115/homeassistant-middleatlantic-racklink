@@ -17,6 +17,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers import config_validation as cv
 
 from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
@@ -31,6 +32,8 @@ PLATFORMS = [
     Platform.SENSOR,
     Platform.BUTTON,
 ]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
