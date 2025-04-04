@@ -141,14 +141,11 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             try:
                 info = await validate_connection(self.hass, user_input)
 
-                # Set unique ID before checking for duplicates
-                mac_address = info["mac_address"]
-                if mac_address != "Unknown MAC":
-                    await self.async_set_unique_id(mac_address)
-                    try:
-                        self._abort_if_unique_id_configured()
-                    except AbortFlow as err:
-                        return self.async_abort(reason=err.reason)
+                # Set unique ID based on MAC address or serial number
+                unique_id = info.get("mac_address")
+                if unique_id and unique_id != "Unknown MAC":
+                    await self.async_set_unique_id(unique_id)
+                    self._abort_if_unique_id_configured(updates=user_input)
 
                 # Create a friendly title for the config entry
                 title = info["pdu_name"]
@@ -160,6 +157,8 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
+            except AbortFlow as err:
+                return self.async_abort(reason=err.reason)
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
