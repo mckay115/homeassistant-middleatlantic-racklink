@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from . import DOMAIN
-from .coordinator import RacklinkCoordinator
+import logging
+from dataclasses import dataclass
+from typing import Optional
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -21,11 +23,23 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from typing import Any, Optional
 
-import logging
+from . import DOMAIN
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class SensorConfig:
+    """Configuration for a sensor entity."""
+
+    key: str
+    name: str
+    device_class: Optional[str] = None
+    state_class: Optional[str] = None
+    unit_of_measurement: Optional[str] = None
+    entity_category: Optional[str] = None
 
 
 async def async_setup_entry(
@@ -66,24 +80,19 @@ class RacklinkSensorBase(CoordinatorEntity, SensorEntity):
     def __init__(
         self,
         coordinator: RacklinkCoordinator,
-        key: str,
-        name: str,
-        device_class: Optional[str] = None,
-        state_class: Optional[str] = None,
-        unit_of_measurement: Optional[str] = None,
-        entity_category: Optional[str] = None,
+        config: SensorConfig,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
-        self._key = key
+        self._key = config.key
 
         # Set entity attributes
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{key}"
-        self._attr_name = name
-        self._attr_device_class = device_class
-        self._attr_state_class = state_class
-        self._attr_native_unit_of_measurement = unit_of_measurement
-        self._attr_entity_category = entity_category
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{config.key}"
+        self._attr_name = config.name
+        self._attr_device_class = config.device_class
+        self._attr_state_class = config.state_class
+        self._attr_native_unit_of_measurement = config.unit_of_measurement
+        self._attr_entity_category = config.entity_category
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -103,11 +112,13 @@ class RacklinkVoltageSensor(RacklinkSensorBase):
         """Initialize the voltage sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="voltage",
-            name="Voltage",
-            device_class=SensorDeviceClass.VOLTAGE,
-            state_class=SensorStateClass.MEASUREMENT,
-            unit_of_measurement=UnitOfElectricPotential.VOLT,
+            config=SensorConfig(
+                key="voltage",
+                name="Voltage",
+                device_class=SensorDeviceClass.VOLTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfElectricPotential.VOLT,
+            ),
         )
 
     @property
@@ -123,11 +134,13 @@ class RacklinkCurrentSensor(RacklinkSensorBase):
         """Initialize the current sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="current",
-            name="Current",
-            device_class=SensorDeviceClass.CURRENT,
-            state_class=SensorStateClass.MEASUREMENT,
-            unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            config=SensorConfig(
+                key="current",
+                name="Current",
+                device_class=SensorDeviceClass.CURRENT,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            ),
         )
 
     @property
@@ -143,11 +156,13 @@ class RacklinkPowerSensor(RacklinkSensorBase):
         """Initialize the power sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="power",
-            name="Power",
-            device_class=SensorDeviceClass.POWER,
-            state_class=SensorStateClass.MEASUREMENT,
-            unit_of_measurement=UnitOfPower.WATT,
+            config=SensorConfig(
+                key="power",
+                name="Power",
+                device_class=SensorDeviceClass.POWER,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfPower.WATT,
+            ),
         )
 
     @property
@@ -163,11 +178,13 @@ class RacklinkEnergySensor(RacklinkSensorBase):
         """Initialize the energy sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="energy",
-            name="Energy",
-            device_class=SensorDeviceClass.ENERGY,
-            state_class=SensorStateClass.TOTAL_INCREASING,
-            unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+            config=SensorConfig(
+                key="energy",
+                name="Energy",
+                device_class=SensorDeviceClass.ENERGY,
+                state_class=SensorStateClass.TOTAL_INCREASING,
+                unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+            ),
         )
 
     @property
@@ -183,11 +200,13 @@ class RacklinkFrequencySensor(RacklinkSensorBase):
         """Initialize the frequency sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="frequency",
-            name="Line Frequency",
-            device_class=SensorDeviceClass.FREQUENCY,
-            state_class=SensorStateClass.MEASUREMENT,
-            unit_of_measurement=UnitOfFrequency.HERTZ,
+            config=SensorConfig(
+                key="frequency",
+                name="Line Frequency",
+                device_class=SensorDeviceClass.FREQUENCY,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfFrequency.HERTZ,
+            ),
         )
 
     @property
@@ -203,9 +222,11 @@ class RacklinkLoadSheddingSensor(RacklinkSensorBase):
         """Initialize the load shedding sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="load_shedding",
-            name="Load Shedding",
-            entity_category=EntityCategory.DIAGNOSTIC,
+            config=SensorConfig(
+                key="load_shedding",
+                name="Load Shedding",
+                entity_category=EntityCategory.DIAGNOSTIC,
+            ),
         )
 
     @property
@@ -225,9 +246,11 @@ class RacklinkSequenceSensor(RacklinkSensorBase):
         """Initialize the sequence sensor."""
         super().__init__(
             coordinator=coordinator,
-            key="sequence",
-            name="Sequence",
-            entity_category=EntityCategory.DIAGNOSTIC,
+            config=SensorConfig(
+                key="sequence",
+                name="Sequence",
+                entity_category=EntityCategory.DIAGNOSTIC,
+            ),
         )
 
     @property

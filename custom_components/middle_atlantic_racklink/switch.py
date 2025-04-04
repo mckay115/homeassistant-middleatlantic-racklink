@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from . import DOMAIN
-from .coordinator import RacklinkCoordinator
+import logging
+from typing import Any
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from typing import Any, Callable, Optional
 
-import logging
+from . import DOMAIN
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,3 +96,11 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the outlet off."""
         await self.coordinator.turn_outlet_off(self._outlet_number)
+
+    def turn_on(self, **kwargs: Any) -> None:
+        """Turn the outlet on (abstract method implementation)."""
+        raise NotImplementedError("Use async_turn_on instead")
+
+    def turn_off(self, **kwargs: Any) -> None:
+        """Turn the outlet off (abstract method implementation)."""
+        raise NotImplementedError("Use async_turn_off instead")

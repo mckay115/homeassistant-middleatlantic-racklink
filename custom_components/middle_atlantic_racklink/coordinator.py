@@ -1,14 +1,16 @@
 """Coordinator for the Middle Atlantic RackLink integration."""
 
-from .const import DOMAIN
-from .controller.racklink_controller import RacklinkController
+from __future__ import annotations
+
+import logging
 from datetime import timedelta
+from typing import Any, Dict
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from typing import Any, Dict, Optional
 
-import asyncio
-import logging
+from .const import DOMAIN
+from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -161,7 +163,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             _LOGGER.error("Coordinator: Error during update: %s", err)
-            raise UpdateFailed(f"Error communicating with PDU: {err}")
+            raise UpdateFailed(f"Error communicating with PDU: {err}") from err
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""
