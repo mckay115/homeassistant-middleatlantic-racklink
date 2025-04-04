@@ -226,209 +226,59 @@ class RacklinkController:
         try:
             _LOGGER.debug("Fetching outlet states")
 
-            # Try a new direct approach first - most basic command with outlet number
-            outlet_data = {}
-            for outlet_num in range(1, 9):  # Try outlets 1-8
-                direct_cmd = f"outlet {outlet_num}"
-                _LOGGER.info("Trying direct outlet command: %s", direct_cmd)
-                response = await self.socket.send_command(direct_cmd)
+            # Try different command variations to get outlet states
+            commands_to_try = [
+                "show outlets all details",
+                "show outlets",
+                "show outlet",
+                "show outlets all",
+            ]
 
-                if not ("ERROR:" in response):
-                    outlet_data[outlet_num] = {
-                        "state": "on" in response.lower() or "true" in response.lower(),
-                        "name": f"Outlet {outlet_num}",
-                    }
-                    _LOGGER.info(
-                        "Got outlet %d data: %s", outlet_num, outlet_data[outlet_num]
+            outlet_data = {}
+            for cmd in commands_to_try:
+                _LOGGER.debug("Trying command: %s", cmd)
+                response = await self.socket.send_command(cmd)
+
+                if not response or "ERROR:" in response:
+                    continue
+
+                # Try to parse outlet states from response
+                matches = re.finditer(
+                    r"Outlet\s+(\d+)(?:\s*-\s*([^:]*))?:\s*Power\s+state:\s*(on|off)",
+                    response,
+                    re.IGNORECASE | re.MULTILINE,
+                )
+
+                for match in matches:
+                    outlet_num = int(match.group(1))
+                    name = (
+                        match.group(2).strip()
+                        if match.group(2)
+                        else f"Outlet {outlet_num}"
+                    )
+                    state = match.group(3).lower() == "on"
+
+                    outlet_data[outlet_num] = {"state": state, "name": name}
+                    _LOGGER.debug(
+                        "Found outlet %d: state=%s, name=%s",
+                        outlet_num,
+                        "ON" if state else "OFF",
+                        name,
                     )
 
-            # If direct commands worked, use that data
+                if outlet_data:
+                    break
+
+            # If we found any outlet data, update our state
             if outlet_data:
-                _LOGGER.info("Using direct outlet commands data: %s", outlet_data)
+                _LOGGER.info("Found %d outlet states", len(outlet_data))
                 for outlet_num, data in outlet_data.items():
                     self.outlet_states[outlet_num] = data["state"]
                     self.outlet_names[outlet_num] = data["name"]
-                return
-
-            # Otherwise try standard approaches
-            # Try different command variations for outlets
-            response = await self.socket.send_command("show outlets")
-            if "^" in response or "label" in response:
-                _LOGGER.debug("First outlets command failed, trying alternative")
-                response = await self.socket.send_command("outlet status")
-
-                # If still failing, try more variations
-                if "^" in response or "label" in response:
-                    _LOGGER.debug(
-                        "Second outlets command failed, trying another alternative"
-                    )
-                    response = await self.socket.send_command("outlet all")
-
-                    if "^" in response or "label" in response:
-                        _LOGGER.debug(
-                            "Third outlets command failed, trying direct outlet numbers"
-                        )
-                        # Try individual outlets
-                        outlets_data = []
-                        for outlet_num in range(1, 9):  # Try outlets 1-8
-                            outlet_response = await self.socket.send_command(
-                                f"outlet {outlet_num}"
-                            )
-                            if not (
-                                "^" in outlet_response or "label" in outlet_response
-                            ):
-                                outlets_data.append(
-                                    f"Outlet {outlet_num}: {outlet_response}"
-                                )
-
-                        # Combine individual outlet responses
-                        if outlets_data:
-                            response = "\n".join(outlets_data)
-
-            _LOGGER.debug("Outlet states response (full): %r", response)
-
-            # Updated regex to match the actual format from the sample response
-            # Format: "Outlet X - NAME:\nPower state: On/Off"
-            outlet_pattern = (
-                r"Outlet (\d+)(?:\s*-\s*([^:]*))?\s*:\s*\n\s*Power state:\s*(\w+)"
-            )
-            matches = re.findall(outlet_pattern, response)
-
-            _LOGGER.debug("Outlet regex matches: %r", matches)
-
-            if not matches:
-                _LOGGER.warning(
-                    "No outlet information found in response. Raw response: %r",
-                    response,
-                )
-                # Try alternative patterns
-                alt_patterns = [
-                    # Original pattern (without the dash)
-                    r"Outlet (\d+)(?:\s*:\s*([^:]*))?\s*\n\s*Power state:\s*(\w+)",
-                    # Another alternative
-                    r"Outlet\s+(\d+)(?:\s*[:-]\s*([^:]*))?\s*:\s*\n\s*(?:Power\s*)?state:\s*(\w+)",
-                    # Very simple fallback pattern
-                    r"Outlet\s+(\d+).*?\n.*?state.*?(\w+)",
-                    # Try to match any mention of outlet with number
-                    r"[Oo]utlet\s*(\d+)[^\n]*?(?:on|off|ON|OFF)",
-                    # Generic outlet state matcher
-                    r"(\d+)[^\n]*?(ON|OFF|On|Off)",
-                ]
-
-                for alt_pattern in alt_patterns:
-                    matches = re.findall(alt_pattern, response)
-                    if matches:
-                        _LOGGER.debug(
-                            "Found outlets using alternative pattern: %r", matches
-                        )
-                        break
-
-            if not matches:
-                # If all patterns failed, try an alternative command
-                _LOGGER.debug("Trying alternative outlet status command")
-                alt_response = await self.socket.send_command("show outlets status")
-
-                if "^" in alt_response or "label" in alt_response:
-                    _LOGGER.debug(
-                        "Alternative outlet status command failed, trying direct status"
-                    )
-                    alt_response = await self.socket.send_command("status")
-
-                _LOGGER.debug("Alternative outlet status response: %r", alt_response)
-
-                # Try all patterns on the alternative response
-                for alt_pattern in alt_patterns:
-                    matches = re.findall(alt_pattern, alt_response)
-                    if matches:
-                        _LOGGER.debug(
-                            "Found outlets using alternative pattern on alternative response: %r",
-                            matches,
-                        )
-                        break
-
-            # Update outlets dictionary
-            for match in matches:
-                try:
-                    outlet_num = int(match[0])
-
-                    # Name is in second group, state is in third group for the new pattern
-                    # If we're using a fallback pattern, the name might be empty and state in second group
-                    name = match[1].strip() if len(match) > 2 else ""
-                    state_text = (
-                        match[2].lower() if len(match) > 2 else match[1].lower()
-                    )
-
-                    state = state_text in ("on", "true", "1", "yes")
-
-                    # Store the previous state for logging
-                    prev_state = self.outlet_states.get(outlet_num, None)
-
-                    self.outlet_states[outlet_num] = state
-                    _LOGGER.debug(
-                        "Outlet %d state: %s (raw state text: %r, previous state: %s)",
-                        outlet_num,
-                        "ON" if state else "OFF",
-                        state_text,
-                        (
-                            "ON"
-                            if prev_state
-                            else "OFF" if prev_state is not None else "unknown"
-                        ),
-                    )
-
-                    # Store the outlet name if we got one
-                    if name:
-                        prev_name = self.outlet_names.get(outlet_num)
-                        self.outlet_names[outlet_num] = name
-                        _LOGGER.debug(
-                            "Outlet %d name: %r (previous: %r)",
-                            outlet_num,
-                            name,
-                            prev_name,
-                        )
-                    else:
-                        # If we didn't get a name from the regex, try to extract it differently
-                        name_pattern = rf"Outlet {outlet_num}\s*-\s*([^:]*):"
-                        name_match = re.search(name_pattern, response)
-                        if name_match:
-                            name = name_match.group(1).strip()
-                            self.outlet_names[outlet_num] = name
-                            _LOGGER.debug(
-                                "Extracted outlet %d name separately: %r",
-                                outlet_num,
-                                name,
-                            )
-                        else:
-                            # If still no name, use default
-                            if outlet_num not in self.outlet_names:
-                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-                                _LOGGER.debug(
-                                    "Using default name for outlet %d",
-                                    outlet_num,
-                                )
-
-                except Exception as inner_err:
-                    _LOGGER.error(
-                        "Error processing outlet %s: %s",
-                        match[0] if match else "unknown",
-                        inner_err,
-                    )
-
-            _LOGGER.info("Updated %d outlet states", len(matches))
-            _LOGGER.debug("Current outlet states: %r", self.outlet_states)
-            _LOGGER.debug("Current outlet names: %r", self.outlet_names)
-
-            # If we didn't find any outlets, but we're running in debug mode, let's create some defaults
-            if not matches and _LOGGER.isEnabledFor(logging.DEBUG):
-                _LOGGER.warning(
-                    "No outlets found but running in debug, creating defaults for testing"
-                )
-                for i in range(1, 9):  # Create 8 default outlets
-                    self.outlet_states[i] = False
-                    self.outlet_names[i] = f"Outlet {i}"
-                _LOGGER.debug(
-                    "Created default outlets for testing: %r", self.outlet_states
-                )
+            else:
+                _LOGGER.warning("No outlet states found in any response")
+                # Try individual outlet queries as fallback
+                await self._get_outlet_states_individually()
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)
@@ -580,58 +430,32 @@ class RacklinkController:
             _LOGGER.info("Turning outlet %d ON", outlet)
 
             # Try different command variations
-            cmd = f"power outlet {outlet} on"
-            response = await self.socket.send_command(cmd)
+            commands_to_try = [
+                f"power outlets {outlet} on /y",
+                f"power outlet {outlet} on /y",
+                f"power outletgroup {outlet} on /y",
+                f"outlet {outlet} on",
+            ]
 
-            # If command syntax error, try alternatives
-            if "^" in response or "label" in response:
-                _LOGGER.debug("First power on command failed, trying alternative")
-                cmd = f"outlet {outlet} on"
+            for cmd in commands_to_try:
+                _LOGGER.debug("Trying command: %s", cmd)
                 response = await self.socket.send_command(cmd)
 
-                if "^" in response or "label" in response:
-                    _LOGGER.debug(
-                        "Second power on command failed, trying simple version"
-                    )
-                    cmd = f"on {outlet}"
-                    response = await self.socket.send_command(cmd)
+                # Check for success indicators
+                if any(
+                    success in response.lower()
+                    for success in ["success", "on", "enabled", "active"]
+                ):
+                    _LOGGER.info("Successfully turned outlet %d ON", outlet)
+                    self.outlet_states[outlet] = True
+                    return True
 
-            _LOGGER.debug("Turn outlet ON response: %r", response)
+                # If we got an error, try the next command
+                if "error" in response.lower():
+                    continue
 
-            # Check if command was successful - expanded success patterns
-            success = (
-                "success" in response.lower()
-                or "powered on" in response.lower()
-                or "turned on" in response.lower()
-                or "on" in response.lower()
-                or f"outlet {outlet}" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
-            ) and not ("ERROR:" in response)
-
-            if success:
-                _LOGGER.info("Successfully turned outlet %d ON", outlet)
-                # Store previous state for logging
-                prev_state = self.outlet_states.get(outlet, None)
-                self.outlet_states[outlet] = True
-                _LOGGER.debug(
-                    "Updated outlet %d state: ON (previous: %s)",
-                    outlet,
-                    (
-                        "ON"
-                        if prev_state
-                        else "OFF" if prev_state is not None else "unknown"
-                    ),
-                )
-                return True
-            else:
-                _LOGGER.warning(
-                    "Failed to turn outlet %d ON. Response: %r", outlet, response
-                )
-                # Try to update outlet state to get current state
-                _LOGGER.debug("Attempting to refresh outlet state after failed command")
-                await self._update_outlet_states()
-                return False
+            _LOGGER.warning("Failed to turn outlet %d ON with any command", outlet)
+            return False
 
         except Exception as err:
             _LOGGER.error("Error turning outlet %d on: %s", outlet, err)
@@ -643,58 +467,32 @@ class RacklinkController:
             _LOGGER.info("Turning outlet %d OFF", outlet)
 
             # Try different command variations
-            cmd = f"power outlet {outlet} off"
-            response = await self.socket.send_command(cmd)
+            commands_to_try = [
+                f"power outlets {outlet} off /y",
+                f"power outlet {outlet} off /y",
+                f"power outletgroup {outlet} off /y",
+                f"outlet {outlet} off",
+            ]
 
-            # If command syntax error, try alternatives
-            if "^" in response or "label" in response:
-                _LOGGER.debug("First power off command failed, trying alternative")
-                cmd = f"outlet {outlet} off"
+            for cmd in commands_to_try:
+                _LOGGER.debug("Trying command: %s", cmd)
                 response = await self.socket.send_command(cmd)
 
-                if "^" in response or "label" in response:
-                    _LOGGER.debug(
-                        "Second power off command failed, trying simple version"
-                    )
-                    cmd = f"off {outlet}"
-                    response = await self.socket.send_command(cmd)
+                # Check for success indicators
+                if any(
+                    success in response.lower()
+                    for success in ["success", "off", "disabled", "inactive"]
+                ):
+                    _LOGGER.info("Successfully turned outlet %d OFF", outlet)
+                    self.outlet_states[outlet] = False
+                    return True
 
-            _LOGGER.debug("Turn outlet OFF response: %r", response)
+                # If we got an error, try the next command
+                if "error" in response.lower():
+                    continue
 
-            # Check if command was successful
-            success = (
-                "success" in response.lower()
-                or "powered off" in response.lower()
-                or "turned off" in response.lower()
-                or "off" in response.lower()
-                or f"outlet {outlet}" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
-            ) and not ("ERROR:" in response)
-
-            if success:
-                _LOGGER.info("Successfully turned outlet %d OFF", outlet)
-                # Store previous state for logging
-                prev_state = self.outlet_states.get(outlet, None)
-                self.outlet_states[outlet] = False
-                _LOGGER.debug(
-                    "Updated outlet %d state: OFF (previous: %s)",
-                    outlet,
-                    (
-                        "ON"
-                        if prev_state
-                        else "OFF" if prev_state is not None else "unknown"
-                    ),
-                )
-                return True
-            else:
-                _LOGGER.warning(
-                    "Failed to turn outlet %d OFF. Response: %r", outlet, response
-                )
-                # Try to update outlet state to get current state
-                _LOGGER.debug("Attempting to refresh outlet state after failed command")
-                await self._update_outlet_states()
-                return False
+            _LOGGER.warning("Failed to turn outlet %d OFF with any command", outlet)
+            return False
 
         except Exception as err:
             _LOGGER.error("Error turning outlet %d off: %s", outlet, err)
