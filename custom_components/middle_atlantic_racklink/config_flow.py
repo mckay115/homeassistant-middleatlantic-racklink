@@ -2,20 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import re
-from typing import Any, Dict, Optional
-
-import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult, AbortFlow
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.selector import TextSelector
-
 from .const import (
     CONF_MODEL,
     CONF_PDU_NAME,
@@ -28,6 +14,19 @@ from .const import (
     SUPPORTED_MODELS,
 )
 from .controller.racklink_controller import RacklinkController
+from homeassistant import config_entries
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import TextSelector
+from typing import Any, Dict, Optional
+
+import asyncio
+import logging
+import re
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 30  # Timeout in seconds for connection validation

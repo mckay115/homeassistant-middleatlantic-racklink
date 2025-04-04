@@ -1,17 +1,16 @@
 """Test the Middle Atlantic RackLink config flow."""
 
-from unittest.mock import patch, MagicMock
-
-import pytest
-from homeassistant import config_entries, data_entry_flow
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-
 from custom_components.middle_atlantic_racklink.config_flow import (
     CannotConnect,
     InvalidAuth,
     MiddleAtlanticRacklinkConfigFlow,
 )
 from custom_components.middle_atlantic_racklink.const import DOMAIN
+from homeassistant import config_entries, data_entry_flow
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 PDU_INFO = {
     "pdu_name": "Test PDU",
