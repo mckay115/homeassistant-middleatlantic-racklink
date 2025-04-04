@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant import config_entries
 
-from custom_components.middle_atlantic_racklink.config_flow import ConfigFlow
+from custom_components.middle_atlantic_racklink.config_flow import (
+    MiddleAtlanticRacklinkConfigFlow as ConfigFlow,
+)
 from custom_components.middle_atlantic_racklink.const import DOMAIN
 
 
