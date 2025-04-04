@@ -1,9 +1,7 @@
 """Middle Atlantic RackLink integration for Home Assistant."""
 
-import logging
-from typing import Any, Dict
-
-import voluptuous as vol
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -17,9 +15,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
+from typing import Any, Dict
 
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+import logging
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 

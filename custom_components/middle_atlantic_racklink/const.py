@@ -1,7 +1,6 @@
 """Constants for the Middle Atlantic RackLink integration."""
 
 from datetime import timedelta
-
 from homeassistant.const import Platform
 
 # Integration domain

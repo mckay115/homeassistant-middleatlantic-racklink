@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -14,9 +15,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 

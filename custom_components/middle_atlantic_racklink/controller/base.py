@@ -1,11 +1,5 @@
 """Base controller module for Middle Atlantic RackLink integration."""
 
-import asyncio
-import logging
-import re
-from asyncio.exceptions import CancelledError
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
-
 from ..const import (
     COMMAND_DISCOVERY_ATTEMPTS,
     COMMAND_QUERY_DELAY,
@@ -30,6 +24,12 @@ from ..parser import (
     parse_pdu_temperature,
 )
 from ..socket_connection import SocketConnection
+from asyncio.exceptions import CancelledError
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+import asyncio
+import logging
+import re
 
 _LOGGER = logging.getLogger(__name__)
 

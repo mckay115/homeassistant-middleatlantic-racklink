@@ -1,11 +1,11 @@
 """Controller for Middle Atlantic RackLink PDUs."""
 
+from ..socket_connection import SocketConnection
+from typing import Any, Dict, Optional
+
 import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional
-
-from ..socket_connection import SocketConnection
 
 _LOGGER = logging.getLogger(__name__)
 

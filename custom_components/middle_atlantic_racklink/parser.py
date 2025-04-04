@@ -1,8 +1,9 @@
 """Parser for Middle Atlantic Racklink responses."""
 
+from typing import Any, Dict, List, Optional, Tuple
+
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 

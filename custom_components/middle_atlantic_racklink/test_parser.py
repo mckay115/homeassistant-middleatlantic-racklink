@@ -5,12 +5,13 @@ This file can be used to manually test the parsing functions.
 It is not part of the Home Assistant component, but a development tool.
 """
 
+from pathlib import Path
+
 import json
 import logging
 import os
 import re
 import sys
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)

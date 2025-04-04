@@ -1,8 +1,9 @@
 """Configuration functionality for the RackLink controller."""
 
+from typing import Any, Dict, Optional, Set, Union
+
 import asyncio
 import logging
-from typing import Any, Dict, Optional, Set, Union
 
 _LOGGER = logging.getLogger(__name__)
 

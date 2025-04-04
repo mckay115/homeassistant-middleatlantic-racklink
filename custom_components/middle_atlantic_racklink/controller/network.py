@@ -1,11 +1,12 @@
 """Network-related functionality for the RackLink controller."""
 
+from datetime import datetime
+
 import asyncio
 import logging
 import re
 import socket
 import time
-from datetime import datetime
 
 _LOGGER = logging.getLogger(__name__)
 

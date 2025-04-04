@@ -1,10 +1,11 @@
 """Socket connection handler for Middle Atlantic RackLink devices."""
 
+from typing import Optional
+
 import asyncio
 import logging
 import re
 import time
-from typing import Optional
 
 _LOGGER = logging.getLogger(__name__)
 

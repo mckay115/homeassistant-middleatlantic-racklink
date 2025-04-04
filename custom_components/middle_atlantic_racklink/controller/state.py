@@ -1,10 +1,11 @@
 """State management functionality for the RackLink controller."""
 
+from typing import Any, Dict, List, Optional, Tuple
+
 import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -1,15 +1,14 @@
 """Coordinator for the Middle Atlantic RackLink integration."""
 
-import asyncio
-import logging
-from datetime import timedelta
-from typing import Any, Dict, Optional
-
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-
 from .const import DOMAIN
 from .controller.racklink_controller import RacklinkController
+from datetime import timedelta
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from typing import Any, Dict, Optional
+
+import asyncio
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
