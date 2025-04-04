@@ -1,7 +1,10 @@
 """Middle Atlantic RackLink integration for Home Assistant."""
 
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+import logging
+from typing import Any, Dict
+from datetime import timedelta
+
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -15,10 +18,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
-from typing import Any, Dict
 
-import logging
-import voluptuous as vol
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ PLATFORMS = [
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+async def async_setup(_hass: HomeAssistant, _config: ConfigType) -> bool:
     """Set up the Middle Atlantic RackLink component from YAML."""
     return True
 
@@ -65,7 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = RacklinkCoordinator(
         hass=hass,
         controller=controller,
-        scan_interval=scan_interval,
+        update_interval=timedelta(seconds=scan_interval),
     )
 
     # Perform initial data update
@@ -82,7 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     # Register service for testing direct commands
-    async def test_direct_commands_service(call):
+    async def test_direct_commands_service(_call):
         """Service to test direct commands."""
         _LOGGER.info("Service call: test_direct_commands")
         results = await coordinator.test_direct_commands()
@@ -95,9 +97,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_update_options(
+    home_assistant: HomeAssistant, entry: ConfigEntry
+) -> None:  # pylint: disable=unused-argument
     """Update options when config entry options are changed."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    await home_assistant.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -115,7 +119,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_migrate_entry(_hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate an old config entry to the new version."""
     _LOGGER.debug("Migrating from version %s", entry.version)
 

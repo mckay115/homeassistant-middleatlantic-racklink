@@ -12,8 +12,8 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-# Polling interval in seconds
-POLLING_INTERVAL = 5
+# Default polling interval in seconds
+DEFAULT_POLLING_INTERVAL = timedelta(seconds=5)
 
 
 class RacklinkCoordinator(DataUpdateCoordinator):
@@ -23,19 +23,20 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         self,
         hass: HomeAssistant,
         controller: RacklinkController,
+        update_interval: timedelta = DEFAULT_POLLING_INTERVAL,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=POLLING_INTERVAL,
+            update_interval=update_interval,
         )
         self.controller = controller
         self._data: Dict[str, Any] = {}
         _LOGGER.info(
             "Initialized RackLink coordinator with scan interval: %d seconds",
-            POLLING_INTERVAL,
+            update_interval.total_seconds(),
         )
 
     @property
