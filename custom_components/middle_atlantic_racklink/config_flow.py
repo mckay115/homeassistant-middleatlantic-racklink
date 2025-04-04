@@ -2,31 +2,25 @@
 
 from __future__ import annotations
 
-from .const import (
-    CONF_MODEL,
-    CONF_PDU_NAME,
-    CONF_SCAN_INTERVAL,
-    DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_USERNAME,
-    DOMAIN,
-    MODEL_DESCRIPTIONS,
-    SUPPORTED_MODELS,
-)
-from .controller.racklink_controller import RacklinkController
+import asyncio
+import logging
+from typing import Any, Dict, Optional
+
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import callback, HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.selector import TextSelector
-from typing import Any, Dict, Optional
 
-import asyncio
-import logging
-import re
-import voluptuous as vol
+from .const import (
+    CONF_SCAN_INTERVAL,
+    DEFAULT_PORT,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USERNAME,
+    DOMAIN,
+)
+from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 CONNECTION_TIMEOUT = 30  # Timeout in seconds for connection validation
@@ -52,7 +46,7 @@ OPTIONS_SCHEMA = vol.Schema(
 
 
 async def validate_connection(
-    hass: HomeAssistant, data: Dict[str, Any]
+    _hass: HomeAssistant, data: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Validate the connection to the RackLink PDU."""
     host = data[CONF_HOST]
@@ -100,22 +94,22 @@ async def validate_connection(
         await controller.disconnect()
         return info
 
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
         _LOGGER.error("Timeout connecting to device: %s:%s", host, port)
         await controller.disconnect()
-        raise CannotConnect("Connection timeout")
-    except (OSError, asyncio.exceptions.CancelledError) as err:
-        _LOGGER.error("Error connecting to device: %s", err)
+        raise CannotConnect("Connection timeout") from exc
+    except (OSError, asyncio.exceptions.CancelledError) as exc:
+        _LOGGER.error("Error connecting to device: %s", exc)
         await controller.disconnect()
-        raise CannotConnect(f"Connection error: {err}")
-    except ValueError as err:
-        _LOGGER.error("Authentication failed: %s", err)
+        raise CannotConnect(f"Connection error: {exc}") from exc
+    except ValueError as exc:
+        _LOGGER.error("Authentication failed: %s", exc)
         await controller.disconnect()
-        raise InvalidAuth(f"Authentication failed: {err}")
-    except Exception as err:
-        _LOGGER.error("Error connecting to device: %s", err)
+        raise InvalidAuth(f"Authentication failed: {exc}") from exc
+    except Exception as exc:
+        _LOGGER.error("Error connecting to device: %s", exc)
         await controller.disconnect()
-        raise CannotConnect(f"Error connecting to device: {err}")
+        raise CannotConnect(f"Error connecting to device: {exc}") from exc
 
 
 class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -130,6 +124,10 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
     ) -> "OptionsFlowHandler":
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
+
+    def is_matching(self, other_flow: config_entries.ConfigEntry) -> bool:
+        """Check if the entry matches the current flow."""
+        return other_flow.unique_id == self.unique_id
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
