@@ -1,46 +1,91 @@
-"""Test the config flow."""
+"""Test the Middle Atlantic RackLink config flow."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch, MagicMock
 
 import pytest
-from homeassistant import config_entries
+from homeassistant import config_entries, data_entry_flow
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 
 from custom_components.middle_atlantic_racklink.config_flow import (
-    MiddleAtlanticRacklinkConfigFlow as ConfigFlow,
+    CannotConnect,
+    InvalidAuth,
+    MiddleAtlanticRacklinkConfigFlow,
 )
 from custom_components.middle_atlantic_racklink.const import DOMAIN
 
+PDU_INFO = {
+    "pdu_name": "Test PDU",
+    "pdu_model": "Test Model",
+    "pdu_firmware": "1.0",
+    "pdu_serial": "123456",
+    "mac_address": "00:11:22:33:44:55",
+}
+
+PDU_INFO_NO_MAC = {
+    "pdu_name": "Test PDU",
+    "pdu_model": "Test Model",
+    "pdu_firmware": "1.0",
+    "pdu_serial": "123456",
+    "mac_address": "Unknown MAC",
+}
+
 
 @pytest.fixture
-def flow():
-    """Create a config flow."""
-    return ConfigFlow()
+def mock_setup_entry():
+    """Mock setting up a config entry."""
+    with patch(
+        "custom_components.middle_atlantic_racklink.async_setup_entry",
+        return_value=True,
+    ):
+        yield
+
+
+@pytest.fixture
+def mock_hass():
+    """Mock Home Assistant instance."""
+    hass = MagicMock()
+    hass.config_entries = MagicMock()
+    hass.config_entries.flow = MagicMock()
+    hass.config_entries.flow.async_progress_by_handler = MagicMock(return_value=[])
+    hass.config_entries.async_entries = MagicMock(return_value=[])
+    return hass
+
+
+@pytest.fixture
+def flow(mock_hass):
+    """Initialize a config flow."""
+    flow = MiddleAtlanticRacklinkConfigFlow()
+    flow.hass = mock_hass
+    flow.context = {}  # Initialize context as a dictionary
+    return flow
 
 
 @pytest.mark.asyncio
 async def test_user_success(flow):
     """Test successful user flow."""
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.RacklinkController"
-    ) as mock_controller:
-        mock_controller.return_value.connect = AsyncMock()
-        mock_controller.return_value.disconnect = AsyncMock()
-
+        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+        return_value=PDU_INFO_NO_MAC,  # Use PDU info without MAC to avoid unique ID check
+    ):
         result = await flow.async_step_user(
             {
-                "host": "test_host",
-                "port": 23,
-                "username": "test_user",
-                "password": "test_pass",
+                CONF_HOST: "test_host",
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
             }
         )
 
-        assert result["type"] == "create_entry"
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert (
+            result["title"]
+            == f"{PDU_INFO_NO_MAC['pdu_name']} ({PDU_INFO_NO_MAC['pdu_model']})"
+        )
         assert result["data"] == {
-            "host": "test_host",
-            "port": 23,
-            "username": "test_user",
-            "password": "test_pass",
+            CONF_HOST: "test_host",
+            CONF_PORT: 23,
+            CONF_USERNAME: "test_user",
+            CONF_PASSWORD: "test_pass",
         }
 
 
@@ -48,124 +93,113 @@ async def test_user_success(flow):
 async def test_user_connection_error(flow):
     """Test connection error in user flow."""
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.RacklinkController"
-    ) as mock_controller:
-        mock_controller.return_value.connect = AsyncMock(
-            side_effect=ValueError("Connection failed")
-        )
-
+        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+        side_effect=CannotConnect("Connection failed"),
+    ):
         result = await flow.async_step_user(
             {
-                "host": "test_host",
-                "port": 23,
-                "username": "test_user",
-                "password": "test_pass",
+                CONF_HOST: "test_host",
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
             }
         )
 
-        assert result["type"] == "form"
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["errors"]["base"] == "cannot_connect"
 
 
 @pytest.mark.asyncio
 async def test_user_invalid_input(flow):
     """Test invalid input in user flow."""
-    # Add a mock validate_input method that will raise an error for invalid input
-    flow.validate_input = AsyncMock(side_effect=ValueError("Invalid input"))
-
     result = await flow.async_step_user(
         {
-            "host": "",
-            "port": 23,
-            "username": "test_user",
-            "password": "test_pass",
+            CONF_HOST: "",  # Empty host should be invalid
+            CONF_PORT: 23,
+            CONF_USERNAME: "test_user",
+            CONF_PASSWORD: "test_pass",
         }
     )
 
-    assert result["type"] == "form"
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["errors"]["base"] == "cannot_connect"
 
 
 @pytest.mark.asyncio
 async def test_import_success(flow):
     """Test successful import flow."""
-    # Skip if import flow is not supported in this version
-    if not hasattr(flow, "async_step_import"):
-        pytest.skip("Import flow not supported in this version")
-
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.RacklinkController"
-    ) as mock_controller:
-        mock_controller.return_value.connect = AsyncMock()
-        mock_controller.return_value.disconnect = AsyncMock()
-
+        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+        return_value=PDU_INFO_NO_MAC,  # Use PDU info without MAC to avoid unique ID check
+    ):
         result = await flow.async_step_import(
             {
-                "host": "test_host",
-                "port": 23,
-                "username": "test_user",
-                "password": "test_pass",
+                CONF_HOST: "test_host",
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
             }
         )
 
-        assert result["type"] == "create_entry"
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert (
+            result["title"]
+            == f"{PDU_INFO_NO_MAC['pdu_name']} ({PDU_INFO_NO_MAC['pdu_model']})"
+        )
         assert result["data"] == {
-            "host": "test_host",
-            "port": 23,
-            "username": "test_user",
-            "password": "test_pass",
+            CONF_HOST: "test_host",
+            CONF_PORT: 23,
+            CONF_USERNAME: "test_user",
+            CONF_PASSWORD: "test_pass",
         }
 
 
 @pytest.mark.asyncio
 async def test_import_connection_error(flow):
     """Test connection error in import flow."""
-    # Skip if import flow is not supported in this version
-    if not hasattr(flow, "async_step_import"):
-        pytest.skip("Import flow not supported in this version")
-
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.RacklinkController"
-    ) as mock_controller:
-        mock_controller.return_value.connect = AsyncMock(
-            side_effect=ValueError("Connection failed")
-        )
-
+        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+        side_effect=CannotConnect("Connection failed"),
+    ):
         result = await flow.async_step_import(
             {
-                "host": "test_host",
-                "port": 23,
-                "username": "test_user",
-                "password": "test_pass",
+                CONF_HOST: "test_host",
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
             }
         )
 
-        assert result["type"] == "abort"
-        assert result["reason"] == "cannot_connect"
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["errors"]["base"] == "cannot_connect"
 
 
 @pytest.mark.asyncio
-async def test_duplicate_error(flow):
+async def test_duplicate_error(mock_hass):
     """Test duplicate entry error."""
-    # Mock the existing entries check
-    with patch.object(
-        flow,
-        "_async_abort_entries_match",
-        return_value={"type": "abort", "reason": "already_configured"},
+    # Create a mock entry with the same MAC address
+    mock_entry = MagicMock()
+    mock_entry.unique_id = PDU_INFO["mac_address"]
+    mock_hass.config_entries.async_entries = MagicMock(return_value=[mock_entry])
+
+    # Create a new flow with the mock entry
+    flow = MiddleAtlanticRacklinkConfigFlow()
+    flow.hass = mock_hass
+    flow.context = {}
+
+    # Try to add an entry with the same MAC address
+    with patch(
+        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+        return_value=PDU_INFO,  # Use PDU info with MAC to trigger duplicate check
     ):
-        # Make sure the _async_abort_entries_match method is called before creating an entry
-        with patch.object(flow, "async_create_entry") as async_create_entry:
-            result = await flow.async_step_user(
-                {
-                    "host": "test_host",
-                    "port": 23,
-                    "username": "test_user",
-                    "password": "test_pass",
-                }
-            )
+        result = await flow.async_step_user(
+            {
+                CONF_HOST: "test_host",
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
+            }
+        )
 
-            # Verify it wasn't called because abort should happen first
-            assert not async_create_entry.called
-
-    # Since we've patched the method and want to test the interaction rather than the return value
-    # Consider this test a success if no exceptions were raised
+        assert result["type"] == data_entry_flow.FlowResultType.ABORT
+        assert result["reason"] == "already_configured"

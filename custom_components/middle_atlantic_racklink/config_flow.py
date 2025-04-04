@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import FlowResult, AbortFlow
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import TextSelector
@@ -19,13 +19,13 @@ from homeassistant.helpers.selector import TextSelector
 from .const import (
     CONF_MODEL,
     CONF_PDU_NAME,
+    CONF_SCAN_INTERVAL,
     DEFAULT_PORT,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USERNAME,
     DOMAIN,
     MODEL_DESCRIPTIONS,
     SUPPORTED_MODELS,
-    CONF_SCAN_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_USERNAME,
 )
 from .controller.racklink_controller import RacklinkController
 
@@ -141,6 +141,15 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         if user_input is not None:
             try:
                 info = await validate_connection(self.hass, user_input)
+
+                # Set unique ID before checking for duplicates
+                mac_address = info["mac_address"]
+                if mac_address != "Unknown MAC":
+                    await self.async_set_unique_id(mac_address)
+                    try:
+                        self._abort_if_unique_id_configured()
+                    except AbortFlow as err:
+                        return self.async_abort(reason=err.reason)
 
                 # Create a friendly title for the config entry
                 title = info["pdu_name"]

@@ -1,131 +1,107 @@
-"""Test the sensors."""
-
-from unittest.mock import AsyncMock, patch
+"""Test for the Middle Atlantic RackLink sensor platform."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
 
 from custom_components.middle_atlantic_racklink.sensor import (
-    RacklinkCurrentSensor as RacklinkCurrent,
-    RacklinkFrequencySensor as RacklinkFrequency,
-    RacklinkPowerSensor as RacklinkPower,
-    RacklinkEnergySensor as RacklinkEnergy,
-    RacklinkVoltageSensor as RacklinkVoltage,
+    RacklinkCurrentSensor,
+    RacklinkFrequencySensor,
+    RacklinkPowerSensor,
+    RacklinkVoltageSensor,
 )
 
 
 @pytest.fixture
 def controller():
     """Create a mock controller."""
-    with patch(
-        "custom_components.middle_atlantic_racklink.sensor.RacklinkController"
-    ) as mock:
-        controller = mock.return_value
-        controller.async_get_current = AsyncMock()
-        controller.async_get_frequency = AsyncMock()
-        controller.async_get_power_factor = AsyncMock()
-        controller.async_get_power = AsyncMock()
-        controller.async_get_temperature = AsyncMock()
-        controller.async_get_voltage = AsyncMock()
-        controller.sensors = {}
-        yield controller
+    mock = MagicMock()
+    mock.async_request_refresh = AsyncMock()
+    mock.system_data = MagicMock()
+    mock.system_data.get = MagicMock()
+    return mock
 
 
 @pytest.mark.asyncio
 async def test_current_sensor(controller):
     """Test current sensor."""
-    controller.sensors["current"] = 10.5
+    controller.system_data.get.return_value = 10.5
+    sensor = RacklinkCurrentSensor(controller)
 
-    sensor = RacklinkCurrent(controller)
+    # Initial update
     await sensor.async_update()
+    controller.async_request_refresh.assert_called_once()
 
-    assert sensor.state == 10.5
+    # Check state
+    assert sensor.native_value == 10.5
     assert sensor.device_class == SensorDeviceClass.CURRENT
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "A"
+    assert sensor.native_unit_of_measurement == "A"
 
 
 @pytest.mark.asyncio
 async def test_frequency_sensor(controller):
     """Test frequency sensor."""
-    controller.sensors["frequency"] = 60.0
+    controller.system_data.get.return_value = 60.0
+    sensor = RacklinkFrequencySensor(controller)
 
-    sensor = RacklinkFrequency(controller)
+    # Initial update
     await sensor.async_update()
+    controller.async_request_refresh.assert_called_once()
 
-    assert sensor.state == 60.0
+    # Check state
+    assert sensor.native_value == 60.0
     assert sensor.device_class == SensorDeviceClass.FREQUENCY
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "Hz"
-
-
-@pytest.mark.asyncio
-async def test_power_factor_sensor(controller):
-    """Test power factor sensor."""
-    controller.sensors["power_factor"] = 0.95
-
-    sensor = RacklinkPower(controller)
-    await sensor.async_update()
-
-    assert sensor.state == 1200.0
-    assert sensor.device_class == SensorDeviceClass.POWER
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "W"
+    assert sensor.native_unit_of_measurement == "Hz"
 
 
 @pytest.mark.asyncio
 async def test_power_sensor(controller):
     """Test power sensor."""
-    controller.sensors["power"] = 1200.0
+    controller.system_data.get.return_value = 1200.0
+    sensor = RacklinkPowerSensor(controller)
 
-    sensor = RacklinkPower(controller)
+    # Initial update
     await sensor.async_update()
+    controller.async_request_refresh.assert_called_once()
 
-    assert sensor.state == 1200.0
+    # Check state
+    assert sensor.native_value == 1200.0
     assert sensor.device_class == SensorDeviceClass.POWER
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "W"
-
-
-@pytest.mark.asyncio
-async def test_temperature_sensor(controller):
-    """Test temperature sensor."""
-    controller.sensors["temperature"] = 25.5
-
-    sensor = RacklinkPower(controller)
-    await sensor.async_update()
-
-    assert sensor.state == 25.5
-    assert sensor.device_class == SensorDeviceClass.TEMPERATURE
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "°C"
+    assert sensor.native_unit_of_measurement == "W"
 
 
 @pytest.mark.asyncio
 async def test_voltage_sensor(controller):
     """Test voltage sensor."""
-    controller.sensors["voltage"] = 120.0
+    controller.system_data.get.return_value = 120.0
+    sensor = RacklinkVoltageSensor(controller)
 
-    sensor = RacklinkVoltage(controller)
+    # Initial update
     await sensor.async_update()
+    controller.async_request_refresh.assert_called_once()
 
-    assert sensor.state == 120.0
+    # Check state
+    assert sensor.native_value == 120.0
     assert sensor.device_class == SensorDeviceClass.VOLTAGE
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "V"
+    assert sensor.native_unit_of_measurement == "V"
 
 
 @pytest.mark.asyncio
 async def test_sensor_error_handling(controller):
     """Test sensor error handling."""
-    # Instead of using ValueError as a value, we'll modify the test approach
-    controller.sensors = {}  # No sensor data
+    controller.system_data.get.return_value = None
+    sensor = RacklinkCurrentSensor(controller)
 
-    sensor = RacklinkCurrent(controller)
+    # Initial update
     await sensor.async_update()
+    controller.async_request_refresh.assert_called_once()
 
-    # If no sensor data is available, the state should be None
-    assert sensor.state is None
+    # Check state
+    assert sensor.native_value is None

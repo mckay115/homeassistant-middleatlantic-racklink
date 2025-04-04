@@ -5,12 +5,12 @@ This file can be used to manually test the parsing functions.
 It is not part of the Home Assistant component, but a development tool.
 """
 
+import json
 import logging
 import os
-import sys
-import json
-from pathlib import Path
 import re
+import sys
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -21,17 +21,17 @@ current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
 
 from parser import (
+    extract_device_name_from_prompt,
+    is_command_prompt,
+    normalize_model_name,
+    parse_all_outlet_states,
     parse_device_info,
     parse_network_info,
-    parse_all_outlet_states,
+    parse_outlet_details,
     parse_outlet_names,
     parse_outlet_state,
-    parse_outlet_details,
     parse_pdu_power_data,
     parse_pdu_temperature,
-    normalize_model_name,
-    is_command_prompt,
-    extract_device_name_from_prompt,
 )
 
 

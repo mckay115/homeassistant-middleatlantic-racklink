@@ -62,3 +62,15 @@ async def setup_integration(hass: HomeAssistant):
         },
     )
     await hass.async_block_till_done()
+
+
+@pytest.fixture
+def controller():
+    """Mock RacklinkController."""
+    mock = MagicMock()
+    # Configure async methods
+    mock.async_request_refresh = AsyncMock()
+    mock.turn_outlet_on = AsyncMock()
+    mock.turn_outlet_off = AsyncMock()
+    mock.sensors = {}
+    return mock

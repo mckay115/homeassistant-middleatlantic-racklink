@@ -1,14 +1,14 @@
 {
   "domain": "middle_atlantic_racklink",
   "name": "Middle Atlantic RackLink",
-  "codeowners": ["@yodazach"],
+  "codeowners": ["@mckay115"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/yodazach/homeassistant-middleatlantic-racklink",
+  "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
   "homekit": {},
   "iot_class": "local_polling",
   "requirements": [],
   "ssdp": [],
-  "version": "1.0.0",
+  "version": "0.1.0",
   "zeroconf": []
 }
