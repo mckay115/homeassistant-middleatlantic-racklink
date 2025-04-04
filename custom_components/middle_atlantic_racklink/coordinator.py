@@ -1,15 +1,20 @@
 """Coordinator for the Middle Atlantic RackLink integration."""
 
+import asyncio
 import logging
 from datetime import timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .const import DOMAIN
 from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
+
+# Polling interval in seconds
+POLLING_INTERVAL = 5
 
 
 class RacklinkCoordinator(DataUpdateCoordinator):
@@ -19,24 +24,19 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         self,
         hass: HomeAssistant,
         controller: RacklinkController,
-        scan_interval: int = 30,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name="Middle Atlantic RackLink",
-            update_interval=timedelta(seconds=scan_interval),
+            name=DOMAIN,
+            update_interval=POLLING_INTERVAL,
         )
         self.controller = controller
-        self._data = {
-            "outlets": {},
-            "system": {},
-            "status": {},
-        }
+        self._data: Dict[str, Any] = {}
         _LOGGER.info(
             "Initialized RackLink coordinator with scan interval: %d seconds",
-            scan_interval,
+            POLLING_INTERVAL,
         )
 
     @property
