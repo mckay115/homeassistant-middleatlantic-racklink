@@ -47,6 +47,7 @@ def mock_hass():
     hass.config_entries.flow = MagicMock()
     hass.config_entries.flow.async_progress_by_handler = MagicMock(return_value=[])
     hass.config_entries.async_entries = MagicMock(return_value=[])
+    hass.data = {DOMAIN: {}}
     return hass
 
 
@@ -55,7 +56,8 @@ def flow(mock_hass):
     """Initialize a config flow."""
     flow = MiddleAtlanticRacklinkConfigFlow()
     flow.hass = mock_hass
-    flow.context = {}  # Initialize context as a dictionary
+    flow.context = {}
+    flow._unique_id = None  # Ensure unique_id is reset
     return flow
 
 
@@ -64,7 +66,7 @@ async def test_user_success(flow):
     """Test successful user flow."""
     with patch(
         "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        return_value=PDU_INFO_NO_MAC,  # Use PDU info without MAC to avoid unique ID check
+        return_value=PDU_INFO_NO_MAC,
     ):
         result = await flow.async_step_user(
             {
@@ -185,11 +187,12 @@ async def test_duplicate_error(mock_hass):
     flow = MiddleAtlanticRacklinkConfigFlow()
     flow.hass = mock_hass
     flow.context = {}
+    flow._unique_id = None  # Ensure unique_id is reset
 
     # Try to add an entry with the same MAC address
     with patch(
         "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        return_value=PDU_INFO,  # Use PDU info with MAC to trigger duplicate check
+        return_value=PDU_INFO,
     ):
         result = await flow.async_step_user(
             {
