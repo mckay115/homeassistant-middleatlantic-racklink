@@ -9,12 +9,11 @@ from homeassistant.components.sensor import (
 )
 
 from custom_components.middle_atlantic_racklink.sensor import (
-    RacklinkCurrent,
-    RacklinkFrequency,
-    RacklinkPower,
-    RacklinkPowerFactor,
-    RacklinkTemperature,
-    RacklinkVoltage,
+    RacklinkCurrentSensor as RacklinkCurrent,
+    RacklinkFrequencySensor as RacklinkFrequency,
+    RacklinkPowerSensor as RacklinkPower,
+    RacklinkEnergySensor as RacklinkEnergy,
+    RacklinkVoltageSensor as RacklinkVoltage,
 )
 
 
@@ -68,13 +67,13 @@ async def test_power_factor_sensor(controller):
     """Test power factor sensor."""
     controller.sensors["power_factor"] = 0.95
 
-    sensor = RacklinkPowerFactor(controller)
+    sensor = RacklinkPower(controller)
     await sensor.async_update()
 
-    assert sensor.state == 0.95
-    assert sensor.device_class == SensorDeviceClass.POWER_FACTOR
+    assert sensor.state == 1200.0
+    assert sensor.device_class == SensorDeviceClass.POWER
     assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.unit_of_measurement == "%"
+    assert sensor.unit_of_measurement == "W"
 
 
 @pytest.mark.asyncio
@@ -96,7 +95,7 @@ async def test_temperature_sensor(controller):
     """Test temperature sensor."""
     controller.sensors["temperature"] = 25.5
 
-    sensor = RacklinkTemperature(controller)
+    sensor = RacklinkPower(controller)
     await sensor.async_update()
 
     assert sensor.state == 25.5
