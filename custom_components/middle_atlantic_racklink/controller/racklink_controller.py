@@ -1,6 +1,6 @@
 """Controller for Middle Atlantic RackLink PDUs."""
 
-from ..socket_connection import SocketConnection
+from ..socket_connection import SocketConnection, SocketConfig
 from typing import Any, Dict, Optional
 
 import asyncio
@@ -35,7 +35,16 @@ class RacklinkController:
         self.username = username
         self.password = password
         self.timeout = timeout
-        self.socket = SocketConnection(host, port, username, password, timeout)
+
+        # Create SocketConfig
+        config = SocketConfig(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=timeout,
+        )
+        self.socket = SocketConnection(config)
 
         # Device information
         self.pdu_name: str = ""
