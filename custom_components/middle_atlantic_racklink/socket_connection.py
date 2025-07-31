@@ -125,6 +125,30 @@ class SocketConnection:
         self._last_ping_time = 0.0
 
     async def _handle_authentication(self) -> bool:
+        """Handle authentication based on detected protocol type.
+
+        Returns:
+            bool: True if authentication was successful, False otherwise
+        """
+        if not (self.config.username and self.config.password):
+            _LOGGER.error("Username and password required for authentication")
+            return False
+
+        # Detect protocol type if not already done
+        if not hasattr(self, "_protocol_type"):
+            self._protocol_type = await self.detect_protocol_type(self.config.port)
+
+        _LOGGER.info("Using %s protocol for authentication", self._protocol_type)
+
+        if self._protocol_type == "telnet":
+            return await self._handle_telnet_authentication()
+        elif self._protocol_type == "binary":
+            return await self._handle_binary_authentication()
+        else:
+            _LOGGER.error("Unknown protocol type: %s", self._protocol_type)
+            return False
+
+    async def _handle_binary_authentication(self) -> bool:
         """Handle RackLink binary protocol authentication.
 
         Sends login command with username|password format.
@@ -132,10 +156,6 @@ class SocketConnection:
         Returns:
             bool: True if authentication was successful, False otherwise
         """
-        if not (self.config.username and self.config.password):
-            _LOGGER.error("Username and password required for RackLink authentication")
-            return False
-
         try:
             # Create login message: username|password
             credentials = f"{self.config.username}|{self.config.password}"
@@ -145,30 +165,31 @@ class SocketConnection:
             login_msg = RackLinkMessage(CMD_LOGIN, SUBCMD_LOGIN, login_data)
             message_bytes = login_msg.build()
 
-            _LOGGER.debug("Sending login message: %s", message_bytes.hex())
+            _LOGGER.debug("Sending binary login message: %s", message_bytes.hex())
             await self._send_raw_data(message_bytes)
 
             # Wait for response
             response = await self._read_message()
             if not response:
-                _LOGGER.error("No response to login command")
+                _LOGGER.error("No response to binary login command")
                 return False
 
             # Check for NACK (error response)
             if len(response) >= 2 and response[0] == CMD_NACK:
                 error_code = response[1] if len(response) > 1 else 0x00
                 if error_code == NACK_INVALID_CREDENTIALS:
-                    _LOGGER.error("Authentication failed: Invalid credentials")
+                    _LOGGER.error("Binary authentication failed: Invalid credentials")
                 elif error_code == NACK_ACCESS_DENIED:
-                    _LOGGER.error("Authentication failed: Access denied")
+                    _LOGGER.error("Binary authentication failed: Access denied")
                 else:
                     _LOGGER.error(
-                        "Authentication failed: NACK error code 0x%02X", error_code
+                        "Binary authentication failed: NACK error code 0x%02X",
+                        error_code,
                     )
                 return False
 
             # Successful authentication
-            _LOGGER.info("RackLink authentication successful")
+            _LOGGER.info("RackLink binary authentication successful")
             self._authenticated = True
 
             # Start ping handler to maintain connection
@@ -177,7 +198,7 @@ class SocketConnection:
             return True
 
         except Exception as err:
-            _LOGGER.error("Authentication error: %s", err)
+            _LOGGER.error("Binary authentication error: %s", err)
             return False
 
     async def _establish_connection(self) -> bool:
@@ -570,6 +591,97 @@ class SocketConnection:
             )
             return False
 
+    async def detect_protocol_type(self, port: int, timeout: int = 5) -> str:
+        """Detect what protocol a port is using.
+
+        Args:
+            port: Port number to test
+            timeout: Connection timeout in seconds
+
+        Returns:
+            str: 'binary', 'telnet', 'http', or 'unknown'
+        """
+        try:
+            _LOGGER.debug("Detecting protocol type on %s:%d", self.config.host, port)
+
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.config.host, port), timeout=timeout
+            )
+
+            # Read initial response to detect protocol
+            try:
+                initial_response = await asyncio.wait_for(
+                    reader.read(1024), timeout=2.0
+                )
+
+                if initial_response:
+                    response_hex = initial_response.hex()
+                    response_text = initial_response.decode("utf-8", errors="ignore")
+
+                    _LOGGER.debug("Port %d initial response: %s", port, response_hex)
+
+                    # Check for Telnet IAC sequences
+                    if any(
+                        seq in initial_response
+                        for seq in [b"\xff\xfb", b"\xff\xfd", b"\xff\xfe"]
+                    ):
+                        writer.close()
+                        await writer.wait_closed()
+                        _LOGGER.debug(
+                            "Port %d detected as Telnet (IAC sequences found)", port
+                        )
+                        return "telnet"
+
+                    # Check for HTTP responses
+                    if (
+                        b"HTTP/" in initial_response
+                        or b"html" in initial_response.lower()
+                    ):
+                        writer.close()
+                        await writer.wait_closed()
+                        _LOGGER.debug("Port %d detected as HTTP", port)
+                        return "http"
+
+                    # Check for login prompts (typical for Telnet devices)
+                    if any(
+                        keyword in response_text.lower()
+                        for keyword in ["login", "username", "password", "racklink"]
+                    ):
+                        writer.close()
+                        await writer.wait_closed()
+                        _LOGGER.debug("Port %d detected as Telnet (login prompt)", port)
+                        return "telnet"
+
+                # If no initial response, try sending a binary test message
+                credentials = f"{self.config.username or 'user'}|{self.config.password or 'password'}"
+                login_data = credentials.encode("ascii")
+                login_msg = RackLinkMessage(CMD_LOGIN, SUBCMD_LOGIN, login_data)
+                message_bytes = login_msg.build()
+
+                writer.write(message_bytes)
+                await writer.drain()
+
+                # Wait for response
+                response = await asyncio.wait_for(reader.read(1024), timeout=3.0)
+                if response:
+                    _LOGGER.debug("Port %d responded to binary protocol test", port)
+                    writer.close()
+                    await writer.wait_closed()
+                    return "binary"
+
+            except asyncio.TimeoutError:
+                # No response to protocol tests
+                pass
+
+            writer.close()
+            await writer.wait_closed()
+            _LOGGER.debug("Port %d protocol type unknown", port)
+            return "unknown"
+
+        except Exception as err:
+            _LOGGER.debug("Error detecting protocol on port %d: %s", port, err)
+            return "unknown"
+
     async def discover_racklink_port(self) -> Optional[int]:
         """Discover which port the RackLink device is using.
 
@@ -578,11 +690,11 @@ class SocketConnection:
         Returns:
             int: Discovered port number, or None if not found
         """
-        # Common RackLink ports to test
+        # Common RackLink ports to test - reordered based on device compatibility
         ports_to_test = [
-            60000,  # Standard binary protocol port
-            23,  # Telnet (older implementations)
-            6000,  # Sometimes misconfigured
+            6000,  # Telnet protocol (Select/Premium series) - try first
+            60000,  # Binary protocol (Premium+ series)
+            23,  # Standard Telnet port (older implementations)
             4001,  # Alternative port
             80,  # HTTP (device present but wrong protocol)
             443,  # HTTPS (device present but wrong protocol)
@@ -590,25 +702,235 @@ class SocketConnection:
 
         _LOGGER.info("Discovering RackLink device port on %s", self.config.host)
 
+        # Track ports by protocol type
+        working_ports = []
+
         for port in ports_to_test:
             if await self.test_port_connectivity(port):
-                _LOGGER.info("Found responsive port %d on %s", port, self.config.host)
+                protocol = await self.detect_protocol_type(port)
+                _LOGGER.info(
+                    "Port %d on %s: protocol=%s", port, self.config.host, protocol
+                )
+
+                if protocol in ["telnet", "binary"]:
+                    working_ports.append((port, protocol))
+                elif protocol == "http":
+                    _LOGGER.info(
+                        "Port %d is HTTP - device present but need control protocol enabled",
+                        port,
+                    )
+
+        # Prioritize based on protocol type
+        for port, protocol in working_ports:
+            if protocol == "telnet":
+                _LOGGER.info("Found Telnet RackLink device on port %d", port)
+                return port
+            elif protocol == "binary":
+                _LOGGER.info("Found binary RackLink device on port %d", port)
                 return port
 
-        _LOGGER.warning("No responsive ports found on %s", self.config.host)
+        # If we found any working ports, return the first one
+        if working_ports:
+            port, protocol = working_ports[0]
+            _LOGGER.info("Using port %d with protocol %s", port, protocol)
+            return port
+
+        _LOGGER.warning("No RackLink-compatible ports found on %s", self.config.host)
         return None
+
+    async def send_telnet_command(self, command: str) -> str:
+        """Send a command via Telnet protocol (for Select/Premium series).
+
+        Args:
+            command: The command to send (e.g., "show outlets all")
+
+        Returns:
+            str: The response from the device
+        """
+        if not self._reader or not self._writer:
+            _LOGGER.error("Telnet not connected - cannot send command")
+            return ""
+
+        try:
+            # Send command with newline
+            full_command = f"{command}\r\n"
+            _LOGGER.debug("Sending Telnet command: %s", command)
+
+            self._writer.write(full_command.encode("ascii"))
+            await self._writer.drain()
+
+            # Read response until we see the prompt
+            response_parts = []
+            while True:
+                try:
+                    data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+                    if not data:
+                        break
+
+                    text = data.decode("utf-8", errors="ignore")
+                    response_parts.append(text)
+
+                    # Look for command prompt indicating end of response
+                    if "] # " in text or "> " in text or "$ " in text:
+                        break
+
+                except asyncio.TimeoutError:
+                    _LOGGER.debug("Timeout reading Telnet response")
+                    break
+
+            full_response = "".join(response_parts)
+
+            # Clean up response - remove the command echo and prompt
+            lines = full_response.split("\n")
+            cleaned_lines = []
+
+            for line in lines:
+                # Skip the command echo and prompts
+                if command in line or "] # " in line or "> " in line:
+                    continue
+                cleaned_lines.append(line)
+
+            result = "\n".join(cleaned_lines).strip()
+            _LOGGER.debug("Telnet command '%s' response: %s", command, result[:200])
+            return result
+
+        except Exception as err:
+            _LOGGER.error("Error sending Telnet command '%s': %s", command, err)
+            return ""
+
+    async def telnet_outlet_command(self, outlet: int, action: str) -> bool:
+        """Send outlet control command via Telnet.
+
+        Args:
+            outlet: Outlet number (1-based)
+            action: 'on', 'off', or 'cycle'
+
+        Returns:
+            bool: True if command succeeded
+        """
+        try:
+            # Format command based on examples from response_samples
+            command = f"power outlets {outlet} {action} /y"
+            response = await self.send_telnet_command(command)
+
+            # For outlet commands, success is typically indicated by getting back to prompt
+            # without error messages
+            if "error" not in response.lower() and "invalid" not in response.lower():
+                _LOGGER.info("Telnet outlet %d %s command successful", outlet, action)
+                return True
+            else:
+                _LOGGER.warning(
+                    "Telnet outlet %d %s command may have failed: %s",
+                    outlet,
+                    action,
+                    response,
+                )
+                return False
+
+        except Exception as err:
+            _LOGGER.error("Error sending Telnet outlet command: %s", err)
+            return False
+
+    async def telnet_read_outlet_states(self) -> Dict[int, bool]:
+        """Read all outlet states via Telnet.
+
+        Returns:
+            Dict mapping outlet numbers to state (True=On, False=Off)
+        """
+        try:
+            response = await self.send_telnet_command("show outlets all")
+
+            outlet_states = {}
+
+            # Parse response using the format from response_samples
+            # Look for patterns like "Outlet 1 - Name:\nPower state: On"
+            import re
+
+            # Match outlet number and subsequent state
+            pattern = r"Outlet (\d+)[^\n]*\n[^\n]*Power state:\s*(\w+)"
+            matches = re.findall(pattern, response, re.IGNORECASE)
+
+            for outlet_str, state_str in matches:
+                outlet_num = int(outlet_str)
+                state = state_str.lower() in ["on", "true", "1"]
+                outlet_states[outlet_num] = state
+                _LOGGER.debug("Telnet outlet %d state: %s", outlet_num, state)
+
+            _LOGGER.info("Read %d outlet states via Telnet", len(outlet_states))
+            return outlet_states
+
+        except Exception as err:
+            _LOGGER.error("Error reading Telnet outlet states: %s", err)
+            return {}
+
+    async def _handle_telnet_authentication(self) -> bool:
+        """Handle Telnet authentication sequence.
+
+        Returns:
+            bool: True if authentication successful
+        """
+        if not (self.config.username and self.config.password):
+            _LOGGER.error("Username and password required for Telnet authentication")
+            return False
+
+        try:
+            # Read initial data (may include Telnet negotiation)
+            initial_data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            initial_text = initial_data.decode("utf-8", errors="ignore")
+            _LOGGER.debug("Telnet initial response: %s", initial_text[:200])
+
+            # Send username
+            self._writer.write(f"{self.config.username}\r\n".encode())
+            await self._writer.drain()
+
+            # Read response (should ask for password)
+            response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            response_text = response.decode("utf-8", errors="ignore")
+            _LOGGER.debug("Username response: %s", response_text[:200])
+
+            # Send password
+            self._writer.write(f"{self.config.password}\r\n".encode())
+            await self._writer.drain()
+
+            # Read final authentication response
+            auth_response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            auth_text = auth_response.decode("utf-8", errors="ignore")
+            _LOGGER.debug("Password response: %s", auth_text[:200])
+
+            # Check for successful login (welcome message or command prompt)
+            if any(
+                indicator in auth_text.lower()
+                for indicator in ["welcome", "last login", "] # ", "> ", "$ "]
+            ):
+                _LOGGER.info("Telnet authentication successful")
+                self._authenticated = True
+                return True
+            else:
+                _LOGGER.error("Telnet authentication failed")
+                return False
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("Timeout during Telnet authentication")
+            return False
+        except Exception as err:
+            _LOGGER.error("Telnet authentication error: %s", err)
+            return False
 
     # Legacy method for compatibility with existing controller code
     async def send_command(self, command: str) -> str:
-        """Legacy text command method - converts to appropriate binary commands.
+        """Legacy text command method - now routes to appropriate protocol.
 
         This method provides compatibility with the existing controller code
         that expects text-based commands.
         """
-        _LOGGER.warning(
-            "Legacy text command called: %s - converting to binary", command
-        )
+        _LOGGER.debug("Legacy command called: %s", command)
 
-        # For now, return empty string - the controller will need to be updated
-        # to use the new binary methods directly
-        return ""
+        # Route to appropriate protocol based on connection type
+        # For now, try Telnet if we detect we're using a Telnet connection
+        if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
+            return await self.send_telnet_command(command)
+        else:
+            _LOGGER.warning(
+                "Legacy command '%s' - no appropriate protocol handler", command
+            )
+            return ""

@@ -2,7 +2,7 @@
 
 This integration allows Home Assistant to control and monitor Middle Atlantic RackLink PDUs (Power Distribution Units).
 
-**Important Note:** This integration works exclusively with the Premium+ Series PDUs. Standard Premium Series or other model lines are not supported.
+**Important Note:** This integration supports Premium and Premium+ Series PDUs with control protocol capabilities.
 
 ## Features
 
@@ -12,12 +12,19 @@ This integration allows Home Assistant to control and monitor Middle Atlantic Ra
 - 📝 Customizable outlet names
 - 🔍 **Automatic mDNS discovery** - finds RackLink devices on your network
 - 🔧 **Smart port detection** - automatically finds the correct control port
-- 🔒 Modern binary protocol communication
+- 🔄 **Dual protocol support** - Telnet (Select/Premium) and Binary (Premium+)
+- 🧠 **Smart protocol detection** - automatically detects and uses correct protocol
 - 🏠 **Home Assistant discovery integration** - devices appear automatically
 
 ## Supported Devices
 
-This integration supports the following Middle Atlantic RackLink Premium+ PDU models:
+This integration supports Middle Atlantic RackLink PDU models with control protocol capabilities:
+
+### Premium Series (Telnet Protocol - Port 6000)
+- RLNK-P920R ✅ *Verified Compatible*
+- Other RLNK-P### models with control protocol support
+
+### Premium+ Series (Binary Protocol - Port 60000)
 
 - RLNK-P415
 - RLNK-P420
@@ -93,18 +100,29 @@ If automatic discovery doesn't find your device:
 
 ### Connection Issues
 
-1. **Cannot Connect**: Ensure the PDU is powered on and connected to your network
-2. **Authentication Failed**: Check that the username and password are correct
-3. **Timeout Errors**: Verify the IP address and that port 60000 is accessible
-4. **Device Not Found**: Make sure you're using the correct model (Premium+ series only)
+1. **Cannot Connect**: 
+   - Ensure the PDU is powered on and connected to your network
+   - Integration will automatically try ports 6000 (Telnet) and 60000 (Binary)
+2. **Authentication Failed**: 
+   - Check that the username and password are correct
+   - Default is often `admin` but password is device-specific
+3. **Control Protocol Not Enabled**: 
+   - Access device web interface and enable control protocol
+   - Premium series: usually enabled by default
+   - Premium+ series: may need manual activation
+4. **Device Not Found**: 
+   - Verify your device is Premium or Premium+ series with control protocol support
 
 ### Common Configuration
 
-- **Default Username**: `user` (Select/Premium) or `admin` (Premium+)
-- **Default Password**: `password` (Select/Premium) or configured admin password (Premium+)
-- **Default Port**: `60000` (RackLink Binary Protocol)
+- **Default Username**: `admin` (most common default)
+- **Default Password**: Device-specific (often changed from factory default)
+- **Ports**: 
+  - `6000` - Telnet Protocol (Premium Series)
+  - `60000` - Binary Protocol (Premium+ Series)
+  - Integration automatically detects correct port and protocol
 - **Network Requirements**: PDU and Home Assistant must be on the same network or have routing configured
-- **Control Protocol**: Must be enabled on the device
+- **Control Protocol**: Must be enabled on the device (check device settings)
 
 ### Logging
 

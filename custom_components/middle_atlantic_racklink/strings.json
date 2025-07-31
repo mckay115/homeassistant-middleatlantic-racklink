@@ -6,9 +6,9 @@
           "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant. {discovered_count} devices were discovered on your network.",
           "data": {
             "host": "IP Address",
-            "username": "Username (default: user for Select/Premium, admin for Premium+)",
-            "password": "Password (default: password for Select/Premium)",
-            "port": "Port (default: 60000)",
+            "username": "Username (default: admin)",
+            "password": "Password (device-specific, often changed from default)",
+            "port": "Port (6000 for Telnet, 60000 for Binary protocol)",
             "device": "Select Device"
           }
         },

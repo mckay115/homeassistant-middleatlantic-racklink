@@ -239,43 +239,63 @@ class RacklinkController:
             raise
 
     async def _update_outlet_states(self) -> None:
-        """Update outlet states using binary protocol."""
+        """Update outlet states using appropriate protocol."""
         try:
-            _LOGGER.debug("Fetching outlet states using binary protocol")
+            # Check protocol type and use appropriate method
+            if (
+                hasattr(self.socket, "_protocol_type")
+                and self.socket._protocol_type == "telnet"
+            ):
+                _LOGGER.debug("Fetching outlet states using Telnet protocol")
+                outlet_data = await self.socket.telnet_read_outlet_states()
 
-            # If we don't know how many outlets we have, try a reasonable range
-            if not self.outlet_states:
-                # Try outlets 1-16 to discover available outlets
-                outlet_range = range(1, 17)
-            else:
-                # Use known outlets
-                outlet_range = self.outlet_states.keys()
-
-            outlet_data = {}
-            for outlet_num in outlet_range:
-                state = await self.socket.read_outlet_state(outlet_num)
-                if state is not None:  # Valid response
-                    outlet_data[outlet_num] = state
-                    _LOGGER.debug(
-                        "Outlet %d state: %s",
-                        outlet_num,
-                        "ON" if state else "OFF",
-                    )
+                if outlet_data:
+                    _LOGGER.info("Found %d outlet states via Telnet", len(outlet_data))
+                    for outlet_num, state in outlet_data.items():
+                        self.outlet_states[outlet_num] = state
+                        # Set default name if not already set
+                        if outlet_num not in self.outlet_names:
+                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
                 else:
-                    # If we're discovering outlets and get no response, we've found the limit
-                    if not self.outlet_states:
-                        break
+                    _LOGGER.warning("No outlet states found via Telnet")
 
-            # Update our state with discovered outlets
-            if outlet_data:
-                _LOGGER.info("Found %d outlet states", len(outlet_data))
-                for outlet_num, state in outlet_data.items():
-                    self.outlet_states[outlet_num] = state
-                    # Set default name if not already set
-                    if outlet_num not in self.outlet_names:
-                        self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
             else:
-                _LOGGER.warning("No outlet states found")
+                # Use binary protocol
+                _LOGGER.debug("Fetching outlet states using binary protocol")
+
+                # If we don't know how many outlets we have, try a reasonable range
+                if not self.outlet_states:
+                    # Try outlets 1-16 to discover available outlets
+                    outlet_range = range(1, 17)
+                else:
+                    # Use known outlets
+                    outlet_range = self.outlet_states.keys()
+
+                outlet_data = {}
+                for outlet_num in outlet_range:
+                    state = await self.socket.read_outlet_state(outlet_num)
+                    if state is not None:  # Valid response
+                        outlet_data[outlet_num] = state
+                        _LOGGER.debug(
+                            "Outlet %d state: %s",
+                            outlet_num,
+                            "ON" if state else "OFF",
+                        )
+                    else:
+                        # If we're discovering outlets and get no response, we've found the limit
+                        if not self.outlet_states:
+                            break
+
+                # Update our state with discovered outlets
+                if outlet_data:
+                    _LOGGER.info("Found %d outlet states via binary", len(outlet_data))
+                    for outlet_num, state in outlet_data.items():
+                        self.outlet_states[outlet_num] = state
+                        # Set default name if not already set
+                        if outlet_num not in self.outlet_names:
+                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                else:
+                    _LOGGER.warning("No outlet states found via binary")
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)
@@ -422,12 +442,19 @@ class RacklinkController:
             raise
 
     async def turn_outlet_on(self, outlet: int) -> bool:
-        """Turn an outlet on using RackLink binary protocol."""
+        """Turn an outlet on using appropriate protocol."""
         try:
             _LOGGER.info("Turning outlet %d ON", outlet)
 
-            # Use binary protocol command
-            success = await self.socket.send_outlet_command(outlet, OUTLET_ON)
+            # Check protocol type and use appropriate method
+            if (
+                hasattr(self.socket, "_protocol_type")
+                and self.socket._protocol_type == "telnet"
+            ):
+                success = await self.socket.telnet_outlet_command(outlet, "on")
+            else:
+                # Use binary protocol command
+                success = await self.socket.send_outlet_command(outlet, OUTLET_ON)
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d ON", outlet)
@@ -442,12 +469,19 @@ class RacklinkController:
             return False
 
     async def turn_outlet_off(self, outlet: int) -> bool:
-        """Turn an outlet off using RackLink binary protocol."""
+        """Turn an outlet off using appropriate protocol."""
         try:
             _LOGGER.info("Turning outlet %d OFF", outlet)
 
-            # Use binary protocol command
-            success = await self.socket.send_outlet_command(outlet, OUTLET_OFF)
+            # Check protocol type and use appropriate method
+            if (
+                hasattr(self.socket, "_protocol_type")
+                and self.socket._protocol_type == "telnet"
+            ):
+                success = await self.socket.telnet_outlet_command(outlet, "off")
+            else:
+                # Use binary protocol command
+                success = await self.socket.send_outlet_command(outlet, OUTLET_OFF)
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d OFF", outlet)
@@ -462,14 +496,21 @@ class RacklinkController:
             return False
 
     async def cycle_outlet(self, outlet: int, cycle_time: int = 5) -> bool:
-        """Cycle an outlet using RackLink binary protocol."""
+        """Cycle an outlet using appropriate protocol."""
         try:
             _LOGGER.info("Cycling outlet %d for %d seconds", outlet, cycle_time)
 
-            # Use binary protocol command with cycle time
-            success = await self.socket.send_outlet_command(
-                outlet, OUTLET_CYCLE, cycle_time
-            )
+            # Check protocol type and use appropriate method
+            if (
+                hasattr(self.socket, "_protocol_type")
+                and self.socket._protocol_type == "telnet"
+            ):
+                success = await self.socket.telnet_outlet_command(outlet, "cycle")
+            else:
+                # Use binary protocol command with cycle time
+                success = await self.socket.send_outlet_command(
+                    outlet, OUTLET_CYCLE, cycle_time
+                )
 
             if success:
                 _LOGGER.info("Successfully cycled outlet %d", outlet)
