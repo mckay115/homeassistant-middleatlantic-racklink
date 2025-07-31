@@ -7,9 +7,22 @@
   "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
   "homekit": {},
   "iot_class": "local_polling",
-  "requirements": [],
+  "requirements": ["zeroconf>=0.47.0"],
   "ssdp": [],
   "version": "1.0.0",
-  "zeroconf": [],
+  "zeroconf": [
+    {
+      "type": "_http._tcp.local.",
+      "name": "racklink*"
+    },
+    {
+      "type": "_https._tcp.local.", 
+      "name": "racklink*"
+    },
+    {
+      "type": "_json-rpc._tcp.local.",
+      "name": "racklink*"
+    }
+  ],
   "integration_type": "device"
 }

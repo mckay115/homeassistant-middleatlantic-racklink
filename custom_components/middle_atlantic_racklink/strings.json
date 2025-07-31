@@ -3,19 +3,36 @@
       "step": {
         "user": {
           "title": "Connect to Middle Atlantic RackLink PDU",
-          "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant.",
+          "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant. {discovered_count} devices were discovered on your network.",
           "data": {
             "host": "IP Address",
             "username": "Username (default: user for Select/Premium, admin for Premium+)",
             "password": "Password (default: password for Select/Premium)",
-            "port": "Port (default: 60000)"
+            "port": "Port (default: 60000)",
+            "device": "Select Device"
+          }
+        },
+        "discovery": {
+          "title": "Discovering RackLink Devices",
+          "description": "Searching for RackLink PDUs on your network..."
+        },
+        "zeroconf_confirm": {
+          "title": "Confirm RackLink Device",
+          "description": "Found RackLink device: {hostname}. Please confirm the connection details.",
+          "data": {
+            "host": "IP Address",
+            "username": "Username",
+            "password": "Password", 
+            "port": "Port"
           }
         }
       },
       "error": {
         "cannot_connect": "Failed to connect to the device. Please check the IP address, port, and network connectivity.",
+        "cannot_connect_after_discovery": "Failed to connect even after trying to discover the correct port. Please verify the device is a RackLink PDU and control protocol is enabled.",
         "invalid_auth": "Invalid username or password. Please check your credentials.",
         "invalid_input": "Invalid input provided. Please check all fields.",
+        "not_racklink_device": "This device does not appear to be a RackLink PDU.",
         "unknown": "Unexpected error occurred. Please try again."
       },
       "abort": {

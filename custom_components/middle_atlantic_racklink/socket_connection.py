@@ -187,20 +187,48 @@ class SocketConnection:
             bool: True if connection was successful, False otherwise
         """
         try:
+            _LOGGER.info(
+                "Attempting TCP connection to %s:%d with %ds timeout",
+                self.config.host,
+                self.config.port,
+                self.config.timeout,
+            )
+
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.config.host, self.config.port),
                 timeout=self.config.timeout,
             )
 
-            _LOGGER.debug(
+            _LOGGER.info(
                 "TCP connection established to %s:%d",
                 self.config.host,
                 self.config.port,
             )
             return True
 
-        except (asyncio.TimeoutError, ConnectionError, OSError) as err:
-            _LOGGER.error("Connection error: %s", err)
+        except asyncio.TimeoutError as err:
+            _LOGGER.error(
+                "Connection timeout to %s:%d after %ds - check if device is reachable and port %d is open",
+                self.config.host,
+                self.config.port,
+                self.config.timeout,
+                self.config.port,
+            )
+            return False
+        except ConnectionRefusedError as err:
+            _LOGGER.error(
+                "Connection refused to %s:%d - check if control protocol is enabled on device",
+                self.config.host,
+                self.config.port,
+            )
+            return False
+        except (ConnectionError, OSError) as err:
+            _LOGGER.error(
+                "Network error connecting to %s:%d: %s - check network connectivity",
+                self.config.host,
+                self.config.port,
+                err,
+            )
             return False
 
     async def connect(self) -> bool:
@@ -511,6 +539,64 @@ class SocketConnection:
             except Exception as err:
                 _LOGGER.error("Error reading outlet state: %s", err)
                 return None
+
+    async def test_port_connectivity(self, port: int, timeout: int = 5) -> bool:
+        """Test if a specific port is open and responsive.
+
+        Args:
+            port: Port number to test
+            timeout: Connection timeout in seconds
+
+        Returns:
+            bool: True if port is accessible, False otherwise
+        """
+        try:
+            _LOGGER.debug("Testing connectivity to %s:%d", self.config.host, port)
+
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.config.host, port), timeout=timeout
+            )
+
+            # Clean up connection
+            writer.close()
+            await writer.wait_closed()
+
+            _LOGGER.debug("Port %d is accessible on %s", port, self.config.host)
+            return True
+
+        except Exception as err:
+            _LOGGER.debug(
+                "Port %d not accessible on %s: %s", port, self.config.host, err
+            )
+            return False
+
+    async def discover_racklink_port(self) -> Optional[int]:
+        """Discover which port the RackLink device is using.
+
+        Tests common RackLink ports to find the correct one.
+
+        Returns:
+            int: Discovered port number, or None if not found
+        """
+        # Common RackLink ports to test
+        ports_to_test = [
+            60000,  # Standard binary protocol port
+            23,  # Telnet (older implementations)
+            6000,  # Sometimes misconfigured
+            4001,  # Alternative port
+            80,  # HTTP (device present but wrong protocol)
+            443,  # HTTPS (device present but wrong protocol)
+        ]
+
+        _LOGGER.info("Discovering RackLink device port on %s", self.config.host)
+
+        for port in ports_to_test:
+            if await self.test_port_connectivity(port):
+                _LOGGER.info("Found responsive port %d on %s", port, self.config.host)
+                return port
+
+        _LOGGER.warning("No responsive ports found on %s", self.config.host)
+        return None
 
     # Legacy method for compatibility with existing controller code
     async def send_command(self, command: str) -> str:

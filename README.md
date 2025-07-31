@@ -10,8 +10,10 @@ This integration allows Home Assistant to control and monitor Middle Atlantic Ra
 - 📊 Monitor power data (current, voltage, power, energy)
 - 🌡️ Temperature monitoring
 - 📝 Customizable outlet names
-- 🔍 Automatic device detection
-- 🔒 Modern socket-based connection
+- 🔍 **Automatic mDNS discovery** - finds RackLink devices on your network
+- 🔧 **Smart port detection** - automatically finds the correct control port
+- 🔒 Modern binary protocol communication
+- 🏠 **Home Assistant discovery integration** - devices appear automatically
 
 ## Supported Devices
 
@@ -51,11 +53,28 @@ Model number guide:
 
 ## Configuration
 
+### Automatic Discovery (Recommended)
+
+The integration can automatically find RackLink devices on your network:
+
+1. Go to Settings → Devices & Services
+2. Click "Add Integration"  
+3. Search for "Middle Atlantic RackLink" and select it
+4. **The integration will automatically scan for devices** using mDNS discovery
+5. Select your device from the discovered list or choose "Enter manually"
+6. Verify the pre-filled connection details
+7. Click "Submit" to add the device
+
+### Manual Configuration
+
+If automatic discovery doesn't find your device:
+
 1. Go to Settings → Devices & Services
 2. Click "Add Integration"
 3. Search for "Middle Atlantic RackLink" and select it
-4. Enter your PDU's IP address and port (default: 60000 for RackLink binary protocol)
-5. Enter the username and password for your PDU:
+4. Choose "Enter manually" if discovery was attempted
+5. Enter your PDU's IP address and port (default: 60000 for RackLink binary protocol)
+6. Enter the username and password for your PDU:
    - **Select/Premium**: Default username "user", default password "password"
    - **Premium+**: Any admin user with control protocol access enabled
 

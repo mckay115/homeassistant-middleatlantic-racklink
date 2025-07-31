@@ -3,7 +3,7 @@
 # Standard library imports
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Third-party imports
 import voluptuous as vol
@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_PASSWORD,
 )
 from .controller.racklink_controller import RacklinkController
+from .discovery import discover_racklink_devices, DiscoveredDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,6 +132,11 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        self._discovered_devices: List[DiscoveredDevice] = []
+        self._discovery_completed = False
+
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -143,32 +149,93 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Check if the entry matches the current flow."""
         return other_flow.unique_id == self.unique_id
 
+    async def async_step_zeroconf(self, discovery_info: Dict[str, Any]) -> FlowResult:
+        """Handle zeroconf discovery."""
+        _LOGGER.debug("Zeroconf discovery info: %s", discovery_info)
+
+        # Extract device info from zeroconf discovery
+        hostname = discovery_info.get("hostname", "").rstrip(".")
+        properties = discovery_info.get("properties", {})
+
+        # Check if this looks like a RackLink device
+        if not any(
+            identifier in hostname.lower()
+            for identifier in ["racklink", "pdu", "power"]
+        ):
+            return self.async_abort(reason="not_racklink_device")
+
+        # Set unique ID based on hostname
+        await self.async_set_unique_id(hostname)
+        self._abort_if_unique_id_configured()
+
+        # Store discovery info and proceed to user confirmation
+        self.context["title_placeholders"] = {"name": hostname}
+        return await self.async_step_zeroconf_confirm(discovery_info)
+
+    async def async_step_zeroconf_confirm(
+        self, discovery_info: Dict[str, Any]
+    ) -> FlowResult:
+        """Confirm zeroconf discovery."""
+        hostname = discovery_info.get("hostname", "").rstrip(".")
+        host = discovery_info.get("host")
+        port = discovery_info.get("port", DEFAULT_PORT)
+
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+
+        # Pre-fill the form with discovered information
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST, default=host): cv.string,
+                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+                vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+                vol.Optional(CONF_PORT, default=port): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="zeroconf_confirm",
+            data_schema=data_schema,
+            description_placeholders={"hostname": hostname},
+        )
+
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
+        # If no input yet, try to discover devices first
+        if user_input is None and not self._discovery_completed:
+            return await self.async_step_discovery()
+
         if user_input is not None:
             try:
-                info = await validate_connection(self.hass, user_input)
+                # If connection fails, try to discover the correct port
+                if not await self._test_connection_with_discovery(user_input):
+                    errors["base"] = "cannot_connect_after_discovery"
+                else:
+                    info = await validate_connection(self.hass, user_input)
 
-                # Handle unique ID based on MAC address
-                mac_address = info.get("mac_address")
-                if mac_address and mac_address != "Unknown MAC":
-                    # Set unique ID and check for duplicates
-                    await self.async_set_unique_id(mac_address)
-                    try:
-                        self._abort_if_unique_id_configured(updates=user_input)
-                    except AbortFlow as err:
-                        return self.async_abort(reason=err.reason)
+                    # Handle unique ID based on MAC address
+                    mac_address = info.get("mac_address")
+                    if mac_address and mac_address != "Unknown MAC":
+                        # Set unique ID and check for duplicates
+                        await self.async_set_unique_id(mac_address)
+                        try:
+                            self._abort_if_unique_id_configured(updates=user_input)
+                        except AbortFlow as err:
+                            return self.async_abort(reason=err.reason)
 
-                # Create a friendly title for the config entry
-                title = info["pdu_name"]
-                if info["pdu_model"] != "Unknown Model":
-                    title = f"{title} ({info['pdu_model']})"
+                    # Create a friendly title for the config entry
+                    title = info["pdu_name"]
+                    if info["pdu_model"] != "Unknown Model":
+                        title = f"{title} ({info['pdu_model']})"
 
-                return self.async_create_entry(title=title, data=user_input)
+                    return self.async_create_entry(title=title, data=user_input)
+
             except CannotConnect as err:
                 _LOGGER.warning("Cannot connect to device: %s", err)
                 errors["base"] = "cannot_connect"
@@ -182,8 +249,115 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 _LOGGER.exception("Unexpected exception during config flow: %s", err)
                 errors["base"] = "unknown"
 
-        return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        # Show discovered devices or manual entry form
+        if self._discovered_devices:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=self._build_device_selection_schema(),
+                errors=errors,
+                description_placeholders={
+                    "discovered_count": str(len(self._discovered_devices))
+                },
+            )
+        else:
+            return self.async_show_form(
+                step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            )
+
+    async def async_step_discovery(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle device discovery."""
+        _LOGGER.info("Starting RackLink device discovery...")
+
+        try:
+            # Discover devices using mDNS
+            self._discovered_devices = await discover_racklink_devices(timeout=8.0)
+            self._discovery_completed = True
+
+            _LOGGER.info("Discovery found %d devices", len(self._discovered_devices))
+
+            if len(self._discovered_devices) == 1:
+                # Auto-select the single device
+                device = self._discovered_devices[0]
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(
+                                CONF_HOST, default=device.ip_address
+                            ): cv.string,
+                            vol.Optional(
+                                CONF_USERNAME, default=DEFAULT_USERNAME
+                            ): cv.string,
+                            vol.Optional(
+                                CONF_PASSWORD, default=DEFAULT_PASSWORD
+                            ): cv.string,
+                            vol.Optional(
+                                CONF_PORT, default=device.suggested_control_port
+                            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+                        }
+                    ),
+                    description_placeholders={"device_name": device.name},
+                )
+
+        except Exception as err:
+            _LOGGER.error("Error during discovery: %s", err)
+
+        # Proceed to manual entry
+        return await self.async_step_user()
+
+    async def _test_connection_with_discovery(self, user_input: Dict[str, Any]) -> bool:
+        """Test connection and try to discover correct port if needed."""
+        from .socket_connection import SocketConnection, SocketConfig
+
+        host = user_input[CONF_HOST]
+        port = user_input[CONF_PORT]
+        username = user_input[CONF_USERNAME]
+        password = user_input[CONF_PASSWORD]
+
+        # First, try the provided port
+        config = SocketConfig(
+            host=host, port=port, username=username, password=password
+        )
+        socket_conn = SocketConnection(config)
+
+        if await socket_conn.test_port_connectivity(port):
+            _LOGGER.info("Port %d is accessible on %s", port, host)
+            return True
+
+        # If that fails, try to discover the correct port
+        _LOGGER.info("Port %d not accessible, trying to discover correct port...", port)
+        discovered_port = await socket_conn.discover_racklink_port()
+
+        if discovered_port and discovered_port != port:
+            _LOGGER.info("Discovered working port %d, updating config", discovered_port)
+            user_input[CONF_PORT] = discovered_port
+            return True
+
+        return False
+
+    def _build_device_selection_schema(self) -> vol.Schema:
+        """Build schema with discovered devices."""
+        if not self._discovered_devices:
+            return STEP_USER_DATA_SCHEMA
+
+        # Create device options for selection
+        device_options = {}
+        for device in self._discovered_devices:
+            key = f"{device.ip_address}:{device.suggested_control_port}"
+            label = f"{device.name} ({device.ip_address})"
+            device_options[key] = label
+
+        # Add manual entry option
+        device_options["manual"] = "Enter manually"
+
+        return vol.Schema(
+            {
+                vol.Required("device"): vol.In(device_options),
+                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+                vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+            }
         )
 
     async def async_step_import(
