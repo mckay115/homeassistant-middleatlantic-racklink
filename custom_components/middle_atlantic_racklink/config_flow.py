@@ -86,11 +86,40 @@ async def validate_connection(
         # Try to retrieve device information
         await controller.update()
 
-        # Validate that we got some basic information
-        if not controller.pdu_name and not controller.pdu_model:
-            _LOGGER.error("Failed to retrieve device information")
+        # Also test basic device communication with a simple command
+        try:
+            test_response = await controller.socket.send_command("help")
+            _LOGGER.info(
+                "Device connectivity test - 'help' command response: %r",
+                test_response[:200],
+            )
+            device_responsive = bool(test_response.strip())
+        except Exception as err:
+            _LOGGER.warning("Device connectivity test failed: %s", err)
+            device_responsive = False
+
+        # Validate that we can at least communicate with the device
+        # Even if parsing fails, as long as we're connected, authenticated, and device responds, it's valid
+        if not controller.socket.connected or not controller.socket.authenticated:
+            _LOGGER.error("Failed to establish authenticated connection to device")
             await controller.disconnect()
-            raise CannotConnect("Failed to retrieve device information")
+            raise CannotConnect("Authentication failed")
+
+        if not device_responsive:
+            _LOGGER.warning(
+                "Device not responding to basic commands, but connection established"
+            )
+            # Don't fail here - device might have different command format
+
+        # Log what information we were able to retrieve
+        _LOGGER.info(
+            "Device validation: name=%s, model=%s, firmware=%s, serial=%s, mac=%s",
+            controller.pdu_name or "Unknown",
+            controller.pdu_model or "Unknown",
+            controller.pdu_firmware or "Unknown",
+            controller.pdu_serial or "Unknown",
+            controller.mac_address or "Unknown",
+        )
 
         # Get device information for the config entry title
         info = {

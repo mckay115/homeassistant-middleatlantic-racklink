@@ -135,21 +135,37 @@ class RacklinkController:
     async def _update_pdu_details(self) -> None:
         """Update PDU details."""
         try:
-            _LOGGER.debug("Fetching PDU details")
+            _LOGGER.info("Fetching PDU details")
             # Based on logs, the device is expecting a different command format
             # Try different command variations
             response = await self.socket.send_command("show pdu details")
-            if "^" in response or "label" in response:
+            _LOGGER.info(
+                "PDU details command 'show pdu details' response: %r", response[:500]
+            )
+
+            if "^" in response or "label" in response or not response.strip():
                 # If first command fails, try alternative
-                _LOGGER.debug("First PDU command failed, trying alternative")
+                _LOGGER.info("First PDU command failed, trying alternative: 'pdu info'")
                 response = await self.socket.send_command("pdu info")
+                _LOGGER.info(
+                    "PDU details command 'pdu info' response: %r", response[:500]
+                )
 
                 # If still failing, try even simpler command
-                if "^" in response or "label" in response:
-                    _LOGGER.debug("Second PDU command failed, trying simpler version")
+                if "^" in response or "label" in response or not response.strip():
+                    _LOGGER.info(
+                        "Second PDU command failed, trying simpler version: 'info'"
+                    )
                     response = await self.socket.send_command("info")
+                    _LOGGER.info(
+                        "PDU details command 'info' response: %r", response[:500]
+                    )
 
-            _LOGGER.debug("PDU details response received (full): %r", response)
+            _LOGGER.info(
+                "Final PDU details response received (length=%d): %r",
+                len(response),
+                response[:1000],
+            )
 
             # Parse PDU name - updated regex to match "PDU 'Name'"
             name_match = re.search(r"PDU ['\"](.*?)['\"]", response)
@@ -305,19 +321,32 @@ class RacklinkController:
         """Update system status including power data."""
         try:
             # Get inlet details - trying different command formats
-            _LOGGER.debug("Fetching inlet details")
+            _LOGGER.info("Fetching inlet/sensor details")
             response = await self.socket.send_command("show inlets")
+            _LOGGER.info("Inlet command 'show inlets' response: %r", response[:500])
 
-            if "^" in response or "label" in response:
-                _LOGGER.debug("First inlet command failed, trying alternative")
+            if "^" in response or "label" in response or not response.strip():
+                _LOGGER.info(
+                    "First inlet command failed, trying alternative: 'inlet status'"
+                )
                 response = await self.socket.send_command("inlet status")
+                _LOGGER.info(
+                    "Inlet command 'inlet status' response: %r", response[:500]
+                )
 
                 # If still failing, try simpler version
-                if "^" in response or "label" in response:
-                    _LOGGER.debug("Second inlet command failed, trying simpler version")
+                if "^" in response or "label" in response or not response.strip():
+                    _LOGGER.info(
+                        "Second inlet command failed, trying simpler version: 'status'"
+                    )
                     response = await self.socket.send_command("status")
+                    _LOGGER.info("Inlet command 'status' response: %r", response[:500])
 
-            _LOGGER.debug("Inlet details response: %r", response)
+            _LOGGER.info(
+                "Final inlet details response received (length=%d): %r",
+                len(response),
+                response[:1000],
+            )
 
             # Parse voltage - updated regex pattern
             voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
