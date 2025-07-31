@@ -124,6 +124,16 @@ class SocketConnection:
         self._ping_task: Optional[asyncio.Task] = None
         self._last_ping_time = 0.0
 
+    @property
+    def connected(self) -> bool:
+        """Return True if connected to the device."""
+        return self._connected
+
+    @property
+    def authenticated(self) -> bool:
+        """Return True if authenticated with the device."""
+        return self._authenticated
+
     async def _handle_authentication(self) -> bool:
         """Handle authentication based on detected protocol type.
 
@@ -169,7 +179,10 @@ class SocketConnection:
                     response_hex = initial_response.hex()
                     response_text = initial_response.decode("utf-8", errors="ignore")
 
-                    _LOGGER.debug("Initial connection response: %s", response_hex)
+                    _LOGGER.info("Initial connection response (hex): %s", response_hex)
+                    _LOGGER.info(
+                        "Initial connection response (text): %s", response_text[:200]
+                    )
 
                     # Check for Telnet IAC sequences or login prompts
                     if any(
@@ -961,15 +974,32 @@ class SocketConnection:
             _LOGGER.debug("Password response: %s", auth_text[:200])
 
             # Check for successful login (welcome message or command prompt)
-            if any(
-                indicator in auth_text.lower()
-                for indicator in ["welcome", "last login", "] # ", "> ", "$ "]
-            ):
-                _LOGGER.info("Telnet authentication successful")
+            success_indicators = [
+                "welcome",
+                "last login",
+                "] # ",
+                "> ",
+                "$ ",
+                "cli>",
+                "racklink",
+                "ma>",
+            ]
+            auth_text_lower = auth_text.lower()
+
+            _LOGGER.info(
+                "Checking Telnet auth response for success indicators: %s",
+                auth_text[:500],
+            )
+
+            if any(indicator in auth_text_lower for indicator in success_indicators):
+                _LOGGER.info("Telnet authentication successful (found indicator)")
                 self._authenticated = True
                 return True
             else:
-                _LOGGER.error("Telnet authentication failed")
+                _LOGGER.error(
+                    "Telnet authentication failed - no success indicators found in response: %s",
+                    auth_text[:200],
+                )
                 return False
 
         except asyncio.TimeoutError:
