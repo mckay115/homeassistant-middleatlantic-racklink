@@ -823,12 +823,7 @@ class SocketConnection:
         Returns:
             str: The response from the device
         """
-        # Test with simple commands first
-        if command == "show pdu details":
-            _LOGGER.error(
-                "EMERGENCY DEBUG: Attempting to send command that should work: %s",
-                command,
-            )
+        # Send command via Telnet
         if not self._reader or not self._writer:
             _LOGGER.error("Telnet not connected - cannot send command")
             return ""
@@ -837,9 +832,6 @@ class SocketConnection:
             # Send command with newline
             full_command = f"{command}\r\n"
             _LOGGER.debug("Sending Telnet command: %s", command)
-            _LOGGER.error(
-                "EMERGENCY DEBUG: Raw command bytes: %r", full_command.encode("ascii")
-            )
 
             self._writer.write(full_command.encode("ascii"))
             await self._writer.drain()
@@ -864,7 +856,6 @@ class SocketConnection:
                     break
 
             full_response = "".join(response_parts)
-            _LOGGER.error("EMERGENCY DEBUG: Raw device response: %r", full_response)
 
             # Clean up response - remove the command echo and prompt
             lines = full_response.split("\n")
@@ -897,11 +888,9 @@ class SocketConnection:
         try:
             # Format command based on examples from response_samples
             command = f"power outlets {outlet} {action} /y"
-            _LOGGER.error("EMERGENCY DEBUG: Sending Telnet outlet command: %s", command)
+            _LOGGER.info("Sending Telnet outlet command: %s", command)
             response = await self.send_telnet_command(command)
-            _LOGGER.error(
-                "EMERGENCY DEBUG: Telnet outlet command response: %r", response[:200]
-            )
+            _LOGGER.debug("Telnet outlet command response: %s", response[:200])
 
             # For outlet commands, success is typically indicated by getting back to prompt
             # without error messages
@@ -928,9 +917,9 @@ class SocketConnection:
             Dict mapping outlet numbers to state (True=On, False=Off)
         """
         try:
-            _LOGGER.error("EMERGENCY DEBUG: Sending 'show outlets all' command")
+            _LOGGER.info("Sending 'show outlets all' command")
             response = await self.send_telnet_command("show outlets all")
-            _LOGGER.error("EMERGENCY DEBUG: Outlet states response: %r", response[:300])
+            _LOGGER.debug("Outlet states response: %s", response[:300])
 
             outlet_states = {}
 
@@ -1036,20 +1025,12 @@ class SocketConnection:
         This method provides compatibility with the existing controller code
         that expects text-based commands.
         """
-        _LOGGER.error("EMERGENCY DEBUG: Legacy send_command called: %s", command)
-        _LOGGER.error(
-            "EMERGENCY DEBUG: Protocol type: %s",
-            getattr(self, "_protocol_type", "NOT SET"),
-        )
         _LOGGER.debug("Legacy command called: %s", command)
 
         # Route to appropriate protocol based on connection type
         # For now, try Telnet if we detect we're using a Telnet connection
         if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
             result = await self.send_telnet_command(command)
-            _LOGGER.error(
-                "EMERGENCY DEBUG: send_command result length: %d", len(result)
-            )
             return result
         else:
             _LOGGER.warning(

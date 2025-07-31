@@ -137,50 +137,9 @@ class RacklinkController:
         try:
             _LOGGER.info("Fetching PDU details")
 
-            # First, try a simple command to clear any command state issues
-            _LOGGER.error("EMERGENCY DEBUG: Sending test 'help' command first")
-            help_response = await self.socket.send_command("help")
-            _LOGGER.error(
-                "EMERGENCY DEBUG: Help command response: %r", help_response[:200]
-            )
-
-            # Small delay before main command
-            await asyncio.sleep(0.1)
-
-            # Based on working response samples, use exact command syntax
-            _LOGGER.error("EMERGENCY DEBUG: Now sending 'show pdu details' command")
+            # Use exact command syntax from working response samples
             response = await self.socket.send_command("show pdu details")
-            _LOGGER.error(
-                "EMERGENCY DEBUG: PDU details command 'show pdu details' response: %r",
-                response[:500],
-            )
-            _LOGGER.info(
-                "PDU details command 'show pdu details' response: %r", response[:500]
-            )
-
-            if "^" in response or "label" in response or not response.strip():
-                # If first command fails, try alternative
-                _LOGGER.info("First PDU command failed, trying alternative: 'pdu info'")
-                response = await self.socket.send_command("pdu info")
-                _LOGGER.info(
-                    "PDU details command 'pdu info' response: %r", response[:500]
-                )
-
-                # If still failing, try even simpler command
-                if "^" in response or "label" in response or not response.strip():
-                    _LOGGER.info(
-                        "Second PDU command failed, trying simpler version: 'info'"
-                    )
-                    response = await self.socket.send_command("info")
-                    _LOGGER.info(
-                        "PDU details command 'info' response: %r", response[:500]
-                    )
-
-            _LOGGER.info(
-                "Final PDU details response received (length=%d): %r",
-                len(response),
-                response[:1000],
-            )
+            _LOGGER.info("PDU details response: %s", response[:300])
 
             # Parse PDU name - updated regex to match "PDU 'Name'"
             name_match = re.search(r"PDU ['\"](.*?)['\"]", response)
@@ -231,22 +190,12 @@ class RacklinkController:
                     self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
                     _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
 
-            # Get MAC address
+            # Get MAC address using exact command syntax
             _LOGGER.debug("Fetching network interface details")
-            # Try different network commands
-            network_response = await self.socket.send_command("show network")
-            if "^" in network_response or "label" in network_response:
-                _LOGGER.debug("First network command failed, trying alternative")
-                network_response = await self.socket.send_command("network info")
-
-                # If still failing, try even simpler command
-                if "^" in network_response or "label" in network_response:
-                    _LOGGER.debug(
-                        "Second network command failed, trying simpler version"
-                    )
-                    network_response = await self.socket.send_command("net")
-
-            _LOGGER.debug("Network interface response: %r", network_response)
+            network_response = await self.socket.send_command(
+                "show network interface eth1"
+            )
+            _LOGGER.debug("Network interface response: %s", network_response[:200])
 
             mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n|,)", network_response)
             if mac_match:
@@ -335,33 +284,11 @@ class RacklinkController:
     async def _update_system_status(self) -> None:
         """Update system status including power data."""
         try:
-            # Get inlet details - trying different command formats
-            _LOGGER.info("Fetching inlet/sensor details")
-            response = await self.socket.send_command("show inlets")
-            _LOGGER.info("Inlet command 'show inlets' response: %r", response[:500])
-
-            if "^" in response or "label" in response or not response.strip():
-                _LOGGER.info(
-                    "First inlet command failed, trying alternative: 'inlet status'"
-                )
-                response = await self.socket.send_command("inlet status")
-                _LOGGER.info(
-                    "Inlet command 'inlet status' response: %r", response[:500]
-                )
-
-                # If still failing, try simpler version
-                if "^" in response or "label" in response or not response.strip():
-                    _LOGGER.info(
-                        "Second inlet command failed, trying simpler version: 'status'"
-                    )
-                    response = await self.socket.send_command("status")
-                    _LOGGER.info("Inlet command 'status' response: %r", response[:500])
-
-            _LOGGER.info(
-                "Final inlet details response received (length=%d): %r",
-                len(response),
-                response[:1000],
-            )
+            # Get power data from a representative outlet (outlet 1)
+            # Based on response samples, sensor data comes from individual outlet details
+            _LOGGER.info("Fetching power sensor data from outlet 1 details")
+            response = await self.socket.send_command("show outlets 1 details")
+            _LOGGER.info("Outlet 1 details response: %s", response[:300])
 
             # Parse voltage - updated regex pattern
             voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)

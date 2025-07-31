@@ -271,14 +271,8 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""
-        _LOGGER.error(
-            "EMERGENCY DEBUG: Coordinator turn_outlet_on called for outlet %d", outlet
-        )
         _LOGGER.info("Coordinator: Turning outlet %d on", outlet)
         success = await self.controller.turn_outlet_on(outlet)
-        _LOGGER.error(
-            "EMERGENCY DEBUG: Controller turn_outlet_on returned: %s", success
-        )
 
         if success:
             # Update our local data to reflect the change before refresh
@@ -305,14 +299,8 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
     async def turn_outlet_off(self, outlet: int) -> None:
         """Turn an outlet off and refresh data."""
-        _LOGGER.error(
-            "EMERGENCY DEBUG: Coordinator turn_outlet_off called for outlet %d", outlet
-        )
         _LOGGER.info("Coordinator: Turning outlet %d off", outlet)
         success = await self.controller.turn_outlet_off(outlet)
-        _LOGGER.error(
-            "EMERGENCY DEBUG: Controller turn_outlet_off returned: %s", success
-        )
 
         if success:
             # Update our local data to reflect the change before refresh
