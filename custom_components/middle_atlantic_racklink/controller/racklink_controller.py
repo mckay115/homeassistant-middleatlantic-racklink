@@ -139,6 +139,7 @@ class RacklinkController:
             # Based on logs, the device is expecting a different command format
             # Try different command variations
             response = await self.socket.send_command("show pdu details")
+            _LOGGER.error("EMERGENCY DEBUG: PDU details command 'show pdu details' response: %r", response[:500])
             _LOGGER.info(
                 "PDU details command 'show pdu details' response: %r", response[:500]
             )

@@ -887,7 +887,11 @@ class SocketConnection:
         try:
             # Format command based on examples from response_samples
             command = f"power outlets {outlet} {action} /y"
+            _LOGGER.error("EMERGENCY DEBUG: Sending Telnet outlet command: %s", command)
             response = await self.send_telnet_command(command)
+            _LOGGER.error(
+                "EMERGENCY DEBUG: Telnet outlet command response: %r", response[:200]
+            )
 
             # For outlet commands, success is typically indicated by getting back to prompt
             # without error messages
@@ -1020,12 +1024,21 @@ class SocketConnection:
         This method provides compatibility with the existing controller code
         that expects text-based commands.
         """
+        _LOGGER.error("EMERGENCY DEBUG: Legacy send_command called: %s", command)
+        _LOGGER.error(
+            "EMERGENCY DEBUG: Protocol type: %s",
+            getattr(self, "_protocol_type", "NOT SET"),
+        )
         _LOGGER.debug("Legacy command called: %s", command)
 
         # Route to appropriate protocol based on connection type
         # For now, try Telnet if we detect we're using a Telnet connection
         if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
-            return await self.send_telnet_command(command)
+            result = await self.send_telnet_command(command)
+            _LOGGER.error(
+                "EMERGENCY DEBUG: send_command result length: %d", len(result)
+            )
+            return result
         else:
             _LOGGER.warning(
                 "Legacy command '%s' - no appropriate protocol handler", command

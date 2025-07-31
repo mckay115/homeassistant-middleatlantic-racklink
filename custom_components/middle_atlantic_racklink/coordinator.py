@@ -43,10 +43,10 @@ class RacklinkCoordinator(DataUpdateCoordinator):
     async def _async_setup(self) -> None:
         """Initialize the coordinator with device setup."""
         _LOGGER.debug("Setting up RackLink coordinator")
-        
+
         # Connect to the device and perform initial setup
         await self.controller.connect()
-        
+
         # Mark as initialized
         self._initialized = True
         _LOGGER.info("RackLink coordinator setup completed")
@@ -81,6 +81,43 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         }
         _LOGGER.debug("Device info: %r", device_info)
         return device_info
+
+    def get_model_capabilities(self) -> Dict[str, Any]:
+        """Return model capabilities based on available data.
+
+        Returns:
+            Dict containing model capabilities like number of outlets, features, etc.
+        """
+        capabilities = {
+            "num_outlets": 8,  # Default assumption for RackLink devices
+            "has_surge_protection": True,  # Most RackLink devices have surge protection
+            "has_current_monitoring": True,
+            "has_power_monitoring": True,
+            "has_energy_monitoring": True,
+            "supports_outlet_control": True,
+        }
+
+        # Try to determine actual outlet count from controller data
+        if hasattr(self.controller, "outlet_states") and self.controller.outlet_states:
+            actual_outlets = len(self.controller.outlet_states)
+            if actual_outlets > 0:
+                capabilities["num_outlets"] = actual_outlets
+                _LOGGER.debug(
+                    "Detected %d outlets from controller data", actual_outlets
+                )
+
+        # Check model-specific capabilities if we have model info
+        if self.controller.pdu_model:
+            model = self.controller.pdu_model.upper()
+            if "920" in model:  # RLNK-P920R series
+                capabilities["num_outlets"] = 8
+            elif "424" in model:  # Smaller models
+                capabilities["num_outlets"] = 4
+            elif "1600" in model or "16" in model:  # Larger models
+                capabilities["num_outlets"] = 16
+
+        _LOGGER.info("Model capabilities determined: %s", capabilities)
+        return capabilities
 
     @property
     def outlet_data(self) -> Dict[int, Dict[str, Any]]:
@@ -234,8 +271,14 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""
+        _LOGGER.error(
+            "EMERGENCY DEBUG: Coordinator turn_outlet_on called for outlet %d", outlet
+        )
         _LOGGER.info("Coordinator: Turning outlet %d on", outlet)
         success = await self.controller.turn_outlet_on(outlet)
+        _LOGGER.error(
+            "EMERGENCY DEBUG: Controller turn_outlet_on returned: %s", success
+        )
 
         if success:
             # Update our local data to reflect the change before refresh
@@ -262,8 +305,14 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
     async def turn_outlet_off(self, outlet: int) -> None:
         """Turn an outlet off and refresh data."""
+        _LOGGER.error(
+            "EMERGENCY DEBUG: Coordinator turn_outlet_off called for outlet %d", outlet
+        )
         _LOGGER.info("Coordinator: Turning outlet %d off", outlet)
         success = await self.controller.turn_outlet_off(outlet)
+        _LOGGER.error(
+            "EMERGENCY DEBUG: Controller turn_outlet_off returned: %s", success
+        )
 
         if success:
             # Update our local data to reflect the change before refresh
