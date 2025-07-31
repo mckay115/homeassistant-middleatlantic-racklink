@@ -1,11 +1,19 @@
 """Controller for Middle Atlantic RackLink PDUs."""
 
-from ..socket_connection import SocketConfig, SocketConnection
-from typing import Any, Dict, Optional
-
+# Standard library imports
 import asyncio
 import logging
 import re
+from typing import Any, Dict, Optional
+
+# Local application/library specific imports
+from ..socket_connection import (
+    SocketConnection,
+    SocketConfig,
+    OUTLET_ON,
+    OUTLET_OFF,
+    OUTLET_CYCLE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -231,63 +239,43 @@ class RacklinkController:
             raise
 
     async def _update_outlet_states(self) -> None:
-        """Update outlet states."""
+        """Update outlet states using binary protocol."""
         try:
-            _LOGGER.debug("Fetching outlet states")
+            _LOGGER.debug("Fetching outlet states using binary protocol")
 
-            # Try different command variations to get outlet states
-            commands_to_try = [
-                "show outlets all details",
-                "show outlets",
-                "show outlet",
-                "show outlets all",
-            ]
+            # If we don't know how many outlets we have, try a reasonable range
+            if not self.outlet_states:
+                # Try outlets 1-16 to discover available outlets
+                outlet_range = range(1, 17)
+            else:
+                # Use known outlets
+                outlet_range = self.outlet_states.keys()
 
             outlet_data = {}
-            for cmd in commands_to_try:
-                _LOGGER.debug("Trying command: %s", cmd)
-                response = await self.socket.send_command(cmd)
-
-                if not response or "ERROR:" in response:
-                    continue
-
-                # Try to parse outlet states from response
-                matches = re.finditer(
-                    r"Outlet\s+(\d+)(?:\s*-\s*([^:]*))?:\s*Power\s+state:\s*(on|off)",
-                    response,
-                    re.IGNORECASE | re.MULTILINE,
-                )
-
-                for match in matches:
-                    outlet_num = int(match.group(1))
-                    name = (
-                        match.group(2).strip()
-                        if match.group(2)
-                        else f"Outlet {outlet_num}"
-                    )
-                    state = match.group(3).lower() == "on"
-
-                    outlet_data[outlet_num] = {"state": state, "name": name}
+            for outlet_num in outlet_range:
+                state = await self.socket.read_outlet_state(outlet_num)
+                if state is not None:  # Valid response
+                    outlet_data[outlet_num] = state
                     _LOGGER.debug(
-                        "Found outlet %d: state=%s, name=%s",
+                        "Outlet %d state: %s",
                         outlet_num,
                         "ON" if state else "OFF",
-                        name,
                     )
+                else:
+                    # If we're discovering outlets and get no response, we've found the limit
+                    if not self.outlet_states:
+                        break
 
-                if outlet_data:
-                    break
-
-            # If we found any outlet data, update our state
+            # Update our state with discovered outlets
             if outlet_data:
                 _LOGGER.info("Found %d outlet states", len(outlet_data))
-                for outlet_num, data in outlet_data.items():
-                    self.outlet_states[outlet_num] = data["state"]
-                    self.outlet_names[outlet_num] = data["name"]
+                for outlet_num, state in outlet_data.items():
+                    self.outlet_states[outlet_num] = state
+                    # Set default name if not already set
+                    if outlet_num not in self.outlet_names:
+                        self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
             else:
-                _LOGGER.warning("No outlet states found in any response")
-                # Try individual outlet queries as fallback
-                await self._get_outlet_states_individually()
+                _LOGGER.warning("No outlet states found")
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)
@@ -434,96 +422,53 @@ class RacklinkController:
             raise
 
     async def turn_outlet_on(self, outlet: int) -> bool:
-        """Turn an outlet on."""
+        """Turn an outlet on using RackLink binary protocol."""
         try:
             _LOGGER.info("Turning outlet %d ON", outlet)
 
-            # Try different command variations
-            commands_to_try = [
-                f"power outlets {outlet} on /y",
-                f"power outlet {outlet} on /y",
-                f"power outletgroup {outlet} on /y",
-                f"outlet {outlet} on",
-            ]
+            # Use binary protocol command
+            success = await self.socket.send_outlet_command(outlet, OUTLET_ON)
 
-            for cmd in commands_to_try:
-                _LOGGER.debug("Trying command: %s", cmd)
-                response = await self.socket.send_command(cmd)
-
-                # Check for success indicators
-                if any(
-                    success in response.lower()
-                    for success in ["success", "on", "enabled", "active"]
-                ):
-                    _LOGGER.info("Successfully turned outlet %d ON", outlet)
-                    self.outlet_states[outlet] = True
-                    return True
-
-                # If we got an error, try the next command
-                if "error" in response.lower():
-                    continue
-
-            _LOGGER.warning("Failed to turn outlet %d ON with any command", outlet)
-            return False
+            if success:
+                _LOGGER.info("Successfully turned outlet %d ON", outlet)
+                self.outlet_states[outlet] = True
+                return True
+            else:
+                _LOGGER.warning("Failed to turn outlet %d ON", outlet)
+                return False
 
         except Exception as err:
             _LOGGER.error("Error turning outlet %d on: %s", outlet, err)
             return False
 
     async def turn_outlet_off(self, outlet: int) -> bool:
-        """Turn an outlet off."""
+        """Turn an outlet off using RackLink binary protocol."""
         try:
             _LOGGER.info("Turning outlet %d OFF", outlet)
 
-            # Try different command variations
-            commands_to_try = [
-                f"power outlets {outlet} off /y",
-                f"power outlet {outlet} off /y",
-                f"power outletgroup {outlet} off /y",
-                f"outlet {outlet} off",
-            ]
+            # Use binary protocol command
+            success = await self.socket.send_outlet_command(outlet, OUTLET_OFF)
 
-            for cmd in commands_to_try:
-                _LOGGER.debug("Trying command: %s", cmd)
-                response = await self.socket.send_command(cmd)
-
-                # Check for success indicators
-                if any(
-                    success in response.lower()
-                    for success in ["success", "off", "disabled", "inactive"]
-                ):
-                    _LOGGER.info("Successfully turned outlet %d OFF", outlet)
-                    self.outlet_states[outlet] = False
-                    return True
-
-                # If we got an error, try the next command
-                if "error" in response.lower():
-                    continue
-
-            _LOGGER.warning("Failed to turn outlet %d OFF with any command", outlet)
-            return False
+            if success:
+                _LOGGER.info("Successfully turned outlet %d OFF", outlet)
+                self.outlet_states[outlet] = False
+                return True
+            else:
+                _LOGGER.warning("Failed to turn outlet %d OFF", outlet)
+                return False
 
         except Exception as err:
             _LOGGER.error("Error turning outlet %d off: %s", outlet, err)
             return False
 
-    async def cycle_outlet(self, outlet: int) -> bool:
-        """Cycle an outlet."""
+    async def cycle_outlet(self, outlet: int, cycle_time: int = 5) -> bool:
+        """Cycle an outlet using RackLink binary protocol."""
         try:
-            _LOGGER.info("Cycling outlet %d", outlet)
-            # Use the correct command format based on the device's help output
-            cmd = f"power outlet {outlet} cycle"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Cycle outlet response: %r", response)
+            _LOGGER.info("Cycling outlet %d for %d seconds", outlet, cycle_time)
 
-            # Check if command was successful - expanded success patterns
-            success = (
-                "success" in response.lower()
-                or "cycling" in response.lower()
-                or "reboot" in response.lower()
-                or f"outlet {outlet}" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
+            # Use binary protocol command with cycle time
+            success = await self.socket.send_outlet_command(
+                outlet, OUTLET_CYCLE, cycle_time
             )
 
             if success:
@@ -531,7 +476,7 @@ class RacklinkController:
                 # The outlet will be on after cycling (after a delay)
                 # Wait briefly for the cycle to complete
                 _LOGGER.debug("Waiting for cycle to complete")
-                await asyncio.sleep(2)
+                await asyncio.sleep(cycle_time + 1)  # Wait for cycle time plus buffer
                 # Store previous state for logging
                 prev_state = self.outlet_states.get(outlet, None)
                 self.outlet_states[outlet] = True
@@ -546,48 +491,50 @@ class RacklinkController:
                 )
                 return True
             else:
-                _LOGGER.warning(
-                    "Failed to cycle outlet %d. Response: %r", outlet, response
-                )
+                _LOGGER.warning("Failed to cycle outlet %d", outlet)
                 return False
 
         except Exception as err:
             _LOGGER.error("Error cycling outlet %d: %s", outlet, err)
             return False
 
-    async def cycle_all_outlets(self) -> bool:
-        """Cycle all outlets."""
+    async def cycle_all_outlets(self, cycle_time: int = 5) -> bool:
+        """Cycle all outlets using binary protocol."""
         try:
-            _LOGGER.info("Cycling all outlets")
-            # Use the correct command format based on the device's help output
-            cmd = "power outlets all cycle"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Cycle all outlets response: %r", response)
-
-            # Check if command was successful - expanded success patterns
-            success = (
-                "success" in response.lower()
-                or "cycling" in response.lower()
-                or "reboot" in response.lower()
-                or "outlets all" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
+            _LOGGER.info(
+                "Cycling all outlets (%d outlets) for %d seconds",
+                len(self.outlet_states),
+                cycle_time,
             )
 
-            if success:
-                _LOGGER.info("Successfully cycling all outlets")
-                # Wait briefly for the cycle to complete
-                _LOGGER.debug("Waiting for all outlets cycle to complete")
-                await asyncio.sleep(2)
-                # Log previous states
-                _LOGGER.debug("Previous outlet states: %r", self.outlet_states)
-                # Update all outlets to on
-                for outlet in self.outlet_states:
-                    self.outlet_states[outlet] = True
+            success_count = 0
+            total_outlets = len(self.outlet_states)
+
+            # Cycle each outlet individually
+            for outlet_num in self.outlet_states:
+                outlet_success = await self.socket.send_outlet_command(
+                    outlet_num, OUTLET_CYCLE, cycle_time
+                )
+                if outlet_success:
+                    success_count += 1
+                    _LOGGER.debug("Successfully cycled outlet %d", outlet_num)
+                else:
+                    _LOGGER.warning("Failed to cycle outlet %d", outlet_num)
+
+            if success_count > 0:
+                _LOGGER.info(
+                    "Successfully cycled %d of %d outlets", success_count, total_outlets
+                )
+                # Wait for the cycle to complete
+                _LOGGER.debug("Waiting for all outlet cycles to complete")
+                await asyncio.sleep(cycle_time + 1)
+                # Update all successfully cycled outlets to on
+                for outlet_num in self.outlet_states:
+                    self.outlet_states[outlet_num] = True
                 _LOGGER.debug("Updated all outlet states to ON after cycle")
-                return True
+                return success_count == total_outlets
             else:
-                _LOGGER.warning("Failed to cycle all outlets. Response: %r", response)
+                _LOGGER.warning("Failed to cycle any outlets")
                 return False
 
         except Exception as err:

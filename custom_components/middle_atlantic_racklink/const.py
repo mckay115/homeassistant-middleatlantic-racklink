@@ -1,19 +1,20 @@
 """Constants for the Middle Atlantic RackLink integration."""
 
-from datetime import timedelta
-from homeassistant.const import Platform
+# from datetime import timedelta # Unused
+# from homeassistant.const import Platform # Unused
 
 # Integration domain
 DOMAIN = "middle_atlantic_racklink"
 
 # Default values
-DEFAULT_PORT = 6000
+DEFAULT_PORT = 60000  # TCP port for RackLink Select, Premium, Premium+ series
 DEFAULT_NAME = "Middle Atlantic Racklink"
 DEFAULT_SCAN_INTERVAL = 10  # seconds (changed from 30 to 10)
 DEFAULT_TIMEOUT = 20
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
 DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
-DEFAULT_USERNAME = "admin"
+DEFAULT_USERNAME = "user"  # Default for Select/Premium series (Premium+ uses admin)
+DEFAULT_PASSWORD = "password"  # Default for Select/Premium series
 
 # Connection parameters
 MAX_RECONNECT_ATTEMPTS = 3

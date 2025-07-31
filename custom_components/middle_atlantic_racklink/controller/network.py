@@ -1,6 +1,6 @@
 """Network-related functionality for the RackLink controller."""
 
-from datetime import datetime
+# from datetime import datetime # Unused
 
 import asyncio
 import logging

@@ -1,11 +1,10 @@
 """Command execution functionality for the RackLink controller."""
 
-from typing import List, Optional
+from typing import List
 
 import asyncio
 import logging
 import re
-import time
 
 _LOGGER = logging.getLogger(__name__)
 

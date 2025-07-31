@@ -1,0 +1,25 @@
+{
+  "description": "Rules specific to Middle Atlantic PDU communication and response handling",
+  "patterns": [
+    "custom_components/middle_atlantic_racklink/socket_connection.py",
+    "custom_components/middle_atlantic_racklink/parser.py",
+    "response_samples/**/*"
+  ],
+  "rules": {
+    "socket_communication": {
+      "require_timeout_handling": true,
+      "require_reconnection_logic": true,
+      "require_buffer_management": true
+    },
+    "response_parsing": {
+      "require_error_handling": true,
+      "require_data_validation": true,
+      "require_type_conversion": true
+    },
+    "performance": {
+      "require_async_operations": true,
+      "require_efficient_data_structures": true,
+      "require_proper_cleanup": true
+    }
+  }
+} 

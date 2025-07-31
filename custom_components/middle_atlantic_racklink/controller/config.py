@@ -1,6 +1,6 @@
 """Configuration functionality for the RackLink controller."""
 
-from typing import Any, Dict, Optional, Set, Union
+# from typing import Any, Dict, Optional, Set, Union # Unused
 
 import asyncio
 import logging

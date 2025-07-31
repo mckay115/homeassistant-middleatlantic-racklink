@@ -1,0 +1,36 @@
+{
+  "name": "Testing and CI/CD Rules",
+  "description": "Rules for automated testing and continuous integration",
+  "pattern": "**/*.{py,yaml,json}",
+  "rules": {
+    "testing": {
+      "auto_run_tests": true,
+      "test_commands": [
+        "pytest tests/test_binary_sensor.py tests/test_sensor.py tests/test_switch.py tests/test_config_flow.py -v",
+        "isort --check-only --profile=black custom_components/middle_atlantic_racklink",
+        "black --check custom_components/middle_atlantic_racklink",
+        "pylint custom_components/middle_atlantic_racklink",
+        "mypy custom_components/middle_atlantic_racklink"
+      ],
+      "test_on_save": true,
+      "test_on_branch_switch": true,
+      "fail_on_error": true
+    },
+    "pre_commit": {
+      "enabled": true,
+      "commands": [
+        "black .",
+        "isort .",
+        "pylint custom_components/middle_atlantic_racklink",
+        "pytest"
+      ]
+    },
+    "post_commit": {
+      "enabled": true,
+      "commands": [
+        "pytest --cov=custom_components/middle_atlantic_racklink tests/",
+        "coverage report"
+      ]
+    }
+  }
+} 

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from . import DOMAIN
-from .coordinator import RacklinkCoordinator
+# Standard library imports
+import logging
+from typing import Any
+
+# Home Assistant core imports
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from typing import Any
 
-import logging
+# Local application/library specific imports
+from . import DOMAIN
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 

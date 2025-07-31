@@ -1,0 +1,30 @@
+{
+  "description": "Global project settings and conventions",
+  "patterns": ["**/*"],
+  "rules": {
+    "version_control": {
+      "require_semantic_versioning": true,
+      "require_changelog_updates": true,
+      "require_commit_messages": true
+    },
+    "ignore_patterns": [
+      "__pycache__",
+      "*.pyc",
+      ".pytest_cache",
+      ".coverage",
+      "*.egg-info",
+      "dist",
+      "build",
+      ".github/workflows/*.yml",
+      ".github/workflows/*.yaml"
+    ],
+    "custom_commands": {
+      "format": "black . && isort .",
+      "test": "pytest",
+      "lint": "pylint custom_components/middle_atlantic_racklink",
+      "type_check": "mypy custom_components/middle_atlantic_racklink",
+      "workflow_test": "act -l",
+      "workflow_run": "act -W .github/workflows/test.yaml"
+    }
+  }
+} 

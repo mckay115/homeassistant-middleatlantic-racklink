@@ -1,8 +1,14 @@
 """Middle Atlantic RackLink integration for Home Assistant."""
 
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+# Standard library imports
 from datetime import timedelta
+import logging
+from typing import Any, Dict
+
+# Third-party imports
+import voluptuous as vol
+
+# Home Assistant core imports
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -16,10 +22,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
-from typing import Any, Dict
 
-import logging
-import voluptuous as vol
+# Local application/library specific imports
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +36,7 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.SENSOR,
     Platform.BUTTON,
+    Platform.BINARY_SENSOR,
 ]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -43,7 +50,7 @@ async def async_setup(_hass: HomeAssistant, _config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Middle Atlantic RackLink from a config entry."""
     host = entry.data[CONF_HOST]
-    port = entry.data.get(CONF_PORT, 6000)
+    port = entry.data.get(CONF_PORT, 60000)
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)

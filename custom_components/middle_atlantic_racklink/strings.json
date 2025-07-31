@@ -6,17 +6,17 @@
           "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant.",
           "data": {
             "host": "IP Address",
-            "port": "Port (default: 23)",
-            "username": "Username (optional)",
-            "password": "Password (optional)",
-            "pdu_name": "PDU Name (optional)"
+            "username": "Username (default: user for Select/Premium, admin for Premium+)",
+            "password": "Password (default: password for Select/Premium)",
+            "port": "Port (default: 60000)"
           }
         }
       },
       "error": {
-        "cannot_connect": "Failed to connect",
-        "invalid_auth": "Invalid authentication",
-        "unknown": "Unexpected error"
+        "cannot_connect": "Failed to connect to the device. Please check the IP address, port, and network connectivity.",
+        "invalid_auth": "Invalid username or password. Please check your credentials.",
+        "invalid_input": "Invalid input provided. Please check all fields.",
+        "unknown": "Unexpected error occurred. Please try again."
       },
       "abort": {
         "already_configured": "Device is already configured"

@@ -54,9 +54,48 @@ Model number guide:
 1. Go to Settings → Devices & Services
 2. Click "Add Integration"
 3. Search for "Middle Atlantic RackLink" and select it
-4. Enter your PDU's IP address and port (default: 23)
-5. If your PDU requires authentication, enter the username and password
+4. Enter your PDU's IP address and port (default: 60000 for RackLink binary protocol)
+5. Enter the username and password for your PDU:
+   - **Select/Premium**: Default username "user", default password "password"
+   - **Premium+**: Any admin user with control protocol access enabled
+
+**Important:** This integration uses the RackLink binary protocol (port 60000) to communicate with RackLink PDUs. Ensure that:
+- Your PDU is configured to accept TCP connections on port 60000
+- The control protocol is enabled (see instructions below)
+- The PDU is on the same network as your Home Assistant instance
+- Firewall settings allow connections on port 60000
+
+**Enabling Control Protocol Access:**
+- **Select/Premium**: Enabled automatically after first web login and password change
+- **Premium+**: Must be enabled manually via Device Settings → Network Services → Control Protocol (checkbox)
 6. Click "Submit" to add the integration
+
+## Troubleshooting
+
+### Connection Issues
+
+1. **Cannot Connect**: Ensure the PDU is powered on and connected to your network
+2. **Authentication Failed**: Check that the username and password are correct
+3. **Timeout Errors**: Verify the IP address and that port 60000 is accessible
+4. **Device Not Found**: Make sure you're using the correct model (Premium+ series only)
+
+### Common Configuration
+
+- **Default Username**: `user` (Select/Premium) or `admin` (Premium+)
+- **Default Password**: `password` (Select/Premium) or configured admin password (Premium+)
+- **Default Port**: `60000` (RackLink Binary Protocol)
+- **Network Requirements**: PDU and Home Assistant must be on the same network or have routing configured
+- **Control Protocol**: Must be enabled on the device
+
+### Logging
+
+To enable debug logging, add this to your `configuration.yaml`:
+
+```yaml
+logger:
+  logs:
+    custom_components.middle_atlantic_racklink: debug
+```
 
 ## Services
 

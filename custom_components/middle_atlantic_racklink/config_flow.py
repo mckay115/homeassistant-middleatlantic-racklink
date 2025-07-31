@@ -1,36 +1,51 @@
-"""Config flow for Middle Atlantic RackLink integration."""
+"""Config flow for Middle Atlantic RackLink."""
 
-from __future__ import annotations
+# Standard library imports
+import asyncio
+import logging
+from typing import Any, Dict, Optional
 
-from .const import (
+# Third-party imports
+import voluptuous as vol
+
+# Home Assistant core imports
+from homeassistant import config_entries
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
     CONF_SCAN_INTERVAL,
+    CONF_USERNAME,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+
+# Local application/library specific imports
+from .const import (
+    DOMAIN,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_USERNAME,
-    DOMAIN,
+    DEFAULT_PASSWORD,
 )
 from .controller.racklink_controller import RacklinkController
-from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import callback, HomeAssistant
-from homeassistant.data_entry_flow import AbortFlow, FlowResult
-from homeassistant.exceptions import HomeAssistantError
-from typing import Any, Dict, Optional
-
-import asyncio
-import logging
-import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
-CONNECTION_TIMEOUT = 30  # Timeout in seconds for connection validation
+
+# Constants
+CONNECTION_TIMEOUT = 10
 
 # Data schema for the user input in the config flow
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PASSWORD): str,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+        vol.Required(CONF_HOST): cv.string,
+        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+        vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+        vol.Optional(CONF_PORT, default=DEFAULT_PORT): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=65535)
+        ),
     }
 )
 
@@ -154,12 +169,17 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     title = f"{title} ({info['pdu_model']})"
 
                 return self.async_create_entry(title=title, data=user_input)
-            except CannotConnect:
+            except CannotConnect as err:
+                _LOGGER.warning("Cannot connect to device: %s", err)
                 errors["base"] = "cannot_connect"
-            except InvalidAuth:
+            except InvalidAuth as err:
+                _LOGGER.warning("Invalid authentication: %s", err)
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+            except ValueError as err:
+                _LOGGER.warning("Invalid input: %s", err)
+                errors["base"] = "invalid_input"
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception during config flow: %s", err)
                 errors["base"] = "unknown"
 
         return self.async_show_form(
@@ -201,6 +221,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=data_schema)
 
 
+# Add back exception class definitions that were removed earlier
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
 

@@ -1,12 +1,22 @@
-"""Base controller module for Middle Atlantic RackLink integration."""
+"""Base controller for managing communication with Middle Atlantic RackLink devices."""
 
+# Standard library imports
+import asyncio
+import logging
+import socket
+import dataclasses  # Import dataclasses
+from asyncio.exceptions import CancelledError
+from typing import Any, Dict, Optional, Set
+
+# Local application/library specific imports
 from ..const import (
-    COMMAND_DISCOVERY_ATTEMPTS,
-    COMMAND_QUERY_DELAY,
+    DEFAULT_RECONNECT_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,  # Added import
     DEFAULT_TIMEOUT,
-    DEVICE_TYPES,
-    MAX_CONNECTION_ATTEMPTS,
-    MAX_FAILED_COMMANDS,
+    MAX_FAILED_COMMANDS,  # Re-add import
+    # DEVICE_TYPES, # Removed unused import
+    # MAX_CONNECTION_ATTEMPTS, # Removed unused import
+    # SUPPORTED_COMMANDS_BY_MODEL, # This line should be removed
     SENSOR_PDU_CURRENT,
     SENSOR_PDU_ENERGY,
     SENSOR_PDU_FREQUENCY,
@@ -14,28 +24,90 @@ from ..const import (
     SENSOR_PDU_POWER_FACTOR,
     SENSOR_PDU_TEMPERATURE,
     SENSOR_PDU_VOLTAGE,
+    # from ..config_flow import CannotConnect, InvalidAuth # Removed unused import
 )
-from ..parser import (
-    parse_all_outlet_states,
-    parse_available_commands,
-    parse_device_info,
-    parse_outlet_names,
-    parse_pdu_power_data,
-    parse_pdu_temperature,
-)
-from ..socket_connection import SocketConnection
-from asyncio.exceptions import CancelledError
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-import asyncio
-import logging
-import re
+# from ..config_flow import CannotConnect, InvalidAuth # Removed unused import
+from ..parser import (
+    # extract_device_name_from_prompt, # Removed unused import
+    # is_command_prompt, # Removed unused import
+    # normalize_model_name, # Removed unused import
+    parse_all_outlet_states,
+    parse_available_commands,  # Re-add import
+    parse_device_info,
+    parse_network_info,  # Re-add import
+    # parse_outlet_details, # Removed unused import
+    parse_outlet_names,  # Kept needed import
+    # parse_outlet_state, # Removed unused import
+    parse_pdu_power_data,  # Re-add import
+    parse_pdu_temperature,  # Re-add import
+)
+from ..socket_connection import SocketConfig, SocketConnection
+
+# Import Mixins only
+from .commands import CommandsMixin
+from .config import ConfigMixin
+from .network import NetworkMixin
+from .state import StateMixin
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class BaseController:
-    """Base controller for Middle Atlantic RackLink PDU."""
+@dataclasses.dataclass
+class ControllerConfig:
+    host: str
+    port: int
+    username: str
+    password: str
+    scan_interval: int = DEFAULT_SCAN_INTERVAL
+    timeout: int = DEFAULT_TIMEOUT
+    reconnect_interval: int = DEFAULT_RECONNECT_INTERVAL
+    collect_power_data: bool = True
+
+
+class BaseController(CommandsMixin, ConfigMixin, NetworkMixin, StateMixin):
+    """Base class for Racklink controllers, combining mixin functionalities."""
+
+    _host: str
+    _port: int
+    _username: str
+    _password: str
+    _scan_interval: int
+    _timeout: int
+    _reconnect_interval: int
+    _collect_power_data: bool
+
+    _socket_connection: SocketConnection | None = None
+    _connected: bool = False
+    _available: bool = False
+    _connect_lock = asyncio.Lock()
+    _command_queue = asyncio.Queue()
+    _command_processor_task: asyncio.Task | None = None
+    _shutdown_requested: bool = False
+    _command_delay: float = 0.5
+    _socket: Optional[socket.socket] = None
+    _pdu_model: Optional[str] = None
+    _pdu_serial: Optional[str] = None
+    _pdu_name: Optional[str] = None
+    _pdu_firmware: Optional[str] = None
+    _mac_address: Optional[str] = None
+    _pdu_info: Dict[str, Any] = {}
+    _last_update: float = 0.0
+    outlet_names: Dict[int, str] = {}
+    _connection: Optional[SocketConnection] = None
+
+    # Added initializations for missing/W0201 attributes
+    _available_commands: Set[str] = set()
+    sensors: Dict[str, Any] = {}
+    outlet_power: Dict[int, float] = {}
+    outlet_current: Dict[int, float] = {}
+    outlet_voltage: Dict[int, float] = {}
+    outlet_energy: Dict[int, float] = {}
+    outlet_power_factor: Dict[int, float] = {}
+    outlet_line_frequency: Dict[int, float] = {}
+    _model_capabilities: Optional[Dict[str, Any]] = None
+    _command_discovery_complete: bool = False
+    outlet_states: Dict[int, bool] = {}
 
     def __init__(
         self,
@@ -43,69 +115,79 @@ class BaseController:
         port: int,
         username: str,
         password: str,
-        pdu_name: str = None,
-        connection_timeout: int = DEFAULT_TIMEOUT,
-        command_timeout: int = DEFAULT_TIMEOUT,
+        scan_interval: int = DEFAULT_SCAN_INTERVAL,
+        timeout: int = DEFAULT_TIMEOUT,
+        reconnect_interval: int = DEFAULT_RECONNECT_INTERVAL,
+        collect_power_data: bool = True,
     ) -> None:
-        """Initialize the controller."""
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
-        self._pdu_name = pdu_name or "RackLink PDU"
-        self.connection_timeout = connection_timeout
-        self.command_timeout = command_timeout
+        """Initialize the BaseController."""
+        self._host = host
+        self._port = port
+        self._username = username
+        self._password = password
+        self._scan_interval = scan_interval
+        self._timeout = timeout
+        self._reconnect_interval = reconnect_interval
+        self._collect_power_data = collect_power_data
 
-        # Connection and status tracking
-        self._connection = None
-        self._connected = False
-        self._available = False
-        self._stopping = False
-        self._error_count = 0
+        # Initialize socket config correctly
+        socket_config = SocketConfig(
+            host=self._host,
+            port=self._port,
+            username=self._username,
+            password=self._password,
+            timeout=self._timeout,
+        )
+        self._socket_connection = SocketConnection(socket_config)
+        self._connection = self._socket_connection
+
+        # Initialize locks and queues needed by mixins
         self._connect_lock = asyncio.Lock()
-        self._command_lock = asyncio.Lock()
         self._command_queue = asyncio.Queue()
         self._command_processor_task = None
+        self._shutdown_requested = False
 
-        # PDU information
-        self.pdu_model = None
-        self.pdu_serial = None
-        self.pdu_firmware = None
-        self.mac_address = None
-        self._model_capabilities = None
-        self._available_commands = set()
-        self._command_discovery_complete = False
-
-        # PDU data
-        self.outlet_states = {}
+        # Initialize attributes
+        self._connected = False
+        self._available = False
+        self._pdu_model = None
+        self._pdu_serial = None
+        self._pdu_name = None
+        self._pdu_firmware = None
+        self._mac_address = None
+        self._pdu_info = {}
+        self._last_update = 0.0
         self.outlet_names = {}
+        self._available_commands = set()
         self.sensors = {}
-        self.outlet_current = {}
         self.outlet_power = {}
-        self.outlet_energy = {}
+        self.outlet_current = {}
         self.outlet_voltage = {}
+        self.outlet_energy = {}
         self.outlet_power_factor = {}
-        self.outlet_apparent_power = {}
         self.outlet_line_frequency = {}
+        self._model_capabilities = None
+        self._command_discovery_complete = False
+        self.outlet_states = {}
 
     @property
-    def pdu_name(self) -> str:
-        """Return the PDU name."""
-        return self._pdu_name
+    def host(self) -> str:
+        """Return the host."""
+        return self._host
 
-    @pdu_name.setter
-    def pdu_name(self, value: str) -> None:
-        """Set the PDU name."""
-        self._pdu_name = value
+    @property
+    def port(self) -> int:
+        """Return the port."""
+        return self._port
 
     @property
     def connected(self) -> bool:
-        """Return True if connected to the PDU."""
+        """Return the connection status."""
         return self._connected
 
     @property
     def available(self) -> bool:
-        """Return True if the PDU is available."""
+        """Return the availability status."""
         return self._available
 
     async def connect(self) -> bool:
@@ -114,22 +196,14 @@ class BaseController:
             if self._connected:
                 return True
 
-            _LOGGER.debug("Connecting to %s:%d", self.host, self.port)
+            _LOGGER.debug("Connecting to %s:%d", self._host, self._port)
 
             try:
-                connection = SocketConnection(
-                    self.host,
-                    self.port,
-                    self.username,
-                    self.password,
-                    timeout=self.connection_timeout,
-                )
-
-                await connection.connect()
-                self._connection = connection
+                # Use the stored config to create the connection
+                await self._socket_connection.connect()
+                self._connection = self._socket_connection
                 self._connected = True
                 self._available = True
-                self._error_count = 0
 
                 # Start command processor if not already running
                 if (
@@ -144,14 +218,13 @@ class BaseController:
                 await self._get_device_info()
 
                 # Discover available commands
-                if not self._command_discovery_complete:
-                    await self._discover_available_commands()
+                await self._discover_available_commands()
 
                 _LOGGER.info(
                     "Connected to %s (%s) at %s",
-                    self.pdu_name,
-                    self.pdu_model or "Unknown",
-                    self.host,
+                    self._pdu_name,
+                    self._pdu_model or "Unknown",
+                    self._host,
                 )
 
                 return True
@@ -160,13 +233,13 @@ class BaseController:
                 self._connected = False
                 self._available = False
                 _LOGGER.error(
-                    "Failed to connect to %s:%d - %s", self.host, self.port, err
+                    "Failed to connect to %s:%d - %s", self._host, self._port, err
                 )
                 return False
 
     async def disconnect(self) -> None:
         """Disconnect from the RackLink PDU."""
-        self._stopping = True
+        self._shutdown_requested = True
 
         # Cancel the command processor task
         if self._command_processor_task and not self._command_processor_task.done():
@@ -183,12 +256,12 @@ class BaseController:
 
         self._connected = False
         self._available = False
-        _LOGGER.debug("Disconnected from %s", self.host)
+        _LOGGER.debug("Disconnected from %s", self._host)
 
     async def _process_command_queue(self) -> None:
         """Process commands from the queue to prevent overwhelming the device."""
         try:
-            while not self._stopping:
+            while not self._shutdown_requested:
                 try:
                     # Get the next command from the queue
                     command, future = await self._command_queue.get()
@@ -281,7 +354,7 @@ class BaseController:
 
         try:
             # Wait for the result with timeout
-            return await asyncio.wait_for(future, timeout=self.command_timeout)
+            return await asyncio.wait_for(future, timeout=self._timeout)
         except asyncio.TimeoutError:
             _LOGGER.error("Command timed out: %s", command)
             raise TimeoutError(f"Command timed out: {command}")
@@ -300,16 +373,9 @@ class BaseController:
         _LOGGER.debug("Sending command: %s", command)
         try:
             response = await self._connection.send_command(command)
-            self._error_count = 0  # Reset error count on success
             return response
         except Exception as err:
-            self._error_count += 1
             _LOGGER.error("Error sending command %s: %s", command, err)
-
-            if self._error_count >= MAX_FAILED_COMMANDS:
-                _LOGGER.error("Too many command errors, marking as unavailable")
-                self._available = False
-
             raise
 
     async def _get_device_info(self) -> None:
@@ -349,11 +415,11 @@ class BaseController:
                     if "name" in info:
                         self._pdu_name = info["name"]
                     if "model" in info:
-                        self.pdu_model = info["model"]
+                        self._pdu_model = info["model"]
                     if "serial" in info:
-                        self.pdu_serial = info["serial"]
+                        self._pdu_serial = info["serial"]
                     if "firmware" in info:
-                        self.pdu_firmware = info["firmware"]
+                        self._pdu_firmware = info["firmware"]
 
                     device_info_found = True
                     break
@@ -369,7 +435,7 @@ class BaseController:
                 network_info = parse_network_info(response)
 
                 if network_info and "mac_address" in network_info:
-                    self.mac_address = network_info["mac_address"]
+                    self._mac_address = network_info["mac_address"]
             except Exception as err:
                 _LOGGER.warning("Could not get network info: %s", err)
 
@@ -437,8 +503,8 @@ class BaseController:
         }
 
         # Determine capabilities based on model if available
-        if self.pdu_model:
-            model_lower = self.pdu_model.lower()
+        if self._pdu_model:
+            model_lower = self._pdu_model.lower()
 
             # Check for specific models
             if "rlnk-415-1" in model_lower:
@@ -649,3 +715,20 @@ class BaseController:
 
         except Exception as err:
             _LOGGER.error("Error updating temperature: %s", err)
+
+    async def initialize(self) -> None:
+        """Initialize the controller connection and data."""
+        _LOGGER.debug("Initializing controller for %s", self._host)
+        await self.connect()
+
+    async def shutdown(self) -> None:
+        """Shutdown the controller and clean up resources."""
+        _LOGGER.debug("Shutting down controller for %s", self._host)
+        self._shutdown_requested = True
+        if self._command_processor_task:
+            self._command_processor_task.cancel()
+            try:
+                await self._command_processor_task
+            except asyncio.CancelledError:
+                _LOGGER.debug("Command processor task cancelled successfully.")
+        await self.disconnect()

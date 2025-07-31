@@ -1,10 +1,12 @@
-"""Binary sensor platform for Middle Atlantic Racklink."""
+"""Binary Sensor platform for the Middle Atlantic RackLink integration."""
 
 from __future__ import annotations
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+# Standard library imports
+import logging
+from typing import Any, Dict
+
+# Home Assistant core imports
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -13,9 +15,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-import logging
+# Local application/library specific imports
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 

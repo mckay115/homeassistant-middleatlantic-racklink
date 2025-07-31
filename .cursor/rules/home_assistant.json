@@ -1,0 +1,41 @@
+{
+  "name": "Home Assistant Integration Rules",
+  "description": "Rules specific to Home Assistant custom component development",
+  "pattern": "custom_components/**/*",
+  "rules": {
+    "home_assistant_specific": {
+      "require_manifest_version": true,
+      "require_platform_support": true,
+      "require_config_flow": true,
+      "require_services_yaml": true,
+      "require_strings_json": true,
+      "require_translations": true
+    },
+    "documentation": {
+      "require_docstrings": true,
+      "require_type_hints": true,
+      "require_google_style_docstrings": true,
+      "require_README_updates": true
+    },
+    "testing": {
+      "require_test_coverage": 80,
+      "require_unit_tests": true,
+      "require_integration_tests": true
+    },
+    "security": {
+      "require_secure_connections": true,
+      "require_credential_handling": true,
+      "require_input_validation": true
+    },
+    "error_handling": {
+      "require_error_logging": true,
+      "require_graceful_failures": true,
+      "require_retry_mechanisms": true
+    },
+    "performance": {
+      "require_async_operations": true,
+      "require_efficient_data_structures": true,
+      "require_proper_cleanup": true
+    }
+  }
+} 

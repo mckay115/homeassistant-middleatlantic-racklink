@@ -1,15 +1,18 @@
-"""Coordinator for the Middle Atlantic RackLink integration."""
+"""Data update coordinator for the Middle Atlantic RackLink integration."""
 
-from __future__ import annotations
-
-from .const import DOMAIN
-from .controller.racklink_controller import RacklinkController
+# Standard library imports
+import asyncio
 from datetime import timedelta
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+import logging
 from typing import Any, Dict
 
-import logging
+# Home Assistant core imports
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+# Local application/library specific imports
+from .const import DOMAIN
+from .controller.racklink_controller import RacklinkController
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,76 +96,129 @@ class RacklinkCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Update data from the PDU."""
-        try:
-            # Check connection status and try to connect if needed
-            if not self.controller.connected:
-                _LOGGER.debug("Coordinator: Controller not connected, connecting...")
-                if not await self.controller.connect():
-                    _LOGGER.error("Coordinator: Failed to connect to PDU")
-                    raise UpdateFailed("Failed to connect to PDU")
+        max_retries = 3
+        retry_count = 0
 
-            # Update the PDU data
-            _LOGGER.debug("Coordinator: Updating PDU data")
-            success = await self.controller.update()
+        while retry_count < max_retries:
+            try:
+                # Check connection status and try to connect if needed
+                if not self.controller.connected:
+                    _LOGGER.debug(
+                        "Coordinator: Controller not connected (attempt %d/%d), connecting...",
+                        retry_count + 1,
+                        max_retries,
+                    )
+                    if not await self.controller.connect():
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            _LOGGER.error(
+                                "Coordinator: Failed to connect to PDU after %d attempts",
+                                max_retries,
+                            )
+                            raise UpdateFailed(
+                                "Failed to connect to PDU after multiple attempts"
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "Coordinator: Connection attempt %d failed, retrying...",
+                                retry_count,
+                            )
+                            await asyncio.sleep(2)  # Wait before retry
+                            continue
 
-            if not success:
-                _LOGGER.warning("Coordinator: Failed to update PDU data")
-                raise UpdateFailed("Failed to update PDU data")
+                # Update the PDU data
+                _LOGGER.debug("Coordinator: Updating PDU data")
+                success = await self.controller.update()
 
-            # Process outlet data
-            outlets = {}
-            _LOGGER.debug("Processing outlet states: %r", self.controller.outlet_states)
-            _LOGGER.debug("Processing outlet names: %r", self.controller.outlet_names)
+                if not success:
+                    # If update failed, the connection might be stale
+                    _LOGGER.warning(
+                        "Coordinator: Failed to update PDU data, connection may be stale"
+                    )
+                    await self.controller.disconnect()
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        raise UpdateFailed(
+                            "Failed to update PDU data after multiple attempts"
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "Coordinator: Update attempt %d failed, retrying...",
+                            retry_count,
+                        )
+                        await asyncio.sleep(2)  # Wait before retry
+                        continue
 
-            for outlet_num, state in self.controller.outlet_states.items():
-                outlets[outlet_num] = {
-                    "state": state,
-                    "name": self.controller.outlet_names.get(
-                        outlet_num, f"Outlet {outlet_num}"
-                    ),
-                }
-                _LOGGER.debug(
-                    "Processed outlet %d: state=%s, name=%r",
-                    outlet_num,
-                    "ON" if state else "OFF",
-                    outlets[outlet_num]["name"],
+                # If we get here, the update was successful
+                break
+
+            except Exception as err:
+                _LOGGER.error(
+                    "Coordinator: Error during update attempt %d: %s",
+                    retry_count + 1,
+                    err,
                 )
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise UpdateFailed(
+                        f"Error communicating with PDU after {max_retries} attempts: {err}"
+                    ) from err
+                else:
+                    # Disconnect and retry
+                    await self.controller.disconnect()
+                    await asyncio.sleep(2)
+                    continue
 
-            _LOGGER.debug("Coordinator: Updated %d outlets", len(outlets))
+        # Process outlet data (outside the retry loop)
+        outlets = {}
+        _LOGGER.debug("Processing outlet states: %r", self.controller.outlet_states)
+        _LOGGER.debug("Processing outlet names: %r", self.controller.outlet_names)
 
-            # Process system power data
-            system = {
-                "voltage": self.controller.rms_voltage,
-                "current": self.controller.rms_current,
-                "power": self.controller.active_power,
-                "energy": self.controller.active_energy,
-                "frequency": self.controller.line_frequency,
+        for outlet_num, state in self.controller.outlet_states.items():
+            outlets[outlet_num] = {
+                "state": state,
+                "name": self.controller.outlet_names.get(
+                    outlet_num, f"Outlet {outlet_num}"
+                ),
             }
+            _LOGGER.debug(
+                "Processed outlet %d: state=%s, name=%r",
+                outlet_num,
+                "ON" if state else "OFF",
+                outlets[outlet_num]["name"],
+            )
 
-            _LOGGER.debug("Coordinator: Updated system data: %r", system)
+        _LOGGER.debug("Coordinator: Updated %d outlets", len(outlets))
 
-            # Process status information
-            status = {
-                "load_shedding_active": self.controller.load_shedding_active,
-                "sequence_active": self.controller.sequence_active,
-            }
+        # Process system power data
+        system = {
+            "voltage": self.controller.rms_voltage,
+            "current": self.controller.rms_current,
+            "power": self.controller.active_power,
+            "energy": self.controller.active_energy,
+            "frequency": self.controller.line_frequency,
+        }
 
-            _LOGGER.debug("Coordinator: Updated status data: %r", status)
+        _LOGGER.debug("Coordinator: Updated system data: %r", system)
 
-            # Build the complete data structure
-            data = {
-                "outlets": outlets,
-                "system": system,
-                "status": status,
-            }
+        # Process status information
+        status = {
+            "load_shedding_active": self.controller.load_shedding_active,
+            "sequence_active": self.controller.sequence_active,
+        }
 
-            _LOGGER.debug("Full updated data: %r", data)
-            self._data = data
-            return data
+        _LOGGER.debug("Coordinator: Updated status data: %r", status)
 
-        except Exception as err:
-            _LOGGER.error("Coordinator: Error during update: %s", err)
-            raise UpdateFailed(f"Error communicating with PDU: {err}") from err
+        # Build the complete data structure
+        data = {
+            "outlets": outlets,
+            "system": system,
+            "status": status,
+        }
+
+        _LOGGER.debug("Full updated data: %r", data)
+        self._data = data
+        return data
 
     async def turn_outlet_on(self, outlet: int) -> None:
         """Turn an outlet on and refresh data."""

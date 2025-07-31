@@ -1,0 +1,35 @@
+{
+  "description": "Home Assistant integration specific rules and requirements",
+  "patterns": ["custom_components/middle_atlantic_racklink/**/*"],
+  "rules": {
+    "file_structure": {
+      "required_files": [
+        "__init__.py",
+        "manifest.json",
+        "config_flow.py",
+        "const.py",
+        "strings.json",
+        "services.yaml",
+        "README.md",
+        "CHANGELOG.md"
+      ],
+      "required_directories": [
+        "translations",
+        "tests"
+      ]
+    },
+    "integration_requirements": {
+      "require_manifest_version": true,
+      "require_platform_support": true,
+      "require_config_flow": true,
+      "require_services_yaml": true,
+      "require_strings_json": true,
+      "require_translations": true
+    },
+    "security": {
+      "require_secure_connections": true,
+      "require_credential_handling": true,
+      "require_input_validation": true
+    }
+  }
+} 
