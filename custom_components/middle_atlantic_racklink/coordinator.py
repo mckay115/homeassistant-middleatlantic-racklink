@@ -38,9 +38,21 @@ class RacklinkCoordinator(DataUpdateCoordinator):
         )
         self.controller = controller
         self._data: Dict[str, Any] = {}
+        self._initialized = False
+
+    async def _async_setup(self) -> None:
+        """Initialize the coordinator with device setup."""
+        _LOGGER.debug("Setting up RackLink coordinator")
+        
+        # Connect to the device and perform initial setup
+        await self.controller.connect()
+        
+        # Mark as initialized
+        self._initialized = True
+        _LOGGER.info("RackLink coordinator setup completed")
         _LOGGER.info(
             "Initialized RackLink coordinator with scan interval: %d seconds",
-            update_interval.total_seconds(),
+            self.update_interval.total_seconds() if self.update_interval else 0,
         )
 
     @property

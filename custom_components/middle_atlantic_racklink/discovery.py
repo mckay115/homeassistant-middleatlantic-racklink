@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
-from zeroconf import ServiceListener, ServiceBrowser
+from zeroconf import ServiceListener, ServiceBrowser, Zeroconf
 from zeroconf.asyncio import AsyncServiceInfo
 from homeassistant.components import zeroconf
 

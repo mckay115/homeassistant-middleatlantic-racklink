@@ -1,0 +1,37 @@
+# Integration Quality Scale Tracking
+# This file tracks our progress toward Home Assistant quality tiers
+# Target: Bronze tier (minimum for new integrations)
+
+rules:
+  # Bronze tier requirements
+  config_flow: done
+  config_flow_test_coverage: done
+  dependency_imports_in_executor: done
+  docs_actions: done
+  docs_config_flow: done
+  docs_platform: done
+  entity_device_info: done
+  entity_unique_id: done
+  integration_owner: done
+  iot_class: done
+  test_before_setup: done
+  valid_integration_type: done
+  
+  # Silver tier requirements (future goals)
+  code_owner_response:
+    status: exempt
+    comment: Custom integration, not applicable yet
+  
+  # Gold tier requirements (future goals)
+  config_flow_discovery:
+    status: done
+    comment: Implemented zeroconf discovery
+    
+  # Areas needing work
+  dependency_transparency:
+    status: partial
+    comment: Need to extract socket communication to external PyPI library
+    
+  test_coverage_entity_registry:
+    status: partial
+    comment: Basic entity tests exist, need expansion

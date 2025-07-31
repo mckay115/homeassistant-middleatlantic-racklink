@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 import struct
 
 import asyncio
@@ -434,7 +434,7 @@ class SocketConnection:
         except asyncio.TimeoutError:
             _LOGGER.debug("Timeout reading message")
             return None
-                except (ConnectionError, OSError) as err:
+        except (ConnectionError, OSError) as err:
             _LOGGER.error("Connection error during message read: %s", err)
             raise
 
@@ -809,7 +809,7 @@ class SocketConnection:
             while True:
                 try:
                     data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
-                if not data:
+                    if not data:
                         break
 
                     text = data.decode("utf-8", errors="ignore")

@@ -19,6 +19,7 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
@@ -76,8 +77,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=scan_interval),
     )
 
-    # Perform initial data update
-    await coordinator.async_config_entry_first_refresh()
+    # Perform initial data update with proper error handling
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as err:
+        # Convert specific errors to Home Assistant standard exceptions
+        error_msg = str(err).lower()
+        if any(auth_error in error_msg for auth_error in ["auth", "credential", "password", "username", "login"]):
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
+        elif any(conn_error in error_msg for conn_error in ["connect", "timeout", "network", "unreachable"]):
+            raise ConfigEntryError(f"Cannot connect to device: {err}") from err
+        else:
+            raise ConfigEntryError(f"Setup failed: {err}") from err
 
     # Store controller and coordinator in hass.data
     hass.data.setdefault(DOMAIN, {})
