@@ -167,7 +167,7 @@ class SocketConnection:
             tuple: (protocol_type, initial_data) where protocol_type is 'telnet', 'binary', or 'unknown'
         """
         try:
-            _LOGGER.debug("Detecting protocol type using existing connection")
+            _LOGGER.info("Detecting protocol type using existing connection")
 
             # Read initial response to detect protocol
             try:
@@ -198,18 +198,18 @@ class SocketConnection:
                             "cli",
                         ]
                     ):
-                        _LOGGER.debug(
+                        _LOGGER.info(
                             "Detected Telnet protocol (IAC sequences or login prompt)"
                         )
                         return "telnet", initial_response
 
                 # If we get here, assume binary protocol
-                _LOGGER.debug("No Telnet indicators, assuming binary protocol")
+                _LOGGER.info("No Telnet indicators, assuming binary protocol")
                 return "binary", initial_response
 
             except asyncio.TimeoutError:
                 # No initial response - could be binary protocol
-                _LOGGER.debug("No initial response, assuming binary protocol")
+                _LOGGER.info("No initial response, assuming binary protocol")
                 return "binary", b""
 
         except Exception as err:
@@ -233,7 +233,7 @@ class SocketConnection:
             login_msg = RackLinkMessage(CMD_LOGIN, SUBCMD_LOGIN, login_data)
             message_bytes = login_msg.build()
 
-            _LOGGER.debug("Sending binary login message: %s", message_bytes.hex())
+            _LOGGER.info("Sending binary login message: %s", message_bytes.hex())
             await self._send_raw_data(message_bytes)
 
             # Wait for response with shorter timeout for binary login
@@ -648,7 +648,7 @@ class SocketConnection:
             bool: True if port is accessible, False otherwise
         """
         try:
-            _LOGGER.debug("Testing connectivity to %s:%d", self.config.host, port)
+            _LOGGER.info("Testing connectivity to %s:%d", self.config.host, port)
 
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.config.host, port), timeout=timeout
@@ -658,11 +658,11 @@ class SocketConnection:
             writer.close()
             await writer.wait_closed()
 
-            _LOGGER.debug("Port %d is accessible on %s", port, self.config.host)
+            _LOGGER.info("Port %d is accessible on %s", port, self.config.host)
             return True
 
         except Exception as err:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "Port %d not accessible on %s: %s", port, self.config.host, err
             )
             return False
@@ -953,7 +953,7 @@ class SocketConnection:
             # Use stored initial data from protocol detection
             initial_data = getattr(self, "_initial_data", b"")
             initial_text = initial_data.decode("utf-8", errors="ignore")
-            _LOGGER.debug("Telnet initial response: %s", initial_text[:200])
+            _LOGGER.info("Telnet initial response: %s", initial_text[:200])
 
             # Send username
             self._writer.write(f"{self.config.username}\r\n".encode())
@@ -962,7 +962,7 @@ class SocketConnection:
             # Read response (should ask for password)
             response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
             response_text = response.decode("utf-8", errors="ignore")
-            _LOGGER.debug("Username response: %s", response_text[:200])
+            _LOGGER.info("Telnet username response: %s", response_text[:200])
 
             # Send password
             self._writer.write(f"{self.config.password}\r\n".encode())
@@ -971,7 +971,7 @@ class SocketConnection:
             # Read final authentication response
             auth_response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
             auth_text = auth_response.decode("utf-8", errors="ignore")
-            _LOGGER.debug("Password response: %s", auth_text[:200])
+            _LOGGER.info("Telnet password response: %s", auth_text[:200])
 
             # Check for successful login (welcome message or command prompt)
             success_indicators = [
@@ -983,6 +983,10 @@ class SocketConnection:
                 "cli>",
                 "racklink",
                 "ma>",
+                "slot",  # Middle Atlantic slot-based responses
+                ".wrk",  # Working directory or slot indicators
+                "ma-",  # Middle Atlantic prefix
+                "pdu",  # PDU responses
             ]
             auth_text_lower = auth_text.lower()
 

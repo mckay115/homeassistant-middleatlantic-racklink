@@ -342,16 +342,26 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         try:
             # Test actual connection and authentication, not just port accessibility
-            await socket_conn.connect()
-            if socket_conn.connected and socket_conn.authenticated:
+            connection_result = await socket_conn.connect()
+            if (
+                connection_result
+                and socket_conn.connected
+                and socket_conn.authenticated
+            ):
                 _LOGGER.info("Successfully authenticated on port %d", port)
                 await socket_conn.disconnect()
                 return True
-            else:
+            elif socket_conn.connected and not socket_conn.authenticated:
                 _LOGGER.warning("Port %d accessible but authentication failed", port)
                 await socket_conn.disconnect()
+            else:
+                _LOGGER.warning("Failed to establish connection to port %d", port)
+                if socket_conn.connected:
+                    await socket_conn.disconnect()
         except Exception as err:
             _LOGGER.warning("Connection failed on port %d: %s", port, err)
+            if socket_conn.connected:
+                await socket_conn.disconnect()
 
         # If authentication fails, try to discover the correct port
         _LOGGER.info("Trying to discover correct port and protocol...")
@@ -365,18 +375,32 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             try:
                 config.port = discovered_port
                 socket_conn = SocketConnection(config)
-                await socket_conn.connect()
-                if socket_conn.connected and socket_conn.authenticated:
+                connection_result = await socket_conn.connect()
+                if (
+                    connection_result
+                    and socket_conn.connected
+                    and socket_conn.authenticated
+                ):
                     _LOGGER.info(
                         "Successfully authenticated on discovered port %d",
                         discovered_port,
                     )
                     await socket_conn.disconnect()
                     return True
-                await socket_conn.disconnect()
+                elif socket_conn.connected:
+                    _LOGGER.warning(
+                        "Connected to discovered port %d but authentication failed",
+                        discovered_port,
+                    )
+                    await socket_conn.disconnect()
+                else:
+                    _LOGGER.warning(
+                        "Failed to connect to discovered port %d",
+                        discovered_port,
+                    )
             except Exception as err:
                 _LOGGER.error(
-                    "Failed to authenticate on discovered port %d: %s",
+                    "Connection error on discovered port %d: %s",
                     discovered_port,
                     err,
                 )
