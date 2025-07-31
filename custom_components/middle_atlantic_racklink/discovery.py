@@ -7,8 +7,9 @@ import logging
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
-from zeroconf import IPVersion, ServiceListener, Zeroconf
-from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
+from zeroconf import ServiceListener, ServiceBrowser
+from zeroconf.asyncio import AsyncServiceInfo
+from homeassistant.components import zeroconf
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,11 +64,13 @@ class DiscoveredDevice:
 class RackLinkDiscovery:
     """Discovers RackLink devices using mDNS."""
 
-    def __init__(self) -> None:
+    def __init__(self, hass) -> None:
         """Initialize the discovery service."""
         self._discovered_devices: Dict[str, DiscoveredDevice] = {}
         self._listeners: List[ServiceListener] = []
-        self._zeroconf: Optional[AsyncZeroconf] = None
+        self._browsers: List[ServiceBrowser] = []
+        self._hass = hass
+        self._zeroconf = None
 
     async def start_discovery(self, timeout: float = 10.0) -> List[DiscoveredDevice]:
         """Start mDNS discovery and return found devices.
@@ -83,28 +86,25 @@ class RackLinkDiscovery:
         )
 
         try:
-            self._zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
+            # Use Home Assistant's shared Zeroconf instance
+            self._zeroconf = await zeroconf.async_get_instance(self._hass)
 
             # Create a listener for each service type
             listener = RackLinkServiceListener(self._discovered_devices)
 
             # Browse for each service type
-            browsers = []
             for service_type in RACKLINK_SERVICE_TYPES:
                 _LOGGER.debug("Browsing for service type: %s", service_type)
-                browser = self._zeroconf.async_browser_services(
-                    [service_type], listener
-                )
-                browsers.append(browser)
+                browser = ServiceBrowser(self._zeroconf, service_type, listener)
+                self._browsers.append(browser)
 
             # Wait for discovery to complete
             await asyncio.sleep(timeout)
 
-            # Clean up
-            for browser in browsers:
-                await browser.async_cancel()
-
-            await self._zeroconf.async_close()
+            # Clean up browsers
+            for browser in self._browsers:
+                browser.cancel()
+            self._browsers.clear()
 
             devices = list(self._discovered_devices.values())
             _LOGGER.info(
@@ -124,8 +124,10 @@ class RackLinkDiscovery:
 
         except Exception as err:
             _LOGGER.error("Error during mDNS discovery: %s", err)
-            if self._zeroconf:
-                await self._zeroconf.async_close()
+            # Clean up browsers on error
+            for browser in self._browsers:
+                browser.cancel()
+            self._browsers.clear()
             return []
 
     async def discover_single_device(self, hostname: str) -> Optional[DiscoveredDevice]:
@@ -140,7 +142,8 @@ class RackLinkDiscovery:
         _LOGGER.info("Looking for specific device: %s", hostname)
 
         try:
-            self._zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
+            # Use Home Assistant's shared Zeroconf instance
+            self._zeroconf = await zeroconf.async_get_instance(self._hass)
 
             # Try to resolve the hostname directly
             for service_type in RACKLINK_SERVICE_TYPES:
@@ -148,7 +151,7 @@ class RackLinkDiscovery:
                 _LOGGER.debug("Checking service: %s", service_name)
 
                 info = await AsyncServiceInfo.async_request(
-                    self._zeroconf.zeroconf, service_type, service_name, timeout=5000
+                    self._zeroconf, service_type, service_name, timeout=5000
                 )
 
                 if info and info.addresses:
@@ -171,17 +174,13 @@ class RackLinkDiscovery:
                     _LOGGER.info(
                         "Found device: %s at %s:%d", hostname, ip_address, info.port
                     )
-                    await self._zeroconf.async_close()
                     return device
 
-            await self._zeroconf.async_close()
             _LOGGER.warning("Device %s not found via mDNS", hostname)
             return None
 
         except Exception as err:
             _LOGGER.error("Error discovering device %s: %s", hostname, err)
-            if self._zeroconf:
-                await self._zeroconf.async_close()
             return None
 
 
@@ -269,27 +268,31 @@ class RackLinkServiceListener(ServiceListener):
             _LOGGER.debug("Error processing service %s: %s", name, err)
 
 
-async def discover_racklink_devices(timeout: float = 10.0) -> List[DiscoveredDevice]:
+async def discover_racklink_devices(
+    hass, timeout: float = 10.0
+) -> List[DiscoveredDevice]:
     """Discover RackLink devices on the network.
 
     Args:
+        hass: Home Assistant instance
         timeout: Discovery timeout in seconds
 
     Returns:
         List of discovered devices
     """
-    discovery = RackLinkDiscovery()
+    discovery = RackLinkDiscovery(hass)
     return await discovery.start_discovery(timeout)
 
 
-async def find_racklink_device(hostname: str) -> Optional[DiscoveredDevice]:
+async def find_racklink_device(hass, hostname: str) -> Optional[DiscoveredDevice]:
     """Find a specific RackLink device by hostname.
 
     Args:
+        hass: Home Assistant instance
         hostname: Device hostname to find
 
     Returns:
         DiscoveredDevice if found, None otherwise
     """
-    discovery = RackLinkDiscovery()
+    discovery = RackLinkDiscovery(hass)
     return await discovery.discover_single_device(hostname)

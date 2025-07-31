@@ -272,7 +272,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         try:
             # Discover devices using mDNS
-            self._discovered_devices = await discover_racklink_devices(timeout=8.0)
+            self._discovered_devices = await discover_racklink_devices(
+                self.hass, timeout=8.0
+            )
             self._discovery_completed = True
 
             _LOGGER.info("Discovery found %d devices", len(self._discovered_devices))

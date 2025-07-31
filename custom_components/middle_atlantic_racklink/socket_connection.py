@@ -134,9 +134,9 @@ class SocketConnection:
             _LOGGER.error("Username and password required for authentication")
             return False
 
-        # Detect protocol type if not already done
+        # Detect protocol type using existing connection
         if not hasattr(self, "_protocol_type"):
-            self._protocol_type = await self.detect_protocol_type(self.config.port)
+            self._protocol_type, self._initial_data = await self._detect_protocol_from_connection()
 
         _LOGGER.info("Using %s protocol for authentication", self._protocol_type)
 
@@ -147,6 +147,51 @@ class SocketConnection:
         else:
             _LOGGER.error("Unknown protocol type: %s", self._protocol_type)
             return False
+
+    async def _detect_protocol_from_connection(self) -> tuple:
+        """Detect protocol type using the existing connection.
+        
+        Returns:
+            tuple: (protocol_type, initial_data) where protocol_type is 'telnet', 'binary', or 'unknown'
+        """
+        try:
+            _LOGGER.debug("Detecting protocol type using existing connection")
+            
+            # Read initial response to detect protocol
+            try:
+                initial_response = await asyncio.wait_for(
+                    self._reader.read(1024), timeout=3.0
+                )
+                
+                if initial_response:
+                    response_hex = initial_response.hex()
+                    response_text = initial_response.decode("utf-8", errors="ignore")
+                    
+                    _LOGGER.debug("Initial connection response: %s", response_hex)
+                    
+                    # Check for Telnet IAC sequences or login prompts
+                    if any(
+                        seq in initial_response
+                        for seq in [b"\xff\xfb", b"\xff\xfd", b"\xff\xfe"]
+                    ) or any(
+                        keyword in response_text.lower()
+                        for keyword in ["login", "username", "password", "racklink", "cli"]
+                    ):
+                        _LOGGER.debug("Detected Telnet protocol (IAC sequences or login prompt)")
+                        return "telnet", initial_response
+                
+                # If we get here, assume binary protocol
+                _LOGGER.debug("No Telnet indicators, assuming binary protocol")
+                return "binary", initial_response
+                
+            except asyncio.TimeoutError:
+                # No initial response - could be binary protocol
+                _LOGGER.debug("No initial response, assuming binary protocol")
+                return "binary", b""
+                
+        except Exception as err:
+            _LOGGER.error("Error detecting protocol: %s", err)
+            return "unknown", b""
 
     async def _handle_binary_authentication(self) -> bool:
         """Handle RackLink binary protocol authentication.
@@ -389,7 +434,7 @@ class SocketConnection:
         except asyncio.TimeoutError:
             _LOGGER.debug("Timeout reading message")
             return None
-        except (ConnectionError, OSError) as err:
+                except (ConnectionError, OSError) as err:
             _LOGGER.error("Connection error during message read: %s", err)
             raise
 
@@ -764,7 +809,7 @@ class SocketConnection:
             while True:
                 try:
                     data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
-                    if not data:
+                if not data:
                         break
 
                     text = data.decode("utf-8", errors="ignore")
@@ -874,8 +919,8 @@ class SocketConnection:
             return False
 
         try:
-            # Read initial data (may include Telnet negotiation)
-            initial_data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            # Use stored initial data from protocol detection
+            initial_data = getattr(self, '_initial_data', b'')
             initial_text = initial_data.decode("utf-8", errors="ignore")
             _LOGGER.debug("Telnet initial response: %s", initial_text[:200])
 
