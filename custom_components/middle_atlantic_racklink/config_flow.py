@@ -216,7 +216,22 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             try:
                 # If connection fails, try to discover the correct port
                 if not await self._test_connection_with_discovery(user_input):
-                    errors["base"] = "cannot_connect_after_discovery"
+                    # Check if it was a protocol mismatch (port accessible but auth failed)
+                    from .socket_connection import SocketConnection, SocketConfig
+
+                    config = SocketConfig(
+                        host=user_input[CONF_HOST],
+                        port=user_input[CONF_PORT],
+                        username=user_input[CONF_USERNAME],
+                        password=user_input[CONF_PASSWORD],
+                    )
+                    socket_conn = SocketConnection(config)
+
+                    # If port is accessible but auth failed, it's likely a protocol mismatch
+                    if await socket_conn.test_port_connectivity(user_input[CONF_PORT]):
+                        errors["base"] = "protocol_mismatch"
+                    else:
+                        errors["base"] = "cannot_connect_after_discovery"
                 else:
                     info = await validate_connection(self.hass, user_input)
 
@@ -319,24 +334,52 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         username = user_input[CONF_USERNAME]
         password = user_input[CONF_PASSWORD]
 
-        # First, try the provided port
+        # First, try the provided port with full authentication test
         config = SocketConfig(
             host=host, port=port, username=username, password=password
         )
         socket_conn = SocketConnection(config)
 
-        if await socket_conn.test_port_connectivity(port):
-            _LOGGER.info("Port %d is accessible on %s", port, host)
-            return True
+        try:
+            # Test actual connection and authentication, not just port accessibility
+            await socket_conn.connect()
+            if socket_conn.connected and socket_conn.authenticated:
+                _LOGGER.info("Successfully authenticated on port %d", port)
+                await socket_conn.disconnect()
+                return True
+            else:
+                _LOGGER.warning("Port %d accessible but authentication failed", port)
+                await socket_conn.disconnect()
+        except Exception as err:
+            _LOGGER.warning("Connection failed on port %d: %s", port, err)
 
-        # If that fails, try to discover the correct port
-        _LOGGER.info("Port %d not accessible, trying to discover correct port...", port)
+        # If authentication fails, try to discover the correct port
+        _LOGGER.info("Trying to discover correct port and protocol...")
         discovered_port = await socket_conn.discover_racklink_port()
 
         if discovered_port and discovered_port != port:
             _LOGGER.info("Discovered working port %d, updating config", discovered_port)
             user_input[CONF_PORT] = discovered_port
-            return True
+
+            # Test the discovered port
+            try:
+                config.port = discovered_port
+                socket_conn = SocketConnection(config)
+                await socket_conn.connect()
+                if socket_conn.connected and socket_conn.authenticated:
+                    _LOGGER.info(
+                        "Successfully authenticated on discovered port %d",
+                        discovered_port,
+                    )
+                    await socket_conn.disconnect()
+                    return True
+                await socket_conn.disconnect()
+            except Exception as err:
+                _LOGGER.error(
+                    "Failed to authenticate on discovered port %d: %s",
+                    discovered_port,
+                    err,
+                )
 
         return False
 

@@ -136,7 +136,9 @@ class SocketConnection:
 
         # Detect protocol type using existing connection
         if not hasattr(self, "_protocol_type"):
-            self._protocol_type, self._initial_data = await self._detect_protocol_from_connection()
+            self._protocol_type, self._initial_data = (
+                await self._detect_protocol_from_connection()
+            )
 
         _LOGGER.info("Using %s protocol for authentication", self._protocol_type)
 
@@ -150,45 +152,53 @@ class SocketConnection:
 
     async def _detect_protocol_from_connection(self) -> tuple:
         """Detect protocol type using the existing connection.
-        
+
         Returns:
             tuple: (protocol_type, initial_data) where protocol_type is 'telnet', 'binary', or 'unknown'
         """
         try:
             _LOGGER.debug("Detecting protocol type using existing connection")
-            
+
             # Read initial response to detect protocol
             try:
                 initial_response = await asyncio.wait_for(
                     self._reader.read(1024), timeout=3.0
                 )
-                
+
                 if initial_response:
                     response_hex = initial_response.hex()
                     response_text = initial_response.decode("utf-8", errors="ignore")
-                    
+
                     _LOGGER.debug("Initial connection response: %s", response_hex)
-                    
+
                     # Check for Telnet IAC sequences or login prompts
                     if any(
                         seq in initial_response
                         for seq in [b"\xff\xfb", b"\xff\xfd", b"\xff\xfe"]
                     ) or any(
                         keyword in response_text.lower()
-                        for keyword in ["login", "username", "password", "racklink", "cli"]
+                        for keyword in [
+                            "login",
+                            "username",
+                            "password",
+                            "racklink",
+                            "cli",
+                        ]
                     ):
-                        _LOGGER.debug("Detected Telnet protocol (IAC sequences or login prompt)")
+                        _LOGGER.debug(
+                            "Detected Telnet protocol (IAC sequences or login prompt)"
+                        )
                         return "telnet", initial_response
-                
+
                 # If we get here, assume binary protocol
                 _LOGGER.debug("No Telnet indicators, assuming binary protocol")
                 return "binary", initial_response
-                
+
             except asyncio.TimeoutError:
                 # No initial response - could be binary protocol
                 _LOGGER.debug("No initial response, assuming binary protocol")
                 return "binary", b""
-                
+
         except Exception as err:
             _LOGGER.error("Error detecting protocol: %s", err)
             return "unknown", b""
@@ -213,10 +223,18 @@ class SocketConnection:
             _LOGGER.debug("Sending binary login message: %s", message_bytes.hex())
             await self._send_raw_data(message_bytes)
 
-            # Wait for response
-            response = await self._read_message()
-            if not response:
-                _LOGGER.error("No response to binary login command")
+            # Wait for response with shorter timeout for binary login
+            try:
+                response = await asyncio.wait_for(self._read_message(), timeout=5.0)
+                if not response:
+                    _LOGGER.error(
+                        "No response to binary login command - device may not support binary protocol"
+                    )
+                    return False
+            except asyncio.TimeoutError:
+                _LOGGER.error(
+                    "Timeout waiting for binary login response - device likely uses Telnet protocol"
+                )
                 return False
 
             # Check for NACK (error response)
@@ -920,7 +938,7 @@ class SocketConnection:
 
         try:
             # Use stored initial data from protocol detection
-            initial_data = getattr(self, '_initial_data', b'')
+            initial_data = getattr(self, "_initial_data", b"")
             initial_text = initial_data.decode("utf-8", errors="ignore")
             _LOGGER.debug("Telnet initial response: %s", initial_text[:200])
 

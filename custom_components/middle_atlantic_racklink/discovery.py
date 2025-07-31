@@ -197,7 +197,17 @@ class RackLinkServiceListener(ServiceListener):
 
         # Check if this looks like a RackLink device
         if self._is_racklink_device(name):
-            asyncio.create_task(self._process_service(zc, type_, name))
+            try:
+                # Get the current event loop and schedule the coroutine
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._process_service(zc, type_, name))
+                else:
+                    _LOGGER.warning(
+                        "Event loop not running, cannot process service %s", name
+                    )
+            except RuntimeError:
+                _LOGGER.warning("No event loop available to process service %s", name)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """Called when a service is removed."""

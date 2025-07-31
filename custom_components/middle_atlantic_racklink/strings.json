@@ -29,10 +29,11 @@
       },
       "error": {
         "cannot_connect": "Failed to connect to the device. Please check the IP address, port, and network connectivity.",
-        "cannot_connect_after_discovery": "Failed to connect even after trying to discover the correct port. Please verify the device is a RackLink PDU and control protocol is enabled.",
-        "invalid_auth": "Invalid username or password. Please check your credentials.",
+        "cannot_connect_after_discovery": "Failed to connect even after trying to discover the correct port. Please verify the device is a RackLink PDU and control protocol is enabled. For Premium/Select series, try port 6000. For Premium+ series, try port 60000.",
+        "invalid_auth": "Invalid username or password. Please check your credentials. Default username is often 'admin' with device-specific password.",
         "invalid_input": "Invalid input provided. Please check all fields.",
         "not_racklink_device": "This device does not appear to be a RackLink PDU.",
+        "protocol_mismatch": "Device found but protocol mismatch. Try different port: 6000 for Telnet (Premium/Select) or 60000 for Binary (Premium+).",
         "unknown": "Unexpected error occurred. Please try again."
       },
       "abort": {
