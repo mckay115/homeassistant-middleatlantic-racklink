@@ -136,10 +136,24 @@ class RacklinkController:
         """Update PDU details."""
         try:
             _LOGGER.info("Fetching PDU details")
-            # Based on logs, the device is expecting a different command format
-            # Try different command variations
+
+            # First, try a simple command to clear any command state issues
+            _LOGGER.error("EMERGENCY DEBUG: Sending test 'help' command first")
+            help_response = await self.socket.send_command("help")
+            _LOGGER.error(
+                "EMERGENCY DEBUG: Help command response: %r", help_response[:200]
+            )
+
+            # Small delay before main command
+            await asyncio.sleep(0.1)
+
+            # Based on working response samples, use exact command syntax
+            _LOGGER.error("EMERGENCY DEBUG: Now sending 'show pdu details' command")
             response = await self.socket.send_command("show pdu details")
-            _LOGGER.error("EMERGENCY DEBUG: PDU details command 'show pdu details' response: %r", response[:500])
+            _LOGGER.error(
+                "EMERGENCY DEBUG: PDU details command 'show pdu details' response: %r",
+                response[:500],
+            )
             _LOGGER.info(
                 "PDU details command 'show pdu details' response: %r", response[:500]
             )

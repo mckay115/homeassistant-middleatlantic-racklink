@@ -823,6 +823,12 @@ class SocketConnection:
         Returns:
             str: The response from the device
         """
+        # Test with simple commands first
+        if command == "show pdu details":
+            _LOGGER.error(
+                "EMERGENCY DEBUG: Attempting to send command that should work: %s",
+                command,
+            )
         if not self._reader or not self._writer:
             _LOGGER.error("Telnet not connected - cannot send command")
             return ""
@@ -831,6 +837,9 @@ class SocketConnection:
             # Send command with newline
             full_command = f"{command}\r\n"
             _LOGGER.debug("Sending Telnet command: %s", command)
+            _LOGGER.error(
+                "EMERGENCY DEBUG: Raw command bytes: %r", full_command.encode("ascii")
+            )
 
             self._writer.write(full_command.encode("ascii"))
             await self._writer.drain()
@@ -855,6 +864,7 @@ class SocketConnection:
                     break
 
             full_response = "".join(response_parts)
+            _LOGGER.error("EMERGENCY DEBUG: Raw device response: %r", full_response)
 
             # Clean up response - remove the command echo and prompt
             lines = full_response.split("\n")
@@ -918,7 +928,9 @@ class SocketConnection:
             Dict mapping outlet numbers to state (True=On, False=Off)
         """
         try:
+            _LOGGER.error("EMERGENCY DEBUG: Sending 'show outlets all' command")
             response = await self.send_telnet_command("show outlets all")
+            _LOGGER.error("EMERGENCY DEBUG: Outlet states response: %r", response[:300])
 
             outlet_states = {}
 
