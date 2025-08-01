@@ -137,17 +137,12 @@ class RacklinkController:
         try:
             _LOGGER.info("Fetching PDU details")
 
-            # First try to clear any stuck command state with a simple command
-            _LOGGER.info("Clearing command state with 'help' command")
-            help_response = await self.socket.send_command("help")
-            _LOGGER.info("Help response: %s", help_response[:100])
-
-            # Small delay to let device process
-            await asyncio.sleep(0.2)
-
             # Use exact command syntax from working response samples
             response = await self.socket.send_command("show pdu details")
-            _LOGGER.info("PDU details response: %s", response[:300])
+            _LOGGER.debug("PDU details response: %s", response[:200])
+
+            # Add delay between commands to prevent session corruption
+            await asyncio.sleep(0.5)
 
             # Parse PDU name - updated regex to match "PDU 'Name'"
             name_match = re.search(r"PDU ['\"](.*?)['\"]", response)
@@ -200,10 +195,12 @@ class RacklinkController:
 
             # Get MAC address using exact command syntax
             _LOGGER.debug("Fetching network interface details")
+            await asyncio.sleep(0.5)  # Prevent rapid commands
             network_response = await self.socket.send_command(
                 "show network interface eth1"
             )
             _LOGGER.debug("Network interface response: %s", network_response[:200])
+            await asyncio.sleep(0.5)  # Prevent rapid commands
 
             mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n|,)", network_response)
             if mac_match:
@@ -235,6 +232,7 @@ class RacklinkController:
                 and self.socket._protocol_type == "telnet"
             ):
                 _LOGGER.debug("Fetching outlet states using Telnet protocol")
+                await asyncio.sleep(0.5)  # Prevent rapid commands
                 outlet_data = await self.socket.telnet_read_outlet_states()
 
                 if outlet_data:
@@ -294,9 +292,10 @@ class RacklinkController:
         try:
             # Get power data from a representative outlet (outlet 1)
             # Based on response samples, sensor data comes from individual outlet details
-            _LOGGER.info("Fetching power sensor data from outlet 1 details")
+            _LOGGER.debug("Fetching power sensor data from outlet 1 details")
+            await asyncio.sleep(0.5)  # Prevent rapid commands
             response = await self.socket.send_command("show outlets 1 details")
-            _LOGGER.info("Outlet 1 details response: %s", response[:300])
+            _LOGGER.debug("Outlet 1 details response: %s", response[:200])
 
             # Parse voltage - updated regex pattern
             voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
@@ -354,67 +353,12 @@ class RacklinkController:
                 self.line_frequency = 60.0
                 _LOGGER.debug("Using default frequency: %s Hz", self.line_frequency)
 
-            # Check for load shedding
-            _LOGGER.debug("Checking load shedding status")
-            try:
-                load_shed_response = await self.socket.send_command("show loadshedding")
-
-                if "^" in load_shed_response or "label" in load_shed_response:
-                    _LOGGER.debug(
-                        "First load shedding command failed, trying alternative"
-                    )
-                    load_shed_response = await self.socket.send_command(
-                        "loadshed status"
-                    )
-
-                _LOGGER.debug("Load shedding response: %r", load_shed_response)
-                self.load_shedding_active = (
-                    "enabled" in load_shed_response.lower()
-                    or "active" in load_shed_response.lower()
-                )
-                _LOGGER.debug("Load shedding active: %s", self.load_shedding_active)
-            except Exception as ls_err:
-                _LOGGER.error("Error checking load shedding status: %s", ls_err)
-                # Keep previous load shedding state if command fails
-
-            # Check sequence status - using valid command format or a simplified version
-            _LOGGER.debug("Checking sequence status")
-            try:
-                # Try the full command first
-                sequence_response = await self.socket.send_command(
-                    "show outlets sequence"
-                )
-                _LOGGER.debug("Sequence status response: %r", sequence_response)
-
-                # Check if there was a command syntax error
-                if "^" in sequence_response or "label" in sequence_response:
-                    _LOGGER.debug(
-                        "Sequence command syntax error, trying simplified version"
-                    )
-                    # Try a simplified command if the first one failed
-                    sequence_response = await self.socket.send_command(
-                        "outlet sequence status"
-                    )
-
-                    if "^" in sequence_response or "label" in sequence_response:
-                        _LOGGER.debug(
-                            "Second sequence command failed, trying simpler version"
-                        )
-                        sequence_response = await self.socket.send_command("sequence")
-
-                    _LOGGER.debug(
-                        "Alternative sequence status response: %r", sequence_response
-                    )
-
-                # Check for sequence status indicators
-                self.sequence_active = (
-                    "running" in sequence_response.lower()
-                    or "active" in sequence_response.lower()
-                )
-                _LOGGER.debug("Sequence active: %s", self.sequence_active)
-            except Exception as seq_err:
-                _LOGGER.error("Error checking sequence status: %s", seq_err)
-                # Keep previous sequence state if command fails
+            # Set default values for advanced features (not essential for basic operation)
+            self.load_shedding_active = False
+            self.sequence_active = False
+            _LOGGER.debug(
+                "Skipping advanced status checks to prevent session corruption"
+            )
 
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)

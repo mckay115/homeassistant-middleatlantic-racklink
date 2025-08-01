@@ -829,6 +829,13 @@ class SocketConnection:
             return ""
 
         try:
+            # Check if session is corrupted (stuck in command mode)
+            if await self._is_session_corrupted():
+                _LOGGER.warning("Telnet session corrupted, attempting recovery")
+                if not await self._recover_telnet_session():
+                    _LOGGER.error("Failed to recover Telnet session")
+                    return ""
+
             # Send command with newline
             full_command = f"{command}\r\n"
             _LOGGER.debug("Sending Telnet command: %s", command)
@@ -857,9 +864,9 @@ class SocketConnection:
 
             full_response = "".join(response_parts)
 
-            # DEBUG: Log the full raw response before cleaning
-            _LOGGER.error(
-                "RAW RESPONSE DEBUG: Full response for '%s': %r", command, full_response
+            # Log response length for debugging if needed
+            _LOGGER.debug(
+                "Response length for '%s': %d chars", command, len(full_response)
             )
 
             # Clean up response - remove the command echo and prompt
@@ -879,6 +886,109 @@ class SocketConnection:
         except Exception as err:
             _LOGGER.error("Error sending Telnet command '%s': %s", command, err)
             return ""
+
+    async def _is_session_corrupted(self) -> bool:
+        """Check if the Telnet session is corrupted (stuck in command mode)."""
+        try:
+            # Send a simple test command that should always work
+            self._writer.write(b"\r\n")
+            await self._writer.drain()
+
+            # Read any immediate response
+            try:
+                data = await asyncio.wait_for(self._reader.read(512), timeout=1.0)
+                response = data.decode("utf-8", errors="ignore")
+
+                # Check for signs of corruption
+                corruption_indicators = [
+                    "label  Outlet label",
+                    "(1/2/3/4/5/6/7/8/all)",
+                    "^\r\n",
+                    # Long command history indicates buffer overflow
+                    len(response) > 200 and "show" in response and "outlet" in response,
+                ]
+
+                if any(
+                    indicator in response if isinstance(indicator, str) else indicator
+                    for indicator in corruption_indicators
+                ):
+                    _LOGGER.info("Session corruption detected: %s", response[:100])
+                    return True
+
+            except asyncio.TimeoutError:
+                # No immediate response is actually good - means we're at prompt
+                pass
+
+            return False
+
+        except Exception as err:
+            _LOGGER.debug("Error checking session corruption: %s", err)
+            return True  # Assume corrupted if we can't check
+
+    async def _recover_telnet_session(self) -> bool:
+        """Attempt to recover a corrupted Telnet session."""
+        try:
+            _LOGGER.info("Attempting Telnet session recovery")
+
+            # Try various recovery techniques
+            recovery_sequences = [
+                # Send Ctrl+C to cancel any pending command
+                b"\x03\r\n",
+                # Send Ctrl+Z (suspend)
+                b"\x1a\r\n",
+                # Send ESC to cancel
+                b"\x1b\r\n",
+                # Send multiple enters to try to get back to prompt
+                b"\r\n\r\n\r\n",
+                # Send 'exit' and then reconnect
+                b"exit\r\n",
+            ]
+
+            for sequence in recovery_sequences:
+                _LOGGER.debug("Trying recovery sequence: %r", sequence)
+                self._writer.write(sequence)
+                await self._writer.drain()
+
+                # Wait for response
+                await asyncio.sleep(0.5)
+
+                # Clear any buffered response
+                try:
+                    while True:
+                        data = await asyncio.wait_for(
+                            self._reader.read(1024), timeout=0.5
+                        )
+                        if not data:
+                            break
+                        response = data.decode("utf-8", errors="ignore")
+                        _LOGGER.debug("Recovery response: %s", response[:100])
+
+                        # Check if we got back to a clean prompt
+                        if "] # " in response and "label" not in response:
+                            _LOGGER.info("Session recovery successful")
+                            return True
+
+                except asyncio.TimeoutError:
+                    # Timeout is okay, means no more data
+                    pass
+
+            # If recovery sequences didn't work, try full reconnection
+            _LOGGER.warning("Recovery sequences failed, attempting full reconnection")
+            await self.disconnect()
+            await asyncio.sleep(1.0)
+
+            # Reconnect
+            success = await self.connect(self.config.host, self.config.port)
+            if success:
+                _LOGGER.info("Full reconnection successful")
+                return True
+            else:
+                _LOGGER.error("Full reconnection failed")
+                return False
+
+        except Exception as err:
+            _LOGGER.error("Error during session recovery: %s", err)
+            return False
 
     async def telnet_outlet_command(self, outlet: int, action: str) -> bool:
         """Send outlet control command via Telnet.
