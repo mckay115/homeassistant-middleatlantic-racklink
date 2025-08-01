@@ -58,9 +58,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
     @property
     def available(self) -> bool:
         """Return True if the controller is available."""
-        available = self.controller.connected and self.controller.available
-        _LOGGER.debug("Coordinator availability status: %s", available)
-        return available
+        return self.controller.connected and self.controller.available
 
     @property
     def device_info(self) -> Dict[str, Any]:
@@ -248,7 +246,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             "frequency": self.controller.line_frequency,
         }
 
-        _LOGGER.info("📊 Coordinator: Updated system data: %r", system)
+        _LOGGER.debug("📊 Coordinator: Updated system data: %r", system)
 
         # Process status information
         status = {

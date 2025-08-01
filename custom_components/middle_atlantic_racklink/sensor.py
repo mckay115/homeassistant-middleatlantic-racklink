@@ -74,6 +74,11 @@ async def async_setup_entry(
         ]
     )
 
+    # Add individual outlet power sensors for monitoring per-device consumption
+    outlets = coordinator.data.get("outlets", {})
+    for outlet_id in outlets:
+        entities.append(RacklinkOutletPowerSensor(coordinator, outlet_id))
+
     async_add_entities(entities)
 
 
@@ -127,13 +132,7 @@ class RacklinkVoltageSensor(RacklinkSensorBase):
     @property
     def native_value(self) -> float:
         """Return the voltage value."""
-        value = self.coordinator.system_data.get("voltage")
-        _LOGGER.debug(
-            "🔋 Voltage sensor value: %s (from system_data: %s)",
-            value,
-            self.coordinator.system_data,
-        )
-        return value
+        return self.coordinator.system_data.get("voltage")
 
 
 class RacklinkCurrentSensor(RacklinkSensorBase):
@@ -270,3 +269,52 @@ class RacklinkSequenceSensor(RacklinkSensorBase):
             if self.coordinator.status_data.get("sequence_active")
             else "Stopped"
         )
+
+
+class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for individual outlet power consumption."""
+
+    def __init__(self, coordinator: RacklinkCoordinator, outlet_id: int) -> None:
+        """Initialize the outlet power sensor."""
+        super().__init__(coordinator)
+        self._outlet_id = outlet_id
+        self._attr_unique_id = (
+            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_power"
+        )
+
+        # Get outlet name for entity naming
+        outlet_name = (
+            coordinator.data.get("outlets", {})
+            .get(outlet_id, {})
+            .get("name", f"Outlet {outlet_id}")
+        )
+        self._attr_name = f"{outlet_name} Power"
+
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_unit_of_measurement = UnitOfPower.WATT
+        self._attr_entity_category = None  # Main entity, not diagnostic
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return self.coordinator.device_info
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the outlet power consumption."""
+        # This will be populated by the updated controller logic
+        if hasattr(self.coordinator.controller, "outlet_power_data"):
+            return self.coordinator.controller.outlet_power_data.get(self._outlet_id)
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        # Only available if outlet is powered on and we have data
+        outlet_state = (
+            self.coordinator.data.get("outlets", {})
+            .get(self._outlet_id, {})
+            .get("state", False)
+        )
+        return self.coordinator.available and outlet_state

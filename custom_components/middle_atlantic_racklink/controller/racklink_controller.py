@@ -71,6 +71,10 @@ class RacklinkController:
         # Outlet data
         self.outlet_states: Dict[int, bool] = {}
         self.outlet_names: Dict[int, str] = {}
+        self.outlet_power_data: Dict[int, float] = (
+            {}
+        )  # Individual outlet power consumption
+        self.outlet_non_critical: Dict[int, bool] = {}  # Non-critical outlet flags
 
         # Status flags
         self.connected: bool = False
@@ -139,14 +143,14 @@ class RacklinkController:
 
             # Use exact command syntax from working response samples
             response = await self.socket.send_command("show pdu details")
-            _LOGGER.info(
-                "🔍 PDU DETAILS RAW RESPONSE (first 500 chars):\n%s", response[:500]
-            )
-            _LOGGER.info(
-                "🔍 PDU DETAILS RAW RESPONSE (contains error?):\n  Contains '^': %s\n  Contains 'label': %s",
-                "^" in response,
-                "label" in response,
-            )
+            if "^" in response or "label" in response:
+                _LOGGER.warning(
+                    "🔍 PDU DETAILS command failed with syntax error - session may be corrupted"
+                )
+            else:
+                _LOGGER.debug(
+                    "🔍 PDU DETAILS response received (%d chars)", len(response)
+                )
 
             # Add delay between commands to prevent session corruption
             await asyncio.sleep(0.5)
@@ -298,78 +302,37 @@ class RacklinkController:
             raise
 
     async def _update_system_status(self) -> None:
-        """Update system status including power data."""
+        """Update system status including power data - try efficient system commands first."""
         try:
-            # Get power data from a representative outlet (outlet 1)
-            # Based on response samples, sensor data comes from individual outlet details
-            _LOGGER.debug("Fetching power sensor data from outlet 1 details")
-            await asyncio.sleep(0.5)  # Prevent rapid commands
-            response = await self.socket.send_command("show outlets 1 details")
-            _LOGGER.info(
-                "🔍 OUTLET 1 DETAILS RAW RESPONSE (first 500 chars):\n%s",
-                response[:500],
-            )
-            _LOGGER.info(
-                "🔍 OUTLET 1 DETAILS RAW RESPONSE (contains error?):\n  Contains '^': %s\n  Contains 'label': %s",
-                "^" in response,
-                "label" in response,
-            )
+            # Try efficient system-wide power commands first
+            system_data = await self._try_system_power_commands()
 
-            # Parse voltage - updated regex pattern
-            voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
-            if voltage_match:
-                self.rms_voltage = float(voltage_match.group(1))
-                _LOGGER.info("✅ Parsed voltage: %s V", self.rms_voltage)
-            else:
-                _LOGGER.warning("❌ Could not parse voltage from response")
-                # Set default voltage if not found
-                self.rms_voltage = 120.0
-                _LOGGER.info("Using default voltage: %s V", self.rms_voltage)
+            if system_data:
+                # Use system-wide data - much faster!
+                self.active_power = system_data.get("power", 0.0)
+                self.rms_current = system_data.get("current", 0.0)
+                self.rms_voltage = system_data.get("voltage", 120.0)
+                self.active_energy = system_data.get("energy", 0.0)
+                self.line_frequency = system_data.get("frequency", 60.0)
 
-            # Parse current
-            current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
-            if current_match:
-                self.rms_current = float(current_match.group(1))
-                _LOGGER.info("✅ Parsed current: %s A", self.rms_current)
-            else:
-                _LOGGER.warning("Could not parse current from response")
-                # Set default current if not found
-                self.rms_current = 0.0
-
-            # Parse power - if unavailable, calculate from voltage and current
-            power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
-            if power_match:
-                self.active_power = float(power_match.group(1))
-                _LOGGER.info("✅ Parsed power: %s W", self.active_power)
-            else:
-                _LOGGER.warning(
-                    "❌ Could not parse power from response, calculating from V*A"
+                _LOGGER.info(
+                    "📊 PDU System Status: %.1f W, %.3f A, %.1f V, %.1f Wh, %.1f Hz (from system command)",
+                    self.active_power,
+                    self.rms_current,
+                    self.rms_voltage,
+                    self.active_energy,
+                    self.line_frequency,
                 )
-                # Calculate power as V * A
-                self.active_power = self.rms_voltage * self.rms_current
-                _LOGGER.info("✅ Calculated power: %s W", self.active_power)
 
-            # Parse energy
-            energy_match = re.search(
-                r"Active Energy:\s*([\d.]+)\s*(?:kWh|Wh)", response
-            )
-            if energy_match:
-                self.active_energy = float(energy_match.group(1))
-                _LOGGER.info("✅ Parsed energy: %s Wh", self.active_energy)
-            else:
-                _LOGGER.warning("❌ Could not parse energy from response")
-                # Keep previous energy value if not found
+                # Still need to get non-critical flags from individual outlets (less critical, can be async)
+                await self._update_outlet_metadata()
 
-            # Parse frequency
-            freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
-            if freq_match:
-                self.line_frequency = float(freq_match.group(1))
-                _LOGGER.info("✅ Parsed frequency: %s Hz", self.line_frequency)
             else:
-                _LOGGER.warning("❌ Could not parse frequency from response")
-                # Default to 60 Hz if not found
-                self.line_frequency = 60.0
-                _LOGGER.info("Using default frequency: %s Hz", self.line_frequency)
+                # Fallback to individual outlet polling if system commands fail
+                _LOGGER.warning(
+                    "System power commands failed, falling back to individual outlet polling"
+                )
+                await self._update_system_status_fallback()
 
             # Set default values for advanced features (not essential for basic operation)
             self.load_shedding_active = False
@@ -682,6 +645,340 @@ class RacklinkController:
 
         _LOGGER.debug("Controller capabilities: %s", capabilities)
         return capabilities
+
+    async def get_surge_protection_status(self) -> bool:
+        """Get surge protection status.
+
+        Returns:
+            bool: True if surge protection is active/OK, False if failed
+        """
+        # Most RackLink devices have surge protection that's typically active
+        # This would need specific parsing if the device provides surge status
+        return True  # Default to True for now
+
+    async def _try_system_power_commands(self) -> Dict[str, float]:
+        """Try efficient system-wide power commands to get total PDU consumption.
+
+        Returns:
+            Dict with power data if successful, empty dict if all commands fail
+        """
+        # Commands to try for system-wide power data (in order of preference)
+        commands_to_try = [
+            "show pdu power",  # Direct PDU power command
+            "show inlets all details",  # Inlet power data
+            "power status",  # Simple power status
+            "show power",  # Basic power command
+            "show system status",  # System status (might exist)
+        ]
+
+        for cmd in commands_to_try:
+            try:
+                _LOGGER.debug("Trying system power command: %s", cmd)
+                await asyncio.sleep(0.2)  # Small delay between commands
+                response = await self.socket.send_command(cmd)
+
+                if (
+                    "^" in response
+                    or "unknown command" in response.lower()
+                    or "label" in response
+                ):
+                    _LOGGER.debug("Command '%s' failed or unknown", cmd)
+                    continue
+
+                # Parse system power data using existing parser
+                power_data = self._parse_system_power_response(response)
+
+                if power_data and power_data.get("power", 0) > 0:
+                    _LOGGER.info(
+                        "✅ Got system power data from '%s': %.1f W",
+                        cmd,
+                        power_data.get("power", 0),
+                    )
+                    return power_data
+
+            except Exception as err:
+                _LOGGER.debug("Command '%s' failed with error: %s", cmd, err)
+                continue
+
+        _LOGGER.warning(
+            "❌ All system power commands failed, will fall back to individual outlets"
+        )
+        return {}
+
+    def _parse_system_power_response(self, response: str) -> Dict[str, float]:
+        """Parse power data from system-wide command responses.
+
+        Args:
+            response: Raw command response
+
+        Returns:
+            Dict with parsed power values
+        """
+        result = {}
+
+        if not response:
+            return result
+
+        _LOGGER.debug("Parsing system power response (%d chars)", len(response))
+
+        # Parse total/system power - try multiple patterns
+        power_patterns = [
+            r"Total Power:\s*([\d.]+)\s*W",
+            r"System Power:\s*([\d.]+)\s*W",
+            r"PDU Power:\s*([\d.]+)\s*W",
+            r"Active Power:\s*([\d.]+)\s*W",
+            r"Power:\s*([\d.]+)\s*W",
+        ]
+
+        for pattern in power_patterns:
+            power_match = re.search(pattern, response, re.IGNORECASE)
+            if power_match:
+                try:
+                    result["power"] = float(power_match.group(1))
+                    _LOGGER.debug(
+                        "Parsed power: %.1f W (pattern: %s)", result["power"], pattern
+                    )
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Parse total/system current
+        current_patterns = [
+            r"Total Current:\s*([\d.]+)\s*A",
+            r"System Current:\s*([\d.]+)\s*A",
+            r"PDU Current:\s*([\d.]+)\s*A",
+            r"RMS Current:\s*([\d.]+)\s*A",
+            r"Current:\s*([\d.]+)\s*A",
+        ]
+
+        for pattern in current_patterns:
+            current_match = re.search(pattern, response, re.IGNORECASE)
+            if current_match:
+                try:
+                    result["current"] = float(current_match.group(1))
+                    _LOGGER.debug("Parsed current: %.3f A", result["current"])
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Parse voltage (should be same across all outlets)
+        voltage_patterns = [
+            r"RMS Voltage:\s*([\d.]+)\s*V",
+            r"Voltage:\s*([\d.]+)\s*V",
+            r"Line Voltage:\s*([\d.]+)\s*V",
+        ]
+
+        for pattern in voltage_patterns:
+            voltage_match = re.search(pattern, response, re.IGNORECASE)
+            if voltage_match:
+                try:
+                    result["voltage"] = float(voltage_match.group(1))
+                    _LOGGER.debug("Parsed voltage: %.1f V", result["voltage"])
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Parse total energy
+        energy_patterns = [
+            r"Total Energy:\s*([\d.]+)\s*(?:kWh|Wh)",
+            r"System Energy:\s*([\d.]+)\s*(?:kWh|Wh)",
+            r"Active Energy:\s*([\d.]+)\s*(?:kWh|Wh)",
+            r"Energy:\s*([\d.]+)\s*(?:kWh|Wh)",
+        ]
+
+        for pattern in energy_patterns:
+            energy_match = re.search(pattern, response, re.IGNORECASE)
+            if energy_match:
+                try:
+                    result["energy"] = float(energy_match.group(1))
+                    _LOGGER.debug("Parsed energy: %.1f Wh", result["energy"])
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Parse frequency
+        freq_patterns = [
+            r"Line Frequency:\s*([\d.]+)\s*Hz",
+            r"Frequency:\s*([\d.]+)\s*Hz",
+        ]
+
+        for pattern in freq_patterns:
+            freq_match = re.search(pattern, response, re.IGNORECASE)
+            if freq_match:
+                try:
+                    result["frequency"] = float(freq_match.group(1))
+                    _LOGGER.debug("Parsed frequency: %.1f Hz", result["frequency"])
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        return result
+
+    async def _update_outlet_metadata(self) -> None:
+        """Update outlet metadata (non-critical flags) from individual outlets.
+
+        This is less time-critical than power data, so can be done separately.
+        """
+        try:
+            _LOGGER.debug("Updating outlet metadata (non-critical flags)")
+
+            for outlet_num in sorted(self.outlet_states.keys()):
+                if not self.outlet_states.get(outlet_num, False):
+                    # Set default for powered-off outlets
+                    self.outlet_non_critical[outlet_num] = False
+                    continue
+
+                try:
+                    await asyncio.sleep(0.2)  # Small delay
+                    response = await self.socket.send_command(
+                        f"show outlets {outlet_num} details"
+                    )
+
+                    if "^" in response or "label" in response:
+                        self.outlet_non_critical[outlet_num] = (
+                            False  # Default to critical
+                        )
+                        continue
+
+                    # Parse non-critical flag from outlet details
+                    non_critical_match = re.search(
+                        r"Non critical:\s*(True|False)", response
+                    )
+                    if non_critical_match:
+                        is_non_critical = non_critical_match.group(1) == "True"
+                        self.outlet_non_critical[outlet_num] = is_non_critical
+                        _LOGGER.debug(
+                            "Outlet %d non-critical: %s", outlet_num, is_non_critical
+                        )
+                    else:
+                        # Default to False (critical) if not found
+                        self.outlet_non_critical[outlet_num] = False
+
+                except Exception as err:
+                    _LOGGER.debug(
+                        "Failed to get metadata for outlet %d: %s", outlet_num, err
+                    )
+                    self.outlet_non_critical[outlet_num] = False  # Safe default
+
+        except Exception as err:
+            _LOGGER.warning("Error updating outlet metadata: %s", err)
+
+    async def _update_system_status_fallback(self) -> None:
+        """Fallback method: Update system status by polling individual outlets and summing."""
+        try:
+            _LOGGER.debug(
+                "Fetching power sensor data from all active outlets (fallback mode)"
+            )
+
+            total_power = 0.0
+            total_current = 0.0
+            total_energy = 0.0
+            voltage_readings = []
+            frequency_readings = []
+            successful_readings = 0
+
+            # Get power data from each outlet that's powered on
+            for outlet_num in sorted(self.outlet_states.keys()):
+                if not self.outlet_states.get(outlet_num, False):
+                    _LOGGER.debug("Skipping outlet %d (powered off)", outlet_num)
+                    continue
+
+                try:
+                    await asyncio.sleep(0.3)  # Prevent rapid commands
+                    response = await self.socket.send_command(
+                        f"show outlets {outlet_num} details"
+                    )
+
+                    if "^" in response or "label" in response:
+                        _LOGGER.warning(
+                            "Outlet %d details command failed - skipping", outlet_num
+                        )
+                        continue
+
+                    # Parse power data from this outlet
+                    power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
+                    if power_match:
+                        outlet_power = float(power_match.group(1))
+                        total_power += outlet_power
+                        self.outlet_power_data[outlet_num] = (
+                            outlet_power  # Store individual outlet power
+                        )
+                        _LOGGER.debug(
+                            "Outlet %d power: %.1f W", outlet_num, outlet_power
+                        )
+
+                    # Parse current from this outlet
+                    current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
+                    if current_match:
+                        outlet_current = float(current_match.group(1))
+                        total_current += outlet_current
+
+                    # Parse energy from this outlet
+                    energy_match = re.search(
+                        r"Active Energy:\s*([\d.]+)\s*(?:kWh|Wh)", response
+                    )
+                    if energy_match:
+                        outlet_energy = float(energy_match.group(1))
+                        total_energy += outlet_energy
+
+                    # Collect voltage and frequency (should be same for all outlets)
+                    voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
+                    if voltage_match:
+                        voltage_readings.append(float(voltage_match.group(1)))
+
+                    freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
+                    if freq_match:
+                        frequency_readings.append(float(freq_match.group(1)))
+
+                    # Parse non-critical flag from outlet details
+                    non_critical_match = re.search(
+                        r"Non critical:\s*(True|False)", response
+                    )
+                    if non_critical_match:
+                        is_non_critical = non_critical_match.group(1) == "True"
+                        self.outlet_non_critical[outlet_num] = is_non_critical
+                        _LOGGER.debug(
+                            "Outlet %d non-critical: %s", outlet_num, is_non_critical
+                        )
+                    else:
+                        # Default to False (critical) if not found
+                        self.outlet_non_critical[outlet_num] = False
+
+                    successful_readings += 1
+
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Failed to get power data from outlet %d: %s", outlet_num, err
+                    )
+                    continue
+
+            # Set totals
+            self.active_power = total_power
+            self.rms_current = total_current
+            self.active_energy = total_energy
+
+            # Use average voltage and frequency from all readings
+            if voltage_readings:
+                self.rms_voltage = sum(voltage_readings) / len(voltage_readings)
+            else:
+                self.rms_voltage = 120.0  # Default
+
+            if frequency_readings:
+                self.line_frequency = sum(frequency_readings) / len(frequency_readings)
+            else:
+                self.line_frequency = 60.0  # Default
+
+            _LOGGER.info(
+                "📊 Total PDU consumption (fallback): %.1f W, %.3f A, %.1f V (%d outlets measured)",
+                self.active_power,
+                self.rms_current,
+                self.rms_voltage,
+                successful_readings,
+            )
+
+        except Exception as err:
+            _LOGGER.error("Error in fallback system status update: %s", err)
+            raise
 
     async def test_direct_commands(self) -> str:
         """Test direct commands based on the syntax hints from error messages.
