@@ -1038,19 +1038,31 @@ class SocketConnection:
 
             outlet_states = {}
 
-            # Parse response using the format from response_samples
-            # Look for patterns like "Outlet 1 - Name:\nPower state: On"
+            # Parse response using exact format from response_samples:
+            # Outlet 1 - Firewall:
+            # Power state: On
             import re
 
-            # Match outlet number and subsequent state
-            pattern = r"Outlet (\d+)[^\n]*\n[^\n]*Power state:\s*(\w+)"
-            matches = re.findall(pattern, response, re.IGNORECASE)
+            # Match outlet number, name, and state
+            pattern = r"Outlet (\d+) - ([^:]+):\s*\n(?:.*?\n)*?Power state:\s*(On|Off)"
+            matches = re.findall(pattern, response, re.MULTILINE | re.DOTALL)
 
-            for outlet_str, state_str in matches:
+            for outlet_str, outlet_name, state_str in matches:
                 outlet_num = int(outlet_str)
-                state = state_str.lower() in ["on", "true", "1"]
+                state = state_str.lower() == "on"
                 outlet_states[outlet_num] = state
-                _LOGGER.debug("Telnet outlet %d state: %s", outlet_num, state)
+
+                # Store outlet name for later retrieval
+                if not hasattr(self, "_outlet_names"):
+                    self._outlet_names = {}
+                self._outlet_names[outlet_num] = outlet_name.strip()
+
+                _LOGGER.debug(
+                    "✅ Outlet %d (%s): %s",
+                    outlet_num,
+                    outlet_name.strip(),
+                    "ON" if state else "OFF",
+                )
 
             _LOGGER.info("Read %d outlet states via Telnet", len(outlet_states))
             return outlet_states

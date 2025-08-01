@@ -30,7 +30,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Middle Atlantic Racklink binary sensors."""
-    controller = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    controller = (
+        coordinator.controller
+    )  # Access the actual controller through the coordinator
 
     # Get model capabilities to determine number of outlets
     capabilities = controller.get_model_capabilities()

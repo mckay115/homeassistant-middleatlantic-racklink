@@ -55,10 +55,10 @@ class RacklinkController:
         self.socket = SocketConnection(config)
 
         # Device information
-        self.pdu_name: str = ""
-        self.pdu_model: str = ""
-        self.pdu_firmware: str = ""
-        self.pdu_serial: str = ""
+        self.pdu_name: str = f"RackLink PDU {host}"
+        self.pdu_model: str = "RackLink"
+        self.pdu_firmware: str = "Unknown"
+        self.pdu_serial: str = f"PDU-{host.replace('.', '-')}"  # Default fallback
         self.mac_address: str = ""
 
         # System power data
@@ -144,54 +144,46 @@ class RacklinkController:
             # Add delay between commands to prevent session corruption
             await asyncio.sleep(0.5)
 
-            # Parse PDU name - updated regex to match "PDU 'Name'"
+            # Parse PDU name - exact format from response samples: PDU 'LiskoLabs Rack'
             name_match = re.search(r"PDU ['\"](.*?)['\"]", response)
             if name_match:
                 self.pdu_name = name_match.group(1)
-                _LOGGER.debug("Parsed PDU name: %s", self.pdu_name)
+                _LOGGER.debug("✅ Parsed PDU name: %s", self.pdu_name)
             else:
-                # Try an alternative match pattern for the PDU name
-                alt_name_match = re.search(r"Name:\s*(.+?)(?:\r|\n)", response)
-                if alt_name_match:
-                    self.pdu_name = alt_name_match.group(1).strip()
-                    _LOGGER.debug("Parsed PDU name (alt): %s", self.pdu_name)
-                else:
-                    _LOGGER.warning("Could not parse PDU name from response")
+                _LOGGER.warning("❌ Could not parse PDU name from response")
 
-            # Parse PDU model
-            model_match = re.search(r"Model:\s+(.+?)(?:\r|\n)", response)
+            # Parse PDU model - exact format: Model:            RLNK-P920R
+            model_match = re.search(r"Model:\s*(.+?)(?:\r|\n)", response)
             if model_match:
                 self.pdu_model = model_match.group(1).strip()
-                _LOGGER.debug("Parsed PDU model: %s", self.pdu_model)
+                _LOGGER.debug("✅ Parsed PDU model: %s", self.pdu_model)
             else:
-                _LOGGER.warning("Could not parse PDU model from response")
+                _LOGGER.warning("❌ Could not parse PDU model from response")
 
-            # Parse firmware version (updated regex to better match the response format)
-            fw_match = re.search(r"Firmware Version:\s+([\d\.\-\w]+)", response)
+            # Parse firmware version - exact format: Firmware Version: 2.2.0.1-51126
+            fw_match = re.search(r"Firmware Version:\s*(.+?)(?:\r|\n)", response)
             if fw_match:
                 self.pdu_firmware = fw_match.group(1).strip()
-                _LOGGER.debug("Parsed PDU firmware: %s", self.pdu_firmware)
+                _LOGGER.debug("✅ Parsed PDU firmware: %s", self.pdu_firmware)
             else:
-                _LOGGER.warning("Could not parse firmware version from response")
-                # If we couldn't find it with the main regex, try a more general one
-                general_fw_match = re.search(
-                    r"Firmware.*?(\d+\.\d+[\.\w\d\-]+)", response
-                )
-                if general_fw_match:
-                    self.pdu_firmware = general_fw_match.group(1).strip()
-                    _LOGGER.debug("Parsed PDU firmware (alt): %s", self.pdu_firmware)
+                _LOGGER.warning("❌ Could not parse firmware version from response")
 
-            # Parse serial number
-            sn_match = re.search(r"Serial Number:\s+(.+?)(?:\r|\n)", response)
+            # Parse serial number - exact format: Serial Number:    RLNKP-920_050a82
+            sn_match = re.search(r"Serial Number:\s*(.+?)(?:\r|\n)", response)
             if sn_match:
                 self.pdu_serial = sn_match.group(1).strip()
-                _LOGGER.debug("Parsed PDU serial: %s", self.pdu_serial)
+                _LOGGER.debug("✅ Parsed PDU serial: %s", self.pdu_serial)
             else:
-                _LOGGER.warning("Could not parse serial number from response")
-                # Try to generate a unique serial number from MAC address if available
-                if self.mac_address:
-                    self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
-                    _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
+                _LOGGER.warning("❌ Could not parse serial number from response")
+                # Generate a fallback serial number to ensure we always have one
+                if not self.pdu_serial or self.pdu_serial.startswith("PDU-"):
+                    if self.mac_address:
+                        self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
+                        _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
+                    else:
+                        # Use host-based fallback if no MAC available yet
+                        self.pdu_serial = f"PDU-{self.host.replace('.', '-')}"
+                        _LOGGER.debug("Using host-based serial: %s", self.pdu_serial)
 
             # Get MAC address using exact command syntax
             _LOGGER.debug("Fetching network interface details")
@@ -202,17 +194,18 @@ class RacklinkController:
             _LOGGER.debug("Network interface response: %s", network_response[:200])
             await asyncio.sleep(0.5)  # Prevent rapid commands
 
+            # Parse MAC address - exact format: MAC address:               00:1e:c5:05:0a:82
             mac_match = re.search(r"MAC address:\s*(.+?)(?:\r|\n|,)", network_response)
             if mac_match:
                 self.mac_address = mac_match.group(1).strip()
-                _LOGGER.debug("Parsed MAC address: %s", self.mac_address)
+                _LOGGER.debug("✅ Parsed MAC address: %s", self.mac_address)
 
-                # If serial number is not available, use MAC address as serial
-                if not self.pdu_serial:
+                # If serial number is still fallback, update with MAC
+                if self.pdu_serial.startswith("PDU-"):
                     self.pdu_serial = f"MAC-{self.mac_address.replace(':', '')}"
-                    _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
+                    _LOGGER.debug("Updated serial to use MAC: %s", self.pdu_serial)
             else:
-                _LOGGER.warning("Could not parse MAC address from response")
+                _LOGGER.warning("❌ Could not parse MAC address from response")
 
                 # If neither serial nor MAC is available, use host as fallback
                 if not self.pdu_serial:
@@ -239,9 +232,19 @@ class RacklinkController:
                     _LOGGER.info("Found %d outlet states via Telnet", len(outlet_data))
                     for outlet_num, state in outlet_data.items():
                         self.outlet_states[outlet_num] = state
-                        # Set default name if not already set
-                        if outlet_num not in self.outlet_names:
-                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+
+                    # Get outlet names from the socket connection if available
+                    if (
+                        hasattr(self.socket, "_outlet_names")
+                        and self.socket._outlet_names
+                    ):
+                        self.outlet_names.update(self.socket._outlet_names)
+                        _LOGGER.debug("✅ Updated outlet names: %s", self.outlet_names)
+                    else:
+                        # Set default names if not parsed from response
+                        for outlet_num in outlet_data.keys():
+                            if outlet_num not in self.outlet_names:
+                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
                 else:
                     _LOGGER.warning("No outlet states found via Telnet")
 
