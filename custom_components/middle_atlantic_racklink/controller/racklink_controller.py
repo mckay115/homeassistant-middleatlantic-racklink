@@ -137,6 +137,14 @@ class RacklinkController:
         try:
             _LOGGER.info("Fetching PDU details")
 
+            # First try to clear any stuck command state with a simple command
+            _LOGGER.info("Clearing command state with 'help' command")
+            help_response = await self.socket.send_command("help")
+            _LOGGER.info("Help response: %s", help_response[:100])
+
+            # Small delay to let device process
+            await asyncio.sleep(0.2)
+
             # Use exact command syntax from working response samples
             response = await self.socket.send_command("show pdu details")
             _LOGGER.info("PDU details response: %s", response[:300])

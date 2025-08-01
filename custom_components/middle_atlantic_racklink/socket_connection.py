@@ -857,6 +857,11 @@ class SocketConnection:
 
             full_response = "".join(response_parts)
 
+            # DEBUG: Log the full raw response before cleaning
+            _LOGGER.error(
+                "RAW RESPONSE DEBUG: Full response for '%s': %r", command, full_response
+            )
+
             # Clean up response - remove the command echo and prompt
             lines = full_response.split("\n")
             cleaned_lines = []
