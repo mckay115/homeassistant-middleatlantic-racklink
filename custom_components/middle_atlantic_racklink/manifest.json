@@ -10,7 +10,7 @@
   "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
   "requirements": ["zeroconf>=0.47.0"],
   "ssdp": [],
-  "version": "0.3.0",
+  "version": "0.3.1",
   "zeroconf": [
     {
       "type": "_http._tcp.local.",

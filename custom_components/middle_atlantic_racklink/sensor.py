@@ -74,10 +74,11 @@ async def async_setup_entry(
         ]
     )
 
-    # Add individual outlet power sensors for monitoring per-device consumption
-    outlets = coordinator.data.get("outlets", {})
-    for outlet_id in outlets:
-        entities.append(RacklinkOutletPowerSensor(coordinator, outlet_id))
+    # Individual outlet power sensors temporarily disabled to prevent session corruption
+    # These can be re-enabled once session stability is improved
+    # outlets = coordinator.data.get("outlets", {})
+    # for outlet_id in outlets:
+    #     entities.append(RacklinkOutletPowerSensor(coordinator, outlet_id))
 
     async_add_entities(entities)
 
@@ -292,7 +293,7 @@ class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
 
         self._attr_device_class = SensorDeviceClass.POWER
         self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_unit_of_measurement = UnitOfPower.WATT
+        self._attr_native_unit_of_measurement = UnitOfPower.WATT
         self._attr_entity_category = None  # Main entity, not diagnostic
 
     @property

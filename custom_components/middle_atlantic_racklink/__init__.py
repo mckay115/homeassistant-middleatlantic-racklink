@@ -31,7 +31,7 @@ from .coordinator import RacklinkCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "middle_atlantic_racklink"
-DEFAULT_SCAN_INTERVAL = 10
+DEFAULT_SCAN_INTERVAL = 30
 
 PLATFORMS = [
     Platform.SWITCH,
@@ -83,9 +83,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         # Convert specific errors to Home Assistant standard exceptions
         error_msg = str(err).lower()
-        if any(auth_error in error_msg for auth_error in ["auth", "credential", "password", "username", "login"]):
+        if any(
+            auth_error in error_msg
+            for auth_error in ["auth", "credential", "password", "username", "login"]
+        ):
             raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
-        elif any(conn_error in error_msg for conn_error in ["connect", "timeout", "network", "unreachable"]):
+        elif any(
+            conn_error in error_msg
+            for conn_error in ["connect", "timeout", "network", "unreachable"]
+        ):
             raise ConfigEntryError(f"Cannot connect to device: {err}") from err
         else:
             raise ConfigEntryError(f"Setup failed: {err}") from err
