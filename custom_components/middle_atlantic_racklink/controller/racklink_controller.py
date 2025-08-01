@@ -145,7 +145,25 @@ class RacklinkController:
             _LOGGER.info("Fetching PDU details")
 
             # Use exact command syntax from working response samples
-            response = await self.socket.send_command("show pdu details")
+            # Try alternative PDU detail commands
+            pdu_commands = [
+                "show pdu details",
+                "show pdu",
+                "show system",
+            ]
+
+            response = ""
+            for cmd in pdu_commands:
+                response = await self.socket.send_command(cmd)
+                if response and "Unknown command" not in response:
+                    _LOGGER.debug("✅ Successfully got PDU data with command: %s", cmd)
+                    break
+                else:
+                    _LOGGER.debug(
+                        "⚠️ PDU command '%s' failed, trying next alternative", cmd
+                    )
+                    await asyncio.sleep(1.0)
+
             if "^" in response or "label" in response:
                 _LOGGER.warning(
                     "🔍 PDU DETAILS command failed with syntax error - session may be corrupted"
@@ -202,9 +220,29 @@ class RacklinkController:
             # Get MAC address using exact command syntax
             _LOGGER.debug("Fetching network interface details")
             await asyncio.sleep(0.5)  # Prevent rapid commands
-            network_response = await self.socket.send_command(
-                "show network interface eth1"
-            )
+
+            # Try alternative network interface commands
+            network_commands = [
+                "show network interface eth1",
+                "show network interface eth0",
+                "show network",
+                "show interface",
+            ]
+
+            network_response = ""
+            for cmd in network_commands:
+                network_response = await self.socket.send_command(cmd)
+                if network_response and "Unknown command" not in network_response:
+                    _LOGGER.debug(
+                        "✅ Successfully got network data with command: %s", cmd
+                    )
+                    break
+                else:
+                    _LOGGER.debug(
+                        "⚠️ Network command '%s' failed, trying next alternative", cmd
+                    )
+                    await asyncio.sleep(1.0)
+
             _LOGGER.debug("Network interface response: %s", network_response[:200])
             await asyncio.sleep(0.5)  # Prevent rapid commands
 
@@ -313,11 +351,33 @@ class RacklinkController:
                 "Getting representative power data from outlet 1 (conservative mode)"
             )
 
-            await asyncio.sleep(1.0)  # Longer delay to prevent session corruption
-            response = await self.socket.send_command("show outlets 1 details")
+            await asyncio.sleep(2.0)  # Even longer delay to prevent session corruption
 
-            if "^" in response or "label" in response:
-                _LOGGER.warning("Outlet 1 details command failed - using defaults")
+            # Try alternative commands if first one fails
+            commands_to_try = [
+                "show outlets 1 details",
+                "show outlets 1",
+                "show outlet 1",
+            ]
+
+            response = ""
+            for cmd in commands_to_try:
+                response = await self.socket.send_command(cmd)
+                if (
+                    response
+                    and "Unknown command" not in response
+                    and "^" not in response
+                ):
+                    _LOGGER.debug(
+                        "✅ Successfully got outlet data with command: %s", cmd
+                    )
+                    break
+                else:
+                    _LOGGER.debug("⚠️ Command '%s' failed, trying next alternative", cmd)
+                    await asyncio.sleep(1.0)  # Delay between attempts
+
+            if not response or "Unknown command" in response or "^" in response:
+                _LOGGER.warning("All outlet detail commands failed - using defaults")
                 # Use safe defaults
                 self.rms_voltage = 120.0
                 self.rms_current = 0.0

@@ -860,19 +860,25 @@ class SocketConnection:
                     text = data.decode("utf-8", errors="ignore")
                     response_parts.append(text)
 
-                    # Check for corruption indicators in real-time
-                    if any(
-                        indicator in text
-                        for indicator in [
-                            "^",
-                            "(1/2/3/4/5/6/7/8/all)",
-                            "label  Outlet label",
-                        ]
-                    ):
+                    # Check for REAL corruption indicators (not normal command responses)
+                    corruption_indicators = [
+                        # Multiple ^ characters indicate command buffer corruption
+                        text.count("^") > 1,
+                        # Command history overflow (long repeated command strings)
+                        len(text) > 500 and "show" in text and text.count("show") > 3,
+                        # Interactive command prompt stuck (without proper completion)
+                        "(1/2/3/4/5/6/7/8/all)" in text and "] # " not in text,
+                        # Label prompt without proper context
+                        "label  Outlet label" in text and "] # " not in text,
+                        # Malformed response with multiple command echoes
+                        text.count(command) > 2 if command else False,
+                    ]
+
+                    if any(corruption_indicators):
                         corruption_detected = True
                         _LOGGER.warning(
-                            "🚨 Corruption detected during command execution: %s",
-                            text[:100],
+                            "🚨 Real corruption detected: %s",
+                            text[:150],
                         )
                         break
 
@@ -893,6 +899,8 @@ class SocketConnection:
                 _LOGGER.error(
                     "❌ Command '%s' failed due to session corruption", command
                 )
+                # Try immediate recovery for corruption
+                await self._recover_telnet_session()
                 return ""
 
             full_response = "".join(response_parts)
@@ -900,7 +908,15 @@ class SocketConnection:
             # Enhanced response cleaning
             result = self._clean_telnet_response(full_response, command)
 
-            if result:
+            # Check for "Unknown command" and provide helpful feedback
+            if result and "Unknown command" in result:
+                _LOGGER.info(
+                    "ℹ️ Command '%s' not recognized by device: %s",
+                    command,
+                    result.strip(),
+                )
+                return result  # Return the error response for caller to handle
+            elif result:
                 _LOGGER.debug(
                     "✅ Command '%s' completed, response length: %d",
                     command,
@@ -1071,11 +1087,18 @@ class SocketConnection:
             ):
                 continue
 
-            # Skip corruption indicators
-            if any(
-                indicator in line
-                for indicator in ["^", "(1/2/3/4/5/6/7/8/all)", "label  Outlet label"]
-            ):
+            # Skip REAL corruption indicators (but keep normal error responses)
+            corruption_indicators = [
+                # Multiple ^ characters in one line (real corruption)
+                line.count("^") > 1,
+                # Interactive prompts without context
+                "(1/2/3/4/5/6/7/8/all)" in line and "Unknown command" not in line,
+                # Label prompts without context
+                "label  Outlet label" in line and "Unknown command" not in line,
+            ]
+
+            # Keep normal "^ Unknown command" responses - they're valuable info!
+            if any(corruption_indicators):
                 continue
 
             # Keep the line

@@ -9,7 +9,7 @@ DOMAIN = "middle_atlantic_racklink"
 # Default values
 DEFAULT_PORT = 60000  # TCP port for RackLink Select, Premium, Premium+ series
 DEFAULT_NAME = "Middle Atlantic Racklink"
-DEFAULT_SCAN_INTERVAL = 30  # seconds - conservative to prevent session corruption
+DEFAULT_SCAN_INTERVAL = 60  # Increased to 60 seconds for stability  # seconds - conservative to prevent session corruption
 DEFAULT_TIMEOUT = 20
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
 DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
