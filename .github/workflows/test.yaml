@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
-          pip install homeassistant
+          pip install -r requirements-test.txt
+          pip install zeroconf>=0.47.0
 
       - name: Run basic validation
         run: |

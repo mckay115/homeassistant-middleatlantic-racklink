@@ -1,1 +1,1 @@
-# No external dependencies required 
+zeroconf>=0.47.0 
