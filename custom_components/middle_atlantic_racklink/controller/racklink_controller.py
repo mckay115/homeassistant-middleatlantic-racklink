@@ -499,42 +499,56 @@ class RacklinkController:
             return False
 
     async def cycle_all_outlets(self, cycle_time: int = 5) -> bool:
-        """Cycle all outlets using binary protocol."""
+        """Cycle all outlets using Telnet commands."""
         try:
-            _LOGGER.info(
-                "Cycling all outlets (%d outlets) for %d seconds",
-                len(self.outlet_states),
-                cycle_time,
-            )
+            _LOGGER.info("🔄 Cycling all outlets (%d outlets)", len(self.outlet_states))
 
             success_count = 0
             total_outlets = len(self.outlet_states)
 
-            # Cycle each outlet individually
-            for outlet_num in self.outlet_states:
-                outlet_success = await self.socket.send_outlet_command(
-                    outlet_num, OUTLET_CYCLE, cycle_time
+            # Try individual outlet cycle commands via Telnet
+            for outlet_num in sorted(self.outlet_states.keys()):
+                cmd = f"power outlets {outlet_num} cycle /y"
+                _LOGGER.debug("📤 Sending cycle command: %s", cmd)
+                response = await self.socket.send_command(cmd)
+
+                # Check for success (empty response or no error indicators)
+                success = (
+                    len(response.strip()) == 0
+                    or "unknown command" not in response.lower()
+                    and "invalid" not in response.lower()
+                    and "error" not in response.lower()
                 )
-                if outlet_success:
+
+                if success:
                     success_count += 1
-                    _LOGGER.debug("Successfully cycled outlet %d", outlet_num)
+                    _LOGGER.debug("✅ Successfully cycled outlet %d", outlet_num)
                 else:
-                    _LOGGER.warning("Failed to cycle outlet %d", outlet_num)
+                    _LOGGER.warning(
+                        "❌ Failed to cycle outlet %d. Response: %r",
+                        outlet_num,
+                        response,
+                    )
+
+                # Small delay between commands to prevent session issues
+                await asyncio.sleep(0.5)
 
             if success_count > 0:
                 _LOGGER.info(
-                    "Successfully cycled %d of %d outlets", success_count, total_outlets
+                    "✅ Successfully cycled %d of %d outlets",
+                    success_count,
+                    total_outlets,
                 )
-                # Wait for the cycle to complete
-                _LOGGER.debug("Waiting for all outlet cycles to complete")
-                await asyncio.sleep(cycle_time + 1)
+                # Wait for the cycles to complete
+                _LOGGER.debug("⏱️ Waiting for outlet cycles to complete")
+                await asyncio.sleep(cycle_time + 2)
                 # Update all successfully cycled outlets to on
                 for outlet_num in self.outlet_states:
                     self.outlet_states[outlet_num] = True
                 _LOGGER.debug("Updated all outlet states to ON after cycle")
                 return success_count == total_outlets
             else:
-                _LOGGER.warning("Failed to cycle any outlets")
+                _LOGGER.warning("❌ Failed to cycle any outlets")
                 return False
 
         except Exception as err:
@@ -542,139 +556,202 @@ class RacklinkController:
             return False
 
     async def start_load_shedding(self) -> bool:
-        """Start load shedding."""
+        """Start load shedding using proper CLI configuration command."""
         try:
-            _LOGGER.info("Starting load shedding")
-            # Use the correct command format based on the device's help output
-            cmd = "loadshedding enable"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Start load shedding response: %r", response)
+            _LOGGER.info("🔄 Configuring load shedding (outlets 6+ as non-critical)")
 
-            # Check if command was successful - expanded success patterns
+            # Use proper CLI configuration command from official documentation
+            # Mark outlets 1-5 as critical (false) and 6-8+ as non-critical (true)
+            critical_outlets = []
+            non_critical_outlets = []
+
+            for outlet_num in self.outlet_states.keys():
+                if outlet_num >= 6:
+                    non_critical_outlets.append(str(outlet_num))
+                else:
+                    critical_outlets.append(str(outlet_num))
+
+            # Build the configuration command
+            critical_list = ",".join(critical_outlets) if critical_outlets else ""
+            non_critical_list = (
+                ",".join(non_critical_outlets) if non_critical_outlets else ""
+            )
+
+            cmd_parts = []
+            if critical_list:
+                cmd_parts.append(f"{critical_list}:false")
+            if non_critical_list:
+                cmd_parts.append(f"{non_critical_list}:true")
+
+            cmd = f"config:# pdu nonCriticalOutlets {';'.join(cmd_parts)}"
+
+            _LOGGER.info("📤 Sending load shedding config: %s", cmd)
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Load shedding config response: %r", response)
+
+            # Check for success indicators or absence of error messages
             success = (
-                "success" in response.lower()
-                or "enabled" in response.lower()
-                or "loadshed" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
+                len(response.strip()) == 0  # Empty response often means success
+                or "config" in response.lower()
+                or "unknown command" not in response.lower()
+                and "invalid" not in response.lower()
+                and "error" not in response.lower()
             )
 
             if success:
-                _LOGGER.info("Successfully started load shedding")
+                _LOGGER.info("✅ Successfully configured load shedding")
                 self.load_shedding_active = True
+                # Update our internal state
+                for outlet_num in self.outlet_states.keys():
+                    self.outlet_non_critical[outlet_num] = outlet_num >= 6
                 return True
             else:
-                _LOGGER.warning("Failed to start load shedding. Response: %r", response)
+                _LOGGER.warning(
+                    "❌ Failed to configure load shedding. Response: %r", response
+                )
                 return False
 
         except Exception as err:
-            _LOGGER.error("Error starting load shedding: %s", err)
+            _LOGGER.error("Error configuring load shedding: %s", err)
             return False
 
     async def stop_load_shedding(self) -> bool:
-        """Stop load shedding."""
+        """Stop load shedding by marking all outlets as critical."""
         try:
-            _LOGGER.info("Stopping load shedding")
-            # Use the correct command format based on the device's help output
-            cmd = "loadshedding disable"
-            response = await self.socket.send_command(cmd)
-            _LOGGER.debug("Stop load shedding response: %r", response)
+            _LOGGER.info("🔄 Disabling load shedding (all outlets as critical)")
 
-            # Check if command was successful - expanded success patterns
+            # Use proper CLI configuration command to mark all outlets as critical (false)
+            all_outlets = ",".join(
+                str(outlet_num) for outlet_num in self.outlet_states.keys()
+            )
+            cmd = f"config:# pdu nonCriticalOutlets {all_outlets}:false"
+
+            _LOGGER.info("📤 Sending load shedding disable config: %s", cmd)
+            response = await self.socket.send_command(cmd)
+            _LOGGER.debug("Load shedding disable response: %r", response)
+
+            # Check for success indicators or absence of error messages
             success = (
-                "success" in response.lower()
-                or "disabled" in response.lower()
-                or "loadshed" in response.lower()
-                or "unknown command"
-                not in response.lower()  # If no error message, consider success
+                len(response.strip()) == 0  # Empty response often means success
+                or "config" in response.lower()
+                or "unknown command" not in response.lower()
+                and "invalid" not in response.lower()
+                and "error" not in response.lower()
             )
 
             if success:
-                _LOGGER.info("Successfully stopped load shedding")
+                _LOGGER.info("✅ Successfully disabled load shedding")
                 self.load_shedding_active = False
+                # Update our internal state - all outlets are now critical
+                for outlet_num in self.outlet_states.keys():
+                    self.outlet_non_critical[outlet_num] = False
                 return True
             else:
-                _LOGGER.warning("Failed to stop load shedding. Response: %r", response)
+                _LOGGER.warning(
+                    "❌ Failed to disable load shedding. Response: %r", response
+                )
                 return False
 
         except Exception as err:
-            _LOGGER.error("Error stopping load shedding: %s", err)
+            _LOGGER.error("Error disabling load shedding: %s", err)
             return False
 
     async def start_sequence(self) -> bool:
-        """Start the outlet sequence."""
+        """Start outlet sequencing using proper CLI configuration."""
         try:
-            _LOGGER.info("Starting outlet sequence")
-            # Try both command formats
-            commands_to_try = ["outlet sequence start", "outlets sequence start"]
+            _LOGGER.info("🔄 Configuring outlet startup sequence")
 
-            for cmd in commands_to_try:
-                response = await self.socket.send_command(cmd)
-                _LOGGER.debug("Start sequence response (%s): %r", cmd, response)
+            # Configure a default startup sequence (1, 2, 3, 4, 5, 6, 7, 8)
+            # This will make outlets power on in order when the PDU starts
+            outlet_list = sorted(self.outlet_states.keys())
+            sequence_order = ",".join(str(outlet) for outlet in outlet_list)
 
-                # Check if command was successful - expanded success patterns
-                success = (
-                    "success" in response.lower()
-                    or "started" in response.lower()
-                    or "sequence" in response.lower()
-                    or "unknown command"
-                    not in response.lower()  # If no error message, consider success
-                )
+            # Set the outlet sequence using proper CLI command
+            sequence_cmd = f"config:# pdu outletSequence {sequence_order}"
+            _LOGGER.info("📤 Sending sequence config: %s", sequence_cmd)
+            response = await self.socket.send_command(sequence_cmd)
+            _LOGGER.debug("Sequence config response: %r", response)
 
-                if success:
-                    _LOGGER.info("Successfully started outlet sequence")
-                    self.sequence_active = True
-                    return True
+            # Also set a 2-second delay between each outlet
+            delay_cmd = f"config:# pdu outletSequenceDelay {';'.join(f'{outlet}:2' for outlet in outlet_list)}"
+            _LOGGER.info("📤 Sending sequence delay config: %s", delay_cmd)
+            delay_response = await self.socket.send_command(delay_cmd)
+            _LOGGER.debug("Sequence delay response: %r", delay_response)
 
-                if "unknown command" not in response.lower():
-                    # If no "unknown command" error, then command was valid but failed
-                    break
-
-            _LOGGER.warning(
-                "Failed to start outlet sequence. Last response: %r", response
+            # Check for success (empty response or no error indicators)
+            success = (
+                len(response.strip()) == 0
+                or "unknown command" not in response.lower()
+                and "invalid" not in response.lower()
+                and "error" not in response.lower()
+            ) and (
+                len(delay_response.strip()) == 0
+                or "unknown command" not in delay_response.lower()
+                and "invalid" not in delay_response.lower()
+                and "error" not in delay_response.lower()
             )
-            return False
+
+            if success:
+                _LOGGER.info("✅ Successfully configured outlet sequence")
+                self.sequence_active = True
+                return True
+            else:
+                _LOGGER.warning(
+                    "❌ Failed to configure sequence. Response: %r, Delay: %r",
+                    response,
+                    delay_response,
+                )
+                return False
 
         except Exception as err:
-            _LOGGER.error("Error starting sequence: %s", err)
+            _LOGGER.error("Error configuring sequence: %s", err)
             return False
 
     async def stop_sequence(self) -> bool:
-        """Stop the outlet sequence."""
+        """Disable outlet sequencing by setting to default behavior."""
         try:
-            _LOGGER.info("Stopping outlet sequence")
-            # Try both command formats
-            commands_to_try = ["outlet sequence stop", "outlets sequence stop"]
+            _LOGGER.info("🔄 Disabling outlet sequence (setting to default)")
 
-            for cmd in commands_to_try:
-                response = await self.socket.send_command(cmd)
-                _LOGGER.debug("Stop sequence response (%s): %r", cmd, response)
+            # Set sequence to "default" which should disable custom sequencing
+            sequence_cmd = "config:# pdu outletSequence default"
+            _LOGGER.info("📤 Sending sequence disable config: %s", sequence_cmd)
+            response = await self.socket.send_command(sequence_cmd)
+            _LOGGER.debug("Sequence disable response: %r", response)
 
-                # Check if command was successful - expanded success patterns
-                success = (
-                    "success" in response.lower()
-                    or "stopped" in response.lower()
-                    or "sequence" in response.lower()
-                    or "unknown command"
-                    not in response.lower()  # If no error message, consider success
-                )
+            # Remove custom delays by setting to 0 or default
+            outlet_list = sorted(self.outlet_states.keys())
+            delay_cmd = f"config:# pdu outletSequenceDelay {';'.join(f'{outlet}:0' for outlet in outlet_list)}"
+            _LOGGER.info("📤 Sending sequence delay reset: %s", delay_cmd)
+            delay_response = await self.socket.send_command(delay_cmd)
+            _LOGGER.debug("Sequence delay reset response: %r", delay_response)
 
-                if success:
-                    _LOGGER.info("Successfully stopped outlet sequence")
-                    self.sequence_active = False
-                    return True
-
-                if "unknown command" not in response.lower():
-                    # If no "unknown command" error, then command was valid but failed
-                    break
-
-            _LOGGER.warning(
-                "Failed to stop outlet sequence. Last response: %r", response
+            # Check for success (empty response or no error indicators)
+            success = (
+                len(response.strip()) == 0
+                or "unknown command" not in response.lower()
+                and "invalid" not in response.lower()
+                and "error" not in response.lower()
+            ) and (
+                len(delay_response.strip()) == 0
+                or "unknown command" not in delay_response.lower()
+                and "invalid" not in delay_response.lower()
+                and "error" not in delay_response.lower()
             )
-            return False
+
+            if success:
+                _LOGGER.info("✅ Successfully disabled outlet sequence")
+                self.sequence_active = False
+                return True
+            else:
+                _LOGGER.warning(
+                    "❌ Failed to disable sequence. Response: %r, Delay: %r",
+                    response,
+                    delay_response,
+                )
+                return False
 
         except Exception as err:
-            _LOGGER.error("Error stopping sequence: %s", err)
+            _LOGGER.error("Error disabling sequence: %s", err)
             return False
 
     def get_model_capabilities(self) -> Dict[str, Any]:
