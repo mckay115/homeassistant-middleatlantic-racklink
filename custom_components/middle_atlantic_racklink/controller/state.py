@@ -238,9 +238,8 @@ class StateMixin:
         try:
             _LOGGER.debug("Using direct method to get state for outlet %d", outlet_num)
             commands_to_try = [
-                f"power outlets status {outlet_num}",
-                f"power outletgroup {outlet_num} status",
-                f"power outlet {outlet_num} status",
+                f"show outlets {outlet_num} details",
+                f"show outlets {outlet_num}",
             ]
 
             for cmd in commands_to_try:
@@ -283,10 +282,8 @@ class StateMixin:
         try:
             # Try multiple command formats to get all outlet states at once
             commands_to_try = [
-                "power outlets status",
-                "power outletgroup status",
-                "power outlet status",
-                "power status",
+                "show outlets all",
+                "show outlets",
             ]
 
             response = None
@@ -365,7 +362,7 @@ class StateMixin:
             _LOGGER.debug("Getting power data for outlet %d", outlet_num)
 
             # Try standard command format
-            cmd = f"power outlets status {outlet_num}"
+            cmd = f"show outlets {outlet_num} details"
             response = await self.send_command(cmd)
 
             if not response or "Unknown command" in response.lower():
@@ -565,9 +562,8 @@ class StateMixin:
 
                 # Try different commands to get power data
                 cmds_to_try = [
-                    "show pdu power",
+                    "show pdu details",
                     "show inlets all details",
-                    "power status",
                 ]
 
                 for cmd in cmds_to_try:

@@ -127,53 +127,44 @@ class CommandsMixin:
 
     def _map_standard_command(self, command: str) -> str:
         """Map a standard command to one that works with this device."""
-        # First, check exact matches for standard commands
-        if command == "show outlets all":
-            return "power outlets status"
+        # ✅ PROPER CLI COMMANDS - Based on official documentation
 
-        # Handle show outlet details command for specific outlet
-        if re.match(r"show outlets? (\d+) details?", command):
-            outlet_num = re.match(r"show outlets? (\d+) details?", command).group(1)
-            return f"power outlets status {outlet_num}"
+        # Show commands - these are already correct, just pass through
+        if (
+            command.startswith("show outlets")
+            or command.startswith("show pdu")
+            or command.startswith("show network")
+        ):
+            return command  # These are already in correct format
 
-        # Handle power commands with different syntax
+        # Configuration commands - these are already correct, just pass through
+        if command.startswith("config:#"):
+            return command  # These are already in correct format
+
+        # Power control commands - ensure they have the /y flag for non-interactive mode
         power_off_match = re.match(r"power outlets? (\d+) off", command)
         if power_off_match:
             outlet_num = power_off_match.group(1)
-            return f"power outlets off {outlet_num}"
+            return f"power outlets {outlet_num} off /y"
 
         power_on_match = re.match(r"power outlets? (\d+) on", command)
         if power_on_match:
             outlet_num = power_on_match.group(1)
-            return f"power outlets on {outlet_num}"
+            return f"power outlets {outlet_num} on /y"
 
         cycle_match = re.match(r"power outlets? (\d+) cycle", command)
         if cycle_match:
             outlet_num = cycle_match.group(1)
-            return f"power outlets cycle {outlet_num}"
+            return f"power outlets {outlet_num} cycle /y"
 
-        # All outlets commands
-        if command == "power outlets all on":
-            return "power outlets on all"
-
-        if command == "power outlets all off":
-            return "power outlets off all"
-
-        if command == "power outlets all cycle":
-            return "power outlets cycle all"
-
-        # Try outletgroup commands seen in error logs
-        if re.match(r"power outlets? (\d+) off", command):
-            outlet_num = re.match(r"power outlets? (\d+) off", command).group(1)
-            return f"power outletgroup {outlet_num} off"
-
-        if re.match(r"power outlets? (\d+) on", command):
-            outlet_num = re.match(r"power outlets? (\d+) on", command).group(1)
-            return f"power outletgroup {outlet_num} on"
-
+        # Handle any old incorrect formats and fix them
+        # Fix old "power outlets status" commands to proper "show outlets" format
         if re.match(r"power outlets? status (\d+)", command):
             outlet_num = re.match(r"power outlets? status (\d+)", command).group(1)
-            return f"power outletgroup {outlet_num} status"
+            return f"show outlets {outlet_num} details"
+
+        if command == "power outlets status":
+            return "show outlets all"
 
         # Handle show inlets command
         if command == "show inlets all details":

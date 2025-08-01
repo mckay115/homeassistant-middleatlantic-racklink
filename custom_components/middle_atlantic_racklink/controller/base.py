@@ -600,19 +600,14 @@ class BaseController(CommandsMixin, ConfigMixin, NetworkMixin, StateMixin):
     async def _update_power_data(self) -> None:
         """Update power data from the PDU."""
         try:
-            # Try to get PDU power data using 'show pdu power'
-            power_response = await self.queue_command("show pdu power")
+            # Try to get PDU power data using proper CLI commands
+            power_response = await self.queue_command("show pdu details")
             power_data = parse_pdu_power_data(power_response)
 
             # If first attempt fails, try with 'show inlets all details'
             if not power_data:
                 inlet_response = await self.queue_command("show inlets all details")
                 power_data = parse_pdu_power_data(inlet_response)
-
-            # If still no data, try 'show power'
-            if not power_data:
-                simple_response = await self.queue_command("show power")
-                power_data = parse_pdu_power_data(simple_response)
 
             if power_data:
                 # Update sensor values
@@ -696,13 +691,13 @@ class BaseController(CommandsMixin, ConfigMixin, NetworkMixin, StateMixin):
     async def _update_temperature(self) -> None:
         """Update temperature data from the PDU."""
         try:
-            # Try to get temperature data using 'show pdu temperature'
-            response = await self.queue_command("show pdu temperature")
+            # Try to get temperature data using proper CLI command
+            response = await self.queue_command("show pdu details")
             temp_data = parse_pdu_temperature(response)
 
-            # If first attempt fails, try with 'show temperature'
+            # Temperature data should be included in PDU details
             if not temp_data:
-                response = await self.queue_command("show temperature")
+                _LOGGER.debug("No temperature data found in PDU details response")
                 temp_data = parse_pdu_temperature(response)
 
             if temp_data:
