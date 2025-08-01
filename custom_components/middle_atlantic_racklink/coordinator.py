@@ -248,7 +248,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             "frequency": self.controller.line_frequency,
         }
 
-        _LOGGER.debug("Coordinator: Updated system data: %r", system)
+        _LOGGER.info("📊 Coordinator: Updated system data: %r", system)
 
         # Process status information
         status = {

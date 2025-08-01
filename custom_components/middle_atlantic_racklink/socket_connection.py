@@ -908,11 +908,21 @@ class SocketConnection:
                     len(response) > 200 and "show" in response and "outlet" in response,
                 ]
 
-                if any(
-                    indicator in response if isinstance(indicator, str) else indicator
-                    for indicator in corruption_indicators
-                ):
-                    _LOGGER.info("Session corruption detected: %s", response[:100])
+                corruption_found = []
+                for indicator in corruption_indicators:
+                    if isinstance(indicator, str):
+                        if indicator in response:
+                            corruption_found.append(f"Found string: '{indicator}'")
+                    else:  # It's a boolean condition
+                        if indicator:
+                            corruption_found.append("Found long command history")
+
+                if corruption_found:
+                    _LOGGER.warning(
+                        "🚨 Session corruption detected: %s\nResponse: %s",
+                        ", ".join(corruption_found),
+                        response[:200],
+                    )
                     return True
 
             except asyncio.TimeoutError:

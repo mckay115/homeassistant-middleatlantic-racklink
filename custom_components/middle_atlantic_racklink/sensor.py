@@ -127,7 +127,13 @@ class RacklinkVoltageSensor(RacklinkSensorBase):
     @property
     def native_value(self) -> float:
         """Return the voltage value."""
-        return self.coordinator.system_data.get("voltage")
+        value = self.coordinator.system_data.get("voltage")
+        _LOGGER.debug(
+            "🔋 Voltage sensor value: %s (from system_data: %s)",
+            value,
+            self.coordinator.system_data,
+        )
+        return value
 
 
 class RacklinkCurrentSensor(RacklinkSensorBase):

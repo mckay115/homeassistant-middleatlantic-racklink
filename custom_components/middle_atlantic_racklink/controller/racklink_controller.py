@@ -139,7 +139,14 @@ class RacklinkController:
 
             # Use exact command syntax from working response samples
             response = await self.socket.send_command("show pdu details")
-            _LOGGER.debug("PDU details response: %s", response[:200])
+            _LOGGER.info(
+                "🔍 PDU DETAILS RAW RESPONSE (first 500 chars):\n%s", response[:500]
+            )
+            _LOGGER.info(
+                "🔍 PDU DETAILS RAW RESPONSE (contains error?):\n  Contains '^': %s\n  Contains 'label': %s",
+                "^" in response,
+                "label" in response,
+            )
 
             # Add delay between commands to prevent session corruption
             await asyncio.sleep(0.5)
@@ -298,24 +305,32 @@ class RacklinkController:
             _LOGGER.debug("Fetching power sensor data from outlet 1 details")
             await asyncio.sleep(0.5)  # Prevent rapid commands
             response = await self.socket.send_command("show outlets 1 details")
-            _LOGGER.debug("Outlet 1 details response: %s", response[:200])
+            _LOGGER.info(
+                "🔍 OUTLET 1 DETAILS RAW RESPONSE (first 500 chars):\n%s",
+                response[:500],
+            )
+            _LOGGER.info(
+                "🔍 OUTLET 1 DETAILS RAW RESPONSE (contains error?):\n  Contains '^': %s\n  Contains 'label': %s",
+                "^" in response,
+                "label" in response,
+            )
 
             # Parse voltage - updated regex pattern
             voltage_match = re.search(r"RMS Voltage:\s*([\d.]+)\s*V", response)
             if voltage_match:
                 self.rms_voltage = float(voltage_match.group(1))
-                _LOGGER.debug("Parsed voltage: %s V", self.rms_voltage)
+                _LOGGER.info("✅ Parsed voltage: %s V", self.rms_voltage)
             else:
-                _LOGGER.warning("Could not parse voltage from response")
+                _LOGGER.warning("❌ Could not parse voltage from response")
                 # Set default voltage if not found
                 self.rms_voltage = 120.0
-                _LOGGER.debug("Using default voltage: %s V", self.rms_voltage)
+                _LOGGER.info("Using default voltage: %s V", self.rms_voltage)
 
             # Parse current
             current_match = re.search(r"RMS Current:\s*([\d.]+)\s*A", response)
             if current_match:
                 self.rms_current = float(current_match.group(1))
-                _LOGGER.debug("Parsed current: %s A", self.rms_current)
+                _LOGGER.info("✅ Parsed current: %s A", self.rms_current)
             else:
                 _LOGGER.warning("Could not parse current from response")
                 # Set default current if not found
@@ -325,14 +340,14 @@ class RacklinkController:
             power_match = re.search(r"Active Power:\s*([\d.]+)\s*W", response)
             if power_match:
                 self.active_power = float(power_match.group(1))
-                _LOGGER.debug("Parsed power: %s W", self.active_power)
+                _LOGGER.info("✅ Parsed power: %s W", self.active_power)
             else:
                 _LOGGER.warning(
-                    "Could not parse power from response, calculating from V*A"
+                    "❌ Could not parse power from response, calculating from V*A"
                 )
                 # Calculate power as V * A
                 self.active_power = self.rms_voltage * self.rms_current
-                _LOGGER.debug("Calculated power: %s W", self.active_power)
+                _LOGGER.info("✅ Calculated power: %s W", self.active_power)
 
             # Parse energy
             energy_match = re.search(
@@ -340,21 +355,21 @@ class RacklinkController:
             )
             if energy_match:
                 self.active_energy = float(energy_match.group(1))
-                _LOGGER.debug("Parsed energy: %s kWh", self.active_energy)
+                _LOGGER.info("✅ Parsed energy: %s Wh", self.active_energy)
             else:
-                _LOGGER.warning("Could not parse energy from response")
+                _LOGGER.warning("❌ Could not parse energy from response")
                 # Keep previous energy value if not found
 
             # Parse frequency
             freq_match = re.search(r"Line Frequency:\s*([\d.]+)\s*Hz", response)
             if freq_match:
                 self.line_frequency = float(freq_match.group(1))
-                _LOGGER.debug("Parsed frequency: %s Hz", self.line_frequency)
+                _LOGGER.info("✅ Parsed frequency: %s Hz", self.line_frequency)
             else:
-                _LOGGER.warning("Could not parse frequency from response")
+                _LOGGER.warning("❌ Could not parse frequency from response")
                 # Default to 60 Hz if not found
                 self.line_frequency = 60.0
-                _LOGGER.debug("Using default frequency: %s Hz", self.line_frequency)
+                _LOGGER.info("Using default frequency: %s Hz", self.line_frequency)
 
             # Set default values for advanced features (not essential for basic operation)
             self.load_shedding_active = False
@@ -643,6 +658,30 @@ class RacklinkController:
         except Exception as err:
             _LOGGER.error("Error stopping sequence: %s", err)
             return False
+
+    def get_model_capabilities(self) -> Dict[str, Any]:
+        """Return model capabilities based on available data.
+
+        Returns:
+            Dict containing model capabilities like number of outlets, features, etc.
+        """
+        capabilities = {
+            "num_outlets": (
+                max(len(self.outlet_states), 8) if self.outlet_states else 8
+            ),  # Use actual count or default to 8
+            "has_surge_protection": True,  # Most RackLink devices have surge protection
+            "has_current_monitoring": True,
+            "has_power_monitoring": True,
+            "has_energy_monitoring": True,
+            "supports_outlet_control": True,
+        }
+
+        # Adjust outlet count based on actual data
+        if self.outlet_states:
+            capabilities["num_outlets"] = max(self.outlet_states.keys())
+
+        _LOGGER.debug("Controller capabilities: %s", capabilities)
+        return capabilities
 
     async def test_direct_commands(self) -> str:
         """Test direct commands based on the syntax hints from error messages.
