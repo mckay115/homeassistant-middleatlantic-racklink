@@ -831,56 +831,84 @@ class SocketConnection:
         try:
             # Check if session is corrupted (stuck in command mode)
             if await self._is_session_corrupted():
-                _LOGGER.warning("Telnet session corrupted, attempting recovery")
+                _LOGGER.warning("🚨 Session corruption detected, attempting recovery")
                 if not await self._recover_telnet_session():
-                    _LOGGER.error("Failed to recover Telnet session")
+                    _LOGGER.error("❌ Failed to recover Telnet session")
                     return ""
 
-            # Send command with newline
+            # Clear any buffered input before sending command
+            await self._flush_input_buffer()
+
+            # Send command with proper termination
             full_command = f"{command}\r\n"
-            _LOGGER.debug("Sending Telnet command: %s", command)
+            _LOGGER.debug("📤 Sending Telnet command: %s", command)
 
             self._writer.write(full_command.encode("ascii"))
             await self._writer.drain()
 
-            # Read response until we see the prompt
+            # Read response with improved timeout and corruption detection
             response_parts = []
+            corruption_detected = False
+            start_time = time.time()
+
             while True:
                 try:
-                    data = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+                    data = await asyncio.wait_for(self._reader.read(1024), timeout=3.0)
                     if not data:
                         break
 
                     text = data.decode("utf-8", errors="ignore")
                     response_parts.append(text)
 
+                    # Check for corruption indicators in real-time
+                    if any(
+                        indicator in text
+                        for indicator in [
+                            "^",
+                            "(1/2/3/4/5/6/7/8/all)",
+                            "label  Outlet label",
+                        ]
+                    ):
+                        corruption_detected = True
+                        _LOGGER.warning(
+                            "🚨 Corruption detected during command execution: %s",
+                            text[:100],
+                        )
+                        break
+
                     # Look for command prompt indicating end of response
                     if "] # " in text or "> " in text or "$ " in text:
                         break
 
+                    # Prevent infinite loops
+                    if time.time() - start_time > 8.0:
+                        _LOGGER.warning("⏱️ Command timeout after 8 seconds")
+                        break
+
                 except asyncio.TimeoutError:
-                    _LOGGER.debug("Timeout reading Telnet response")
+                    _LOGGER.debug("⏱️ Timeout reading Telnet response for '%s'", command)
                     break
+
+            if corruption_detected:
+                _LOGGER.error(
+                    "❌ Command '%s' failed due to session corruption", command
+                )
+                return ""
 
             full_response = "".join(response_parts)
 
-            # Log response length for debugging if needed
-            _LOGGER.debug(
-                "Response length for '%s': %d chars", command, len(full_response)
-            )
+            # Enhanced response cleaning
+            result = self._clean_telnet_response(full_response, command)
 
-            # Clean up response - remove the command echo and prompt
-            lines = full_response.split("\n")
-            cleaned_lines = []
+            if result:
+                _LOGGER.debug(
+                    "✅ Command '%s' completed, response length: %d",
+                    command,
+                    len(result),
+                )
+            else:
+                _LOGGER.warning("⚠️ Command '%s' returned empty response", command)
 
-            for line in lines:
-                # Skip the command echo and prompts
-                if command in line or "] # " in line or "> " in line:
-                    continue
-                cleaned_lines.append(line)
-
-            result = "\n".join(cleaned_lines).strip()
-            _LOGGER.debug("Telnet command '%s' response: %s", command, result[:200])
             return result
 
         except Exception as err:
@@ -999,6 +1027,62 @@ class SocketConnection:
         except Exception as err:
             _LOGGER.error("Error during session recovery: %s", err)
             return False
+
+    async def _flush_input_buffer(self) -> None:
+        """Flush any pending input to clear buffer before sending commands."""
+        try:
+            # Try to read any pending data with very short timeout
+            while True:
+                try:
+                    data = await asyncio.wait_for(self._reader.read(1024), timeout=0.1)
+                    if not data:
+                        break
+                    # Discard the data
+                    _LOGGER.debug("Flushed %d bytes from input buffer", len(data))
+                except asyncio.TimeoutError:
+                    # No more data to read
+                    break
+        except Exception as err:
+            _LOGGER.debug("Error flushing input buffer: %s", err)
+
+    def _clean_telnet_response(self, response: str, command: str) -> str:
+        """Clean up Telnet response by removing command echo and prompts."""
+        if not response:
+            return ""
+
+        # Split into lines for processing
+        lines = response.split("\n")
+        cleaned_lines = []
+
+        for line in lines:
+            line = line.strip()
+
+            # Skip empty lines
+            if not line:
+                continue
+
+            # Skip command echo (exact match or contains the command)
+            if line == command or command in line:
+                continue
+
+            # Skip prompts and navigation
+            if any(
+                prompt in line for prompt in ["] # ", "> ", "$ ", "login:", "password:"]
+            ):
+                continue
+
+            # Skip corruption indicators
+            if any(
+                indicator in line
+                for indicator in ["^", "(1/2/3/4/5/6/7/8/all)", "label  Outlet label"]
+            ):
+                continue
+
+            # Keep the line
+            cleaned_lines.append(line)
+
+        result = "\n".join(cleaned_lines).strip()
+        return result
 
     async def telnet_outlet_command(self, outlet: int, action: str) -> bool:
         """Send outlet control command via Telnet.

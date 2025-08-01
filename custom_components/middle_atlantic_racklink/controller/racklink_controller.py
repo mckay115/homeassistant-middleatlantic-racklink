@@ -78,6 +78,9 @@ class RacklinkController:
 
         # Status flags
         self.connected: bool = False
+
+        # Initialize load shedding defaults immediately for reliable binary sensors
+        self._initialize_load_shedding_defaults()
         self.available: bool = False
         self.load_shedding_active: bool = False
         self.sequence_active: bool = False
@@ -708,26 +711,50 @@ class RacklinkController:
         # This would need specific parsing if the device provides surge status
         return True  # Default to True for now
 
+    def _initialize_load_shedding_defaults(self) -> None:
+        """Initialize load shedding defaults for reliable binary sensor startup."""
+        # Set defaults for common outlet configurations (1-8 outlets)
+        # This ensures binary sensors work immediately without waiting for device connection
+        for outlet_num in range(1, 9):  # Outlets 1-8
+            if outlet_num >= 6:  # Outlets 6-8 typically non-critical
+                self.outlet_non_critical[outlet_num] = True
+            else:
+                self.outlet_non_critical[outlet_num] = False  # Critical outlets 1-5
+
+        _LOGGER.debug(
+            "Initialized load shedding defaults: outlets 1-5 critical, 6-8 non-critical"
+        )
+
     async def update_outlet_non_critical_flags(self) -> None:
         """Update non-critical flags for outlets in a simple, stable way."""
         try:
-            # For now, use a simple heuristic - outlets 6+ are often non-critical
-            # This prevents session corruption from excessive commands
-            for outlet_num in self.outlet_states.keys():
-                if outlet_num >= 6:  # Outlets 6-8 often non-critical
-                    self.outlet_non_critical[outlet_num] = True
-                else:
-                    self.outlet_non_critical[outlet_num] = False  # Critical outlets 1-5
+            # Update flags only for actually discovered outlets
+            # This maintains the defaults but updates based on real device state
+            if self.outlet_states:
+                for outlet_num in self.outlet_states.keys():
+                    if outlet_num >= 6:  # Outlets 6+ are often non-critical
+                        self.outlet_non_critical[outlet_num] = True
+                    else:
+                        self.outlet_non_critical[outlet_num] = (
+                            False  # Critical outlets 1-5
+                        )
 
-            _LOGGER.debug(
-                "Set simple outlet criticality: outlets 1-5 critical, 6+ non-critical"
-            )
+                _LOGGER.debug(
+                    "Updated outlet criticality for discovered outlets: %s",
+                    list(self.outlet_states.keys()),
+                )
+            else:
+                # Keep defaults if no outlets discovered yet
+                _LOGGER.debug(
+                    "No outlets discovered yet, keeping load shedding defaults"
+                )
 
         except Exception as err:
             _LOGGER.warning("Error setting outlet criticality: %s", err)
-            # Set all to critical as safe default
-            for outlet_num in self.outlet_states.keys():
-                self.outlet_non_critical[outlet_num] = False
+            # Maintain safe defaults - don't clear existing values
+            _LOGGER.debug(
+                "Maintained existing load shedding configuration due to error"
+            )
 
     async def test_direct_commands(self) -> str:
         """Test direct commands based on the syntax hints from error messages.

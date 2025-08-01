@@ -177,9 +177,7 @@ class RacklinkOutletNonCritical(RacklinkBinarySensor):
 
             self._state = self._controller.outlet_non_critical.get(self._outlet, False)
             self._attr_available = (
-                self._controller.connected
-                and self._controller.available
-                and self._controller.outlet_non_critical.get(self._outlet) is not None
+                self._controller.connected and self._controller.available
             )
         except Exception as err:
             _LOGGER.error(
