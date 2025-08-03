@@ -258,9 +258,8 @@ class RackLinkServiceListener(ServiceListener):
         """Called when a service is updated."""
         _LOGGER.debug("Service updated: %s (%s)", name, type_)
 
-        # Treat as a new discovery
-        if self._is_racklink_device(name):
-            asyncio.create_task(self._process_service(zc, type_, name))
+        # Treat as a new discovery - same logic as add_service
+        self.add_service(zc, type_, name)
 
     def _is_racklink_device(self, service_name: str) -> bool:
         """Check if a service name indicates a RackLink device."""
