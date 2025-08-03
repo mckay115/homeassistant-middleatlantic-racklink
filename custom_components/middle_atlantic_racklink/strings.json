@@ -9,8 +9,8 @@
           }
         },
         "user": {
-          "title": "Connect to Middle Atlantic RackLink PDU",
-          "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant. {discovered_count} devices were discovered on your network.",
+          "title": "Add Middle Atlantic RackLink PDU",
+          "description": "Select your RackLink PDU from the discovered devices below, or enter connection details manually. {discovered_count} devices were found on your network.",
           "data": {
                               "host": "IP Address",
                   "username": "Username (default: admin)",
@@ -22,8 +22,8 @@
           }
         },
         "discovery": {
-          "title": "Discovering RackLink Devices",
-          "description": "Searching for RackLink PDUs on your network..."
+          "title": "Scanning Network",
+          "description": "Looking for RackLink PDUs on your network. This will take a few seconds..."
         },
         "zeroconf_confirm": {
           "title": "Confirm RackLink Device",
@@ -45,7 +45,7 @@
         "invalid_input": "Invalid input provided. Please check all fields.",
         "not_racklink_device": "This device does not appear to be a RackLink PDU.",
         "protocol_mismatch": "Device found but protocol mismatch. Try different port: 6000 for Telnet (Premium/Select) or 60000 for Binary (Premium+).",
-        "no_devices_found": "No RackLink devices found on the network. Please ensure your device is powered on, connected to the network, and discoverable via mDNS.",
+        "no_devices_found": "No RackLink devices found automatically. Please enter your device details manually below.",
         "unknown": "Unexpected error occurred. Please try again."
       },
       "abort": {

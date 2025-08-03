@@ -291,23 +291,10 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
-        # If no connection type selected yet, go to connection type selection
-        if not hasattr(self, "_connection_type") or not self._connection_type:
-            return await self.async_step_connection_type()
-
-        # For auto-detection, always do discovery first to find devices
-        if (
-            self._connection_type == CONNECTION_TYPE_AUTO
-            and not self._discovery_completed
-        ):
-            return await self.async_step_discovery()
-
-        # For manual connection types, skip discovery if user hasn't provided input yet
-        if (
-            user_input is None
-            and not self._discovery_completed
-            and self._connection_type != CONNECTION_TYPE_AUTO
-        ):
+        # Always do discovery first to find devices (much simpler UX)
+        if not self._discovery_completed:
+            # Set connection type to auto for discovery-first flow
+            self._connection_type = CONNECTION_TYPE_AUTO
             return await self.async_step_discovery()
 
         if user_input is not None:
@@ -326,14 +313,20 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                         # Parse selected device (format: "ip:port")
                         host, port = device_selection.split(":")
                         user_input[CONF_HOST] = host
-                        user_input[CONF_PORT] = int(port)
+
+                        # For auto-detection, don't set the discovered port - let it try all ports
+                        if self._connection_type != CONNECTION_TYPE_AUTO:
+                            user_input[CONF_PORT] = int(port)
 
                 # Add connection type to user input
                 user_input[CONF_CONNECTION_TYPE] = self._connection_type
 
                 # Set default port based on connection type if not provided
                 if CONF_PORT not in user_input or user_input[CONF_PORT] == DEFAULT_PORT:
-                    if self._connection_type == CONNECTION_TYPE_REDFISH:
+                    if self._connection_type == CONNECTION_TYPE_AUTO:
+                        # For auto-detection, use a placeholder port (will be ignored by auto-detection)
+                        user_input[CONF_PORT] = DEFAULT_PORT
+                    elif self._connection_type == CONNECTION_TYPE_REDFISH:
                         user_input[CONF_PORT] = (
                             DEFAULT_REDFISH_PORT
                             if user_input.get(CONF_USE_HTTPS, True)
@@ -413,7 +406,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
     async def async_step_discovery(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Handle device discovery."""
+        """Handle device discovery - now the first step for better UX."""
         _LOGGER.info("Starting RackLink device discovery...")
 
         try:
@@ -425,13 +418,10 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             _LOGGER.info("Discovery found %d devices", len(self._discovered_devices))
 
-            # For auto-detection, always show device selection if devices were found
-            if (
-                self._connection_type == CONNECTION_TYPE_AUTO
-                and self._discovered_devices
-            ):
+            # Always show device selection (discovered + manual option)
+            if self._discovered_devices:
                 if len(self._discovered_devices) == 1:
-                    # Auto-select the single device for auto-detection
+                    # Single device found - show it with manual option
                     device = self._discovered_devices[0]
                     return self.async_show_form(
                         step_id="user",
@@ -447,21 +437,22 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                             "discovered_count": str(len(self._discovered_devices))
                         },
                     )
-
-            # For auto-detection with no devices found, show error
-            elif self._connection_type == CONNECTION_TYPE_AUTO:
+            else:
+                # No devices found - offer manual entry
                 return self.async_show_form(
                     step_id="user",
                     data_schema=self._build_user_data_schema(),
-                    errors={"base": "no_devices_found"},
                     description_placeholders={"discovered_count": "0"},
                 )
 
         except Exception as err:
             _LOGGER.error("Error during discovery: %s", err)
-
-        # For manual connection types, proceed to user step normally
-        return await self.async_step_user()
+            # On discovery error, fall back to manual entry
+            return self.async_show_form(
+                step_id="user",
+                data_schema=self._build_user_data_schema(),
+                description_placeholders={"discovered_count": "0"},
+            )
 
     async def _test_connection_with_discovery(self, user_input: Dict[str, Any]) -> bool:
         """Test connection and try to discover correct port if needed."""
@@ -574,30 +565,19 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         return vol.Schema(schema_dict)
 
     def _build_single_device_schema(self, device: DiscoveredDevice) -> vol.Schema:
-        """Build schema for a single discovered device."""
-        # Determine port based on connection type
-        if self._connection_type == CONNECTION_TYPE_REDFISH:
-            default_port = DEFAULT_REDFISH_PORT
-            include_https = True
-        else:
-            default_port = device.suggested_control_port
-            include_https = False
-
-        schema_dict = {
-            vol.Required(CONF_HOST, default=device.ip_address): cv.string,
-            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-            vol.Optional(CONF_PORT, default=default_port): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=65535)
-            ),
+        """Build schema for single device with option to use it or enter manually."""
+        # Create device options - discovered device + manual entry
+        device_key = f"{device.ip_address}:{device.suggested_control_port}"
+        device_options = {
+            device_key: f"{device.name} ({device.ip_address})",
+            "manual": "Enter manually",
         }
 
-        if include_https:
-            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
-            # For Redfish connections, offer vendor features option
-            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
-                cv.boolean
-            )
+        schema_dict = {
+            vol.Required("device", default=device_key): vol.In(device_options),
+            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+        }
 
         return vol.Schema(schema_dict)
 
