@@ -131,20 +131,29 @@ class RacklinkController:
 
             # Create connection based on type
             if self.connection_type == CONNECTION_TYPE_AUTO:
-                # Use auto-detection
+                # Use auto-detection - don't pass user-specified port, let it try all standard ports
                 try:
+                    auto_config = self._config_data.copy()
+                    # Remove port to let auto-detection try all standard ports
+                    auto_config.pop("port", None)
+
                     self.connection = (
-                        await AutoConnectionManager.detect_best_connection(
-                            self._config_data
-                        )
+                        await AutoConnectionManager.detect_best_connection(auto_config)
                     )
-                    # Update connection type based on what was detected
+                    # Update connection type and port based on what was detected
                     if isinstance(self.connection, RedfishConnection):
                         self.connection_type = CONNECTION_TYPE_REDFISH
-                        _LOGGER.info("Auto-detected Redfish connection")
+                        self.port = self.connection.port
+                        _LOGGER.info(
+                            "Auto-detected Redfish connection on port %d", self.port
+                        )
                     else:
                         self.connection_type = CONNECTION_TYPE_TELNET
-                        _LOGGER.info("Auto-detected Telnet/Binary connection")
+                        self.port = self.connection.config.port
+                        _LOGGER.info(
+                            "Auto-detected Telnet/Binary connection on port %d",
+                            self.port,
+                        )
                 except Exception as err:
                     _LOGGER.error("Auto-detection failed: %s", err)
                     self.connected = False

@@ -295,12 +295,39 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         if not hasattr(self, "_connection_type") or not self._connection_type:
             return await self.async_step_connection_type()
 
-        # If no input yet, try to discover devices first
-        if user_input is None and not self._discovery_completed:
+        # For auto-detection, always do discovery first to find devices
+        if (
+            self._connection_type == CONNECTION_TYPE_AUTO
+            and not self._discovery_completed
+        ):
+            return await self.async_step_discovery()
+
+        # For manual connection types, skip discovery if user hasn't provided input yet
+        if (
+            user_input is None
+            and not self._discovery_completed
+            and self._connection_type != CONNECTION_TYPE_AUTO
+        ):
             return await self.async_step_discovery()
 
         if user_input is not None:
             try:
+                # Handle device selection from discovery
+                if "device" in user_input:
+                    device_selection = user_input["device"]
+                    if device_selection == "manual":
+                        # User chose manual entry, rebuild form for manual input
+                        return self.async_show_form(
+                            step_id="user",
+                            data_schema=self._build_user_data_schema(),
+                            errors=errors,
+                        )
+                    else:
+                        # Parse selected device (format: "ip:port")
+                        host, port = device_selection.split(":")
+                        user_input[CONF_HOST] = host
+                        user_input[CONF_PORT] = int(port)
+
                 # Add connection type to user input
                 user_input[CONF_CONNECTION_TYPE] = self._connection_type
 
@@ -398,19 +425,42 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             _LOGGER.info("Discovery found %d devices", len(self._discovered_devices))
 
-            if len(self._discovered_devices) == 1:
-                # Auto-select the single device
-                device = self._discovered_devices[0]
+            # For auto-detection, always show device selection if devices were found
+            if (
+                self._connection_type == CONNECTION_TYPE_AUTO
+                and self._discovered_devices
+            ):
+                if len(self._discovered_devices) == 1:
+                    # Auto-select the single device for auto-detection
+                    device = self._discovered_devices[0]
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=self._build_single_device_schema(device),
+                        description_placeholders={"device_name": device.name},
+                    )
+                else:
+                    # Multiple devices found, let user choose
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=self._build_device_selection_schema(),
+                        description_placeholders={
+                            "discovered_count": str(len(self._discovered_devices))
+                        },
+                    )
+
+            # For auto-detection with no devices found, show error
+            elif self._connection_type == CONNECTION_TYPE_AUTO:
                 return self.async_show_form(
                     step_id="user",
-                    data_schema=self._build_single_device_schema(device),
-                    description_placeholders={"device_name": device.name},
+                    data_schema=self._build_user_data_schema(),
+                    errors={"base": "no_devices_found"},
+                    description_placeholders={"discovered_count": "0"},
                 )
 
         except Exception as err:
             _LOGGER.error("Error during discovery: %s", err)
 
-        # Proceed to manual entry
+        # For manual connection types, proceed to user step normally
         return await self.async_step_user()
 
     async def _test_connection_with_discovery(self, user_input: Dict[str, Any]) -> bool:
