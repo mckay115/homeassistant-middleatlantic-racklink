@@ -3,7 +3,7 @@
       "step": {
         "connection_type": {
           "title": "Choose Connection Method",
-          "description": "Select how to connect to your Middle Atlantic RackLink PDU. Redfish is recommended for modern devices.",
+          "description": "Select how to connect to your RackLink PDU. Redfish is modern and secure, Telnet is for legacy devices.",
           "data": {
             "connection_type": "Connection Type"
           }

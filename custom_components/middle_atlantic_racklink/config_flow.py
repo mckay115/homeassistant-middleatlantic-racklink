@@ -47,11 +47,18 @@ _LOGGER = logging.getLogger(__name__)
 # Constants
 CONNECTION_TIMEOUT = 10
 
-# Data schema for connection type selection
+# Data schema for connection type selection (no auto-detection)
 STEP_CONNECTION_TYPE_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_CONNECTION_TYPE, default=CONNECTION_TYPE_AUTO): vol.In(
-            CONNECTION_TYPE_DESCRIPTIONS
+        vol.Required(CONF_CONNECTION_TYPE, default=CONNECTION_TYPE_REDFISH): vol.In(
+            {
+                CONNECTION_TYPE_REDFISH: CONNECTION_TYPE_DESCRIPTIONS[
+                    CONNECTION_TYPE_REDFISH
+                ],
+                CONNECTION_TYPE_TELNET: CONNECTION_TYPE_DESCRIPTIONS[
+                    CONNECTION_TYPE_TELNET
+                ],
+            }
         ),
     }
 )
@@ -204,9 +211,16 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Initialize the config flow."""
         self._discovered_devices: List[DiscoveredDevice] = []
         self._discovery_completed = False
-        self._connection_type: Optional[str] = (
-            None  # Will trigger connection type selection
-        )
+        self._connection_type: Optional[str] = None
+
+        # For storing selected device info
+        self._selected_host: Optional[str] = None
+        self._selected_port: Optional[int] = None
+        self._selected_username: Optional[str] = None
+        self._selected_password: Optional[str] = None
+
+        # For storing manual input
+        self._manual_input: Optional[Dict[str, Any]] = None
 
     @staticmethod
     @callback
@@ -278,7 +292,74 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Handle connection type selection."""
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
-            return await self.async_step_user()
+
+            # Build final config data
+            if hasattr(self, "_selected_host"):
+                # Using discovered device
+                final_input = {
+                    CONF_HOST: self._selected_host,
+                    CONF_PORT: self._selected_port,
+                    CONF_USERNAME: self._selected_username,
+                    CONF_PASSWORD: self._selected_password,
+                    CONF_CONNECTION_TYPE: self._connection_type,
+                }
+            elif hasattr(self, "_manual_input"):
+                # Using manual input
+                final_input = self._manual_input.copy()
+                final_input[CONF_CONNECTION_TYPE] = self._connection_type
+            else:
+                # Fallback
+                return await self.async_step_user()
+
+            # Set default port based on connection type if not specified
+            if CONF_PORT not in final_input or final_input[CONF_PORT] == DEFAULT_PORT:
+                if self._connection_type == CONNECTION_TYPE_REDFISH:
+                    final_input[CONF_PORT] = (
+                        DEFAULT_REDFISH_PORT
+                        if final_input.get(CONF_USE_HTTPS, True)
+                        else DEFAULT_REDFISH_HTTP_PORT
+                    )
+                else:
+                    final_input[CONF_PORT] = DEFAULT_PORT
+
+            # Validate and create entry
+            try:
+                info = await validate_connection(self.hass, final_input)
+
+                # Handle unique ID based on MAC address
+                mac_address = info.get("mac_address")
+                if mac_address and mac_address != "Unknown MAC":
+                    await self.async_set_unique_id(mac_address)
+                    try:
+                        self._abort_if_unique_id_configured(updates=final_input)
+                    except AbortFlow as err:
+                        return self.async_abort(reason=err.reason)
+
+                # Create entry
+                title = info["pdu_name"]
+                if info["pdu_model"] != "Unknown Model":
+                    title = f"{title} ({info['pdu_model']})"
+
+                return self.async_create_entry(title=title, data=final_input)
+
+            except CannotConnect as err:
+                return self.async_show_form(
+                    step_id="connection_type",
+                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
+                    errors={"base": "cannot_connect"},
+                )
+            except InvalidAuth as err:
+                return self.async_show_form(
+                    step_id="connection_type",
+                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
+                    errors={"base": "invalid_auth"},
+                )
+            except Exception as err:
+                return self.async_show_form(
+                    step_id="connection_type",
+                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
+                    errors={"base": "unknown"},
+                )
 
         return self.async_show_form(
             step_id="connection_type",
@@ -293,8 +374,6 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         # Always do discovery first to find devices (much simpler UX)
         if not self._discovery_completed:
-            # Set connection type to auto for discovery-first flow
-            self._connection_type = CONNECTION_TYPE_AUTO
             return await self.async_step_discovery()
 
         if user_input is not None:
@@ -310,78 +389,25 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                             errors=errors,
                         )
                     else:
-                        # Parse selected device (format: "ip:port")
+                        # Parse selected device and store for connection type selection
                         host, port = device_selection.split(":")
-                        user_input[CONF_HOST] = host
-
-                        # For auto-detection, don't set the discovered port - let it try all ports
-                        if self._connection_type != CONNECTION_TYPE_AUTO:
-                            user_input[CONF_PORT] = int(port)
-
-                # Add connection type to user input
-                user_input[CONF_CONNECTION_TYPE] = self._connection_type
-
-                # Set default port based on connection type if not provided
-                if CONF_PORT not in user_input or user_input[CONF_PORT] == DEFAULT_PORT:
-                    if self._connection_type == CONNECTION_TYPE_AUTO:
-                        # For auto-detection, use a placeholder port (will be ignored by auto-detection)
-                        user_input[CONF_PORT] = DEFAULT_PORT
-                    elif self._connection_type == CONNECTION_TYPE_REDFISH:
-                        user_input[CONF_PORT] = (
-                            DEFAULT_REDFISH_PORT
-                            if user_input.get(CONF_USE_HTTPS, True)
-                            else DEFAULT_REDFISH_HTTP_PORT
+                        self._selected_host = host
+                        self._selected_port = int(port)
+                        self._selected_username = user_input.get(
+                            CONF_USERNAME, DEFAULT_USERNAME
                         )
-                    else:
-                        user_input[CONF_PORT] = DEFAULT_PORT
+                        self._selected_password = user_input.get(
+                            CONF_PASSWORD, DEFAULT_PASSWORD
+                        )
 
-                # If connection fails, try to discover the correct port
-                if not await self._test_connection_with_discovery(user_input):
-                    # Check if it was a protocol mismatch (port accessible but auth failed)
-                    from .socket_connection import SocketConnection, SocketConfig
+                        # Go to connection type selection
+                        return await self.async_step_connection_type()
 
-                    config = SocketConfig(
-                        host=user_input[CONF_HOST],
-                        port=user_input[CONF_PORT],
-                        username=user_input[CONF_USERNAME],
-                        password=user_input[CONF_PASSWORD],
-                    )
-                    socket_conn = SocketConnection(config)
+                # If we get here, user provided manual connection details
+                # Store manual input and proceed to connection type selection
+                self._manual_input = user_input
+                return await self.async_step_connection_type()
 
-                    # If port is accessible but auth failed, it's likely a protocol mismatch
-                    if await socket_conn.test_port_connectivity(user_input[CONF_PORT]):
-                        errors["base"] = "protocol_mismatch"
-                    else:
-                        errors["base"] = "cannot_connect_after_discovery"
-                else:
-                    info = await validate_connection(self.hass, user_input)
-
-                    # Handle unique ID based on MAC address
-                    mac_address = info.get("mac_address")
-                    if mac_address and mac_address != "Unknown MAC":
-                        # Set unique ID and check for duplicates
-                        await self.async_set_unique_id(mac_address)
-                        try:
-                            self._abort_if_unique_id_configured(updates=user_input)
-                        except AbortFlow as err:
-                            return self.async_abort(reason=err.reason)
-
-                    # Create a friendly title for the config entry
-                    title = info["pdu_name"]
-                    if info["pdu_model"] != "Unknown Model":
-                        title = f"{title} ({info['pdu_model']})"
-
-                    return self.async_create_entry(title=title, data=user_input)
-
-            except CannotConnect as err:
-                _LOGGER.warning("Cannot connect to device: %s", err)
-                errors["base"] = "cannot_connect"
-            except InvalidAuth as err:
-                _LOGGER.warning("Invalid authentication: %s", err)
-                errors["base"] = "invalid_auth"
-            except ValueError as err:
-                _LOGGER.warning("Invalid input: %s", err)
-                errors["base"] = "invalid_input"
             except Exception as err:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception during config flow: %s", err)
                 errors["base"] = "unknown"
