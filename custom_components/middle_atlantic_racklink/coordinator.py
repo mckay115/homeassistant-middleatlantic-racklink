@@ -76,6 +76,13 @@ class RacklinkCoordinator(DataUpdateCoordinator):
                 if self.controller.mac_address
                 else None
             ),
+            # Identify as power monitoring device
+            "suggested_area": "Electrical",
+            "configuration_url": (
+                f"https://{self.controller.host}"
+                if hasattr(self.controller, "host")
+                else None
+            ),
         }
         _LOGGER.debug("Device info: %r", device_info)
         return device_info
@@ -244,6 +251,8 @@ class RacklinkCoordinator(DataUpdateCoordinator):
             "power": self.controller.active_power,
             "energy": self.controller.active_energy,
             "frequency": self.controller.line_frequency,
+            "apparent_power": getattr(self.controller, "apparent_power", 0.0),
+            "power_factor": getattr(self.controller, "power_factor", 0.0),
         }
 
         _LOGGER.debug("📊 Coordinator: Updated system data: %r", system)

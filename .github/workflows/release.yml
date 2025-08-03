@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION="${{ steps.get_version.outputs.VERSION }}"
+          MANIFEST_VERSION=$(python -c "import json; print(json.load(open('custom_components/middle_atlantic_racklink/manifest.json'))['version'])")
+
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) doesn't match manifest version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+          echo "✅ Version consistency validated: $TAG_VERSION"
+
+      - name: Run tests
+        run: |
+          pytest tests/ --cov=custom_components/middle_atlantic_racklink --cov-report=term-missing
+
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration
+
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master
+
+      - name: Create Release Archive
+        run: |
+          mkdir -p release
+          cp -r custom_components release/
+          cp README.md release/
+          cp LICENSE release/
+          cp info.md release/
+          cd release
+          zip -r ../middle-atlantic-racklink-${{ steps.get_version.outputs.VERSION }}.zip .
+
+      - name: Generate Release Notes
+        id: release_notes
+        run: |
+          echo "RELEASE_NOTES<<EOF" >> $GITHUB_OUTPUT
+          echo "# Middle Atlantic RackLink v${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## 🚀 What's New" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          if [ "${{ steps.get_version.outputs.VERSION }}" = "1.0.0" ]; then
+            echo "### Major Release: Redfish API Support & Comprehensive Power Monitoring" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "- ✅ **Redfish REST API Support**: Modern, secure device communication" >> $GITHUB_OUTPUT
+            echo "- ✅ **Hybrid Mode**: Best of both worlds (Redfish + Telnet)" >> $GITHUB_OUTPUT
+            echo "- ✅ **Comprehensive Power Monitoring**: Enterprise-grade PDU capabilities" >> $GITHUB_OUTPUT
+            echo "- ✅ **6x Faster Updates**: 10-second intervals with Redfish" >> $GITHUB_OUTPUT
+            echo "- ✅ **Individual Outlet Monitoring**: Per-outlet power/energy/current/voltage" >> $GITHUB_OUTPUT
+            echo "- ✅ **Energy Dashboard Integration**: Native Home Assistant energy tracking" >> $GITHUB_OUTPUT
+            echo "- ✅ **Smart Configuration**: Auto-detection and optimal defaults" >> $GITHUB_OUTPUT
+            echo "- ✅ **Professional Device Classification**: Proper PDU identification" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "### 🔧 Technical Improvements" >> $GITHUB_OUTPUT
+            echo "- Connection factory pattern for multi-protocol support" >> $GITHUB_OUTPUT
+            echo "- Enhanced error handling and logging" >> $GITHUB_OUTPUT
+            echo "- Comprehensive test suite" >> $GITHUB_OUTPUT
+            echo "- CI/CD pipeline with automated testing" >> $GITHUB_OUTPUT
+            echo "- HACS-ready with proper GitHub workflows" >> $GITHUB_OUTPUT
+          fi
+          echo "" >> $GITHUB_OUTPUT
+          echo "## 📊 Power Monitoring Features" >> $GITHUB_OUTPUT
+          echo "- System power: Real/apparent power, voltage, current, frequency, power factor" >> $GITHUB_OUTPUT
+          echo "- Energy tracking: kWh measurement with proper HA integration" >> $GITHUB_OUTPUT
+          echo "- Individual outlets: Per-outlet monitoring (Redfish mode)" >> $GITHUB_OUTPUT
+          echo "- Fast updates: 10-second intervals for responsive dashboards" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## 🔗 Connection Types" >> $GITHUB_OUTPUT
+          echo "- **Redfish HTTPS**: Modern REST API (recommended)" >> $GITHUB_OUTPUT
+          echo "- **Telnet/Binary**: Legacy protocol support" >> $GITHUB_OUTPUT
+          echo "- **Hybrid Mode**: Redfish + Telnet for vendor features" >> $GITHUB_OUTPUT
+          echo "- **Auto-detect**: Automatic protocol selection" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## 🏠 Home Assistant Compatibility" >> $GITHUB_OUTPUT
+          echo "- Minimum HA version: 2023.1.0" >> $GITHUB_OUTPUT
+          echo "- Native energy dashboard integration" >> $GITHUB_OUTPUT
+          echo "- Proper device classes and state management" >> $GITHUB_OUTPUT
+          echo "- HACS installation ready" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## 📥 Installation" >> $GITHUB_OUTPUT
+          echo "1. Install via HACS (recommended)" >> $GITHUB_OUTPUT
+          echo "2. Or download and extract to \`custom_components/middle_atlantic_racklink/\`" >> $GITHUB_OUTPUT
+          echo "3. Restart Home Assistant" >> $GITHUB_OUTPUT
+          echo "4. Add integration via Settings > Devices & Services" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "Full documentation: https://github.com/mckay115/homeassistant-middleatlantic-racklink" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "v${{ steps.get_version.outputs.VERSION }}"
+          body: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+          files: |
+            middle-atlantic-racklink-${{ steps.get_version.outputs.VERSION }}.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

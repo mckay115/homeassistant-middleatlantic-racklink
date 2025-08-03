@@ -8,8 +8,15 @@ DOMAIN = "middle_atlantic_racklink"
 
 # Default values
 DEFAULT_PORT = 60000  # TCP port for RackLink Select, Premium, Premium+ series
+DEFAULT_REDFISH_PORT = 443  # HTTPS port for Redfish API
+DEFAULT_REDFISH_HTTP_PORT = 80  # HTTP port for Redfish API (fallback)
 DEFAULT_NAME = "Middle Atlantic Racklink"
-DEFAULT_SCAN_INTERVAL = 60  # Increased to 60 seconds for stability  # seconds - conservative to prevent session corruption
+# Update intervals by connection type
+DEFAULT_SCAN_INTERVAL_TELNET = (
+    60  # Conservative for telnet to prevent session corruption
+)
+DEFAULT_SCAN_INTERVAL_REDFISH = 10  # Fast updates for REST API
+DEFAULT_SCAN_INTERVAL = DEFAULT_SCAN_INTERVAL_TELNET  # Default fallback
 DEFAULT_TIMEOUT = 20
 DEFAULT_RECONNECT_INTERVAL = 60  # seconds
 DEFAULT_TELNET_TIMEOUT = 10  # Increased from 5 to 10 seconds
@@ -27,6 +34,21 @@ CONF_DEVICE_ID = "device_id"
 CONF_MODEL = "model"
 CONF_PDU_NAME = "pdu_name"
 CONF_PASSWORD = "password"
+CONF_CONNECTION_TYPE = "connection_type"
+CONF_USE_HTTPS = "use_https"
+CONF_ENABLE_VENDOR_FEATURES = "enable_vendor_features"
+
+# Connection types
+CONNECTION_TYPE_REDFISH = "redfish"
+CONNECTION_TYPE_TELNET = "telnet"
+CONNECTION_TYPE_AUTO = "auto"
+
+# Connection type descriptions
+CONNECTION_TYPE_DESCRIPTIONS = {
+    CONNECTION_TYPE_REDFISH: "Redfish REST API (Modern, secure, recommended)",
+    CONNECTION_TYPE_TELNET: "Telnet/Binary Protocol (Legacy)",
+    CONNECTION_TYPE_AUTO: "Auto-detect (Try Redfish first, fallback to Telnet)",
+}
 
 # Supported models
 SUPPORTED_MODELS = [

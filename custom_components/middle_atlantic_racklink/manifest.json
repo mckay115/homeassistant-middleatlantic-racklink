@@ -8,9 +8,9 @@
   "homekit": {},
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues",
-  "requirements": ["zeroconf>=0.47.0"],
+  "requirements": ["zeroconf>=0.47.0", "aiohttp>=3.8.0"],
   "ssdp": [],
-  "version": "0.4.0",
+  "version": "1.0.0",
   "zeroconf": [
     {
       "type": "_http._tcp.local.",

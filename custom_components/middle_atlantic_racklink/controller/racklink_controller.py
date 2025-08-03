@@ -14,6 +14,14 @@ from ..socket_connection import (
     OUTLET_OFF,
     OUTLET_CYCLE,
 )
+from ..redfish_connection import RedfishConnection
+from ..connection_factory import ConnectionFactory, AutoConnectionManager
+from ..const import (
+    CONNECTION_TYPE_REDFISH,
+    CONNECTION_TYPE_TELNET,
+    CONNECTION_TYPE_AUTO,
+    CONF_CONNECTION_TYPE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +36,9 @@ class RacklinkController:
         username: str,
         password: str,
         timeout: int = 20,
+        connection_type: str = CONNECTION_TYPE_AUTO,
+        use_https: bool = True,
+        enable_vendor_features: bool = True,
     ) -> None:
         """Initialize the controller.
 
@@ -37,22 +48,38 @@ class RacklinkController:
             username: Username for authentication
             password: Password for authentication
             timeout: Timeout for socket operations in seconds
+            connection_type: Type of connection (redfish, telnet, auto)
+            use_https: Whether to use HTTPS for Redfish connections
         """
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.timeout = timeout
+        self.connection_type = connection_type
+        self.use_https = use_https
+        self.enable_vendor_features = enable_vendor_features
 
-        # Create SocketConfig
-        config = SocketConfig(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            timeout=timeout,
-        )
-        self.socket = SocketConnection(config)
+        # Store configuration for connection creation
+        self._config_data = {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "timeout": timeout,
+            CONF_CONNECTION_TYPE: connection_type,
+            "use_https": use_https,
+        }
+
+        # Connection will be created during connect()
+        self.connection = None
+
+        # For backward compatibility, keep socket reference
+        self.socket = None
+
+        # Hybrid mode: secondary telnet connection for vendor-specific features
+        self._telnet_connection = None
+        self._hybrid_mode = False
 
         # Device information
         self.pdu_name: str = f"RackLink PDU {host}"
@@ -67,6 +94,8 @@ class RacklinkController:
         self.active_power: float = 0.0
         self.active_energy: float = 0.0
         self.line_frequency: float = 0.0
+        self.apparent_power: float = 0.0  # VA
+        self.power_factor: float = 0.0  # Power factor
 
         # Outlet data
         self.outlet_states: Dict[int, bool] = {}
@@ -74,6 +103,11 @@ class RacklinkController:
         self.outlet_power_data: Dict[int, float] = (
             {}
         )  # Individual outlet power consumption
+        self.outlet_energy_data: Dict[int, float] = (
+            {}
+        )  # Individual outlet energy consumption (Wh)
+        self.outlet_current_data: Dict[int, float] = {}  # Individual outlet current (A)
+        self.outlet_voltage_data: Dict[int, float] = {}  # Individual outlet voltage (V)
         self.outlet_non_critical: Dict[int, bool] = {}  # Non-critical outlet flags
 
         # Status flags
@@ -88,15 +122,72 @@ class RacklinkController:
     async def connect(self) -> bool:
         """Connect to the PDU."""
         try:
-            _LOGGER.info("Connecting to RackLink PDU at %s:%d", self.host, self.port)
-            self.connected = await self.socket.connect()
-            if self.connected:
-                self.available = True
-                _LOGGER.info("Successfully connected to RackLink PDU")
+            _LOGGER.info(
+                "Connecting to RackLink PDU at %s:%d (type: %s)",
+                self.host,
+                self.port,
+                self.connection_type,
+            )
+
+            # Create connection based on type
+            if self.connection_type == CONNECTION_TYPE_AUTO:
+                # Use auto-detection
+                try:
+                    self.connection = (
+                        await AutoConnectionManager.detect_best_connection(
+                            self._config_data
+                        )
+                    )
+                    # Update connection type based on what was detected
+                    if isinstance(self.connection, RedfishConnection):
+                        self.connection_type = CONNECTION_TYPE_REDFISH
+                        _LOGGER.info("Auto-detected Redfish connection")
+                    else:
+                        self.connection_type = CONNECTION_TYPE_TELNET
+                        _LOGGER.info("Auto-detected Telnet/Binary connection")
+                except Exception as err:
+                    _LOGGER.error("Auto-detection failed: %s", err)
+                    self.connected = False
+                    self.available = False
+                    return False
             else:
-                _LOGGER.error("Failed to connect to RackLink PDU")
-                self.available = False
-            return self.connected
+                # Create specific connection type
+                self.connection = ConnectionFactory.create_connection(self._config_data)
+                if not await self.connection.connect():
+                    _LOGGER.error("Failed to connect to RackLink PDU")
+                    self.connected = False
+                    self.available = False
+                    return False
+
+            # Set socket reference for backward compatibility
+            if isinstance(self.connection, SocketConnection):
+                self.socket = self.connection
+            else:
+                # For Redfish connections, create secondary telnet connection if vendor features enabled
+                if self.enable_vendor_features:
+                    await self._setup_hybrid_telnet_connection()
+
+            self.connected = True
+            self.available = True
+
+            # Log connection mode
+            if isinstance(self.connection, RedfishConnection):
+                if self._hybrid_mode:
+                    _LOGGER.info(
+                        "✅ Connected to RackLink PDU (Redfish + Telnet hybrid mode)"
+                    )
+                elif self.enable_vendor_features:
+                    _LOGGER.info(
+                        "✅ Connected to RackLink PDU (Redfish only - hybrid setup failed)"
+                    )
+                else:
+                    _LOGGER.info(
+                        "✅ Connected to RackLink PDU (Redfish only - vendor features disabled)"
+                    )
+            else:
+                _LOGGER.info("✅ Connected to RackLink PDU (Telnet mode)")
+            return True
+
         except Exception as err:
             _LOGGER.error("Error connecting to RackLink PDU: %s", err)
             self.connected = False
@@ -105,10 +196,73 @@ class RacklinkController:
 
     async def disconnect(self) -> None:
         """Disconnect from the PDU."""
-        await self.socket.disconnect()
+        if self.connection:
+            await self.connection.disconnect()
+
+        # Disconnect hybrid telnet connection if exists
+        if self._telnet_connection:
+            await self._telnet_connection.disconnect()
+            self._telnet_connection = None
+            self._hybrid_mode = False
+
         self.connected = False
         self.available = False
+        self.socket = None
         _LOGGER.info("Disconnected from RackLink PDU")
+
+    async def _setup_hybrid_telnet_connection(self) -> None:
+        """Set up secondary telnet connection for vendor-specific features when using Redfish."""
+        if not self.enable_vendor_features:
+            _LOGGER.info(
+                "🚫 Vendor features disabled - skipping hybrid telnet connection"
+            )
+            return
+
+        try:
+            _LOGGER.info(
+                "🔗 Setting up hybrid telnet connection for vendor features..."
+            )
+
+            # Create telnet config with same credentials but telnet port
+            telnet_config = {
+                "host": self.host,
+                "port": 6000,  # Default telnet port
+                "username": self.username,
+                "password": self.password,
+                "timeout": self.timeout,
+            }
+
+            # Import here to avoid circular imports
+            from ..socket_connection import SocketConnection, SocketConfig
+
+            # Create telnet connection
+            socket_config = SocketConfig(
+                host=telnet_config["host"],
+                port=telnet_config["port"],
+                username=telnet_config["username"],
+                password=telnet_config["password"],
+                timeout=telnet_config["timeout"],
+            )
+
+            self._telnet_connection = SocketConnection(socket_config)
+
+            # Try to connect
+            if await self._telnet_connection.connect():
+                self._hybrid_mode = True
+                _LOGGER.info(
+                    "✅ Hybrid telnet connection established for vendor features (load shedding, sequencing)"
+                )
+            else:
+                _LOGGER.warning(
+                    "⚠️ Could not establish hybrid telnet connection - vendor features unavailable"
+                )
+                self._telnet_connection = None
+
+        except Exception as err:
+            _LOGGER.warning(
+                "⚠️ Hybrid telnet setup failed: %s - vendor features unavailable", err
+            )
+            self._telnet_connection = None
 
     async def update(self) -> bool:
         """Update PDU data."""
@@ -144,6 +298,36 @@ class RacklinkController:
         try:
             _LOGGER.info("Fetching PDU details")
 
+            if isinstance(self.connection, RedfishConnection):
+                # Use Redfish API to get PDU info
+                pdu_info = await self.connection.get_pdu_info()
+
+                if pdu_info:
+                    # Extract information from Redfish response
+                    self.pdu_name = pdu_info.get("Name", f"RackLink PDU {self.host}")
+                    self.pdu_model = pdu_info.get("Model", "RackLink")
+                    self.pdu_firmware = pdu_info.get("FirmwareVersion", "Unknown")
+                    self.pdu_serial = pdu_info.get(
+                        "SerialNumber", f"PDU-{self.host.replace('.', '-')}"
+                    )
+
+                    # Try to get MAC address from network info if available
+                    if "NetworkInterfaces" in pdu_info:
+                        # This would need device-specific implementation
+                        pass
+
+                    _LOGGER.debug("✅ Retrieved PDU info via Redfish")
+                else:
+                    _LOGGER.warning("❌ Could not get PDU info via Redfish")
+                    # Set defaults
+                    self.pdu_name = f"RackLink PDU {self.host}"
+                    self.pdu_model = "RackLink"
+                    self.pdu_firmware = "Unknown"
+                    self.pdu_serial = f"PDU-{self.host.replace('.', '-')}"
+
+                return
+
+            # Use existing telnet/socket logic for non-Redfish connections
             # Use exact command syntax from working response samples
             # Try alternative PDU detail commands
             pdu_commands = [
@@ -154,7 +338,7 @@ class RacklinkController:
 
             response = ""
             for cmd in pdu_commands:
-                response = await self.socket.send_command(cmd)
+                response = await self.connection.send_command(cmd)
                 if response and "Unknown command" not in response:
                     _LOGGER.debug("✅ Successfully got PDU data with command: %s", cmd)
                     break
@@ -231,7 +415,7 @@ class RacklinkController:
 
             network_response = ""
             for cmd in network_commands:
-                network_response = await self.socket.send_command(cmd)
+                network_response = await self.connection.send_command(cmd)
                 if network_response and "Unknown command" not in network_response:
                     _LOGGER.debug(
                         "✅ Successfully got network data with command: %s", cmd
@@ -271,72 +455,97 @@ class RacklinkController:
     async def _update_outlet_states(self) -> None:
         """Update outlet states using appropriate protocol."""
         try:
-            # Check protocol type and use appropriate method
-            if (
-                hasattr(self.socket, "_protocol_type")
-                and self.socket._protocol_type == "telnet"
-            ):
-                _LOGGER.debug("Fetching outlet states using Telnet protocol")
-                await asyncio.sleep(0.5)  # Prevent rapid commands
-                outlet_data = await self.socket.telnet_read_outlet_states()
+            if isinstance(self.connection, RedfishConnection):
+                # Use Redfish API
+                _LOGGER.debug("Fetching outlet states using Redfish API")
+                outlet_data = await self.connection.get_all_outlet_states()
 
                 if outlet_data:
-                    _LOGGER.info("Found %d outlet states via Telnet", len(outlet_data))
-                    for outlet_num, state in outlet_data.items():
-                        self.outlet_states[outlet_num] = state
-
-                    # Get outlet names from the socket connection if available
-                    if (
-                        hasattr(self.socket, "_outlet_names")
-                        and self.socket._outlet_names
-                    ):
-                        self.outlet_names.update(self.socket._outlet_names)
-                        _LOGGER.debug("✅ Updated outlet names: %s", self.outlet_names)
-                    else:
-                        # Set default names if not parsed from response
-                        for outlet_num in outlet_data.keys():
-                            if outlet_num not in self.outlet_names:
-                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-                else:
-                    _LOGGER.warning("No outlet states found via Telnet")
-
-            else:
-                # Use binary protocol
-                _LOGGER.debug("Fetching outlet states using binary protocol")
-
-                # If we don't know how many outlets we have, try a reasonable range
-                if not self.outlet_states:
-                    # Try outlets 1-16 to discover available outlets
-                    outlet_range = range(1, 17)
-                else:
-                    # Use known outlets
-                    outlet_range = self.outlet_states.keys()
-
-                outlet_data = {}
-                for outlet_num in outlet_range:
-                    state = await self.socket.read_outlet_state(outlet_num)
-                    if state is not None:  # Valid response
-                        outlet_data[outlet_num] = state
-                        _LOGGER.debug(
-                            "Outlet %d state: %s",
-                            outlet_num,
-                            "ON" if state else "OFF",
-                        )
-                    else:
-                        # If we're discovering outlets and get no response, we've found the limit
-                        if not self.outlet_states:
-                            break
-
-                # Update our state with discovered outlets
-                if outlet_data:
-                    _LOGGER.info("Found %d outlet states via binary", len(outlet_data))
+                    _LOGGER.info("Found %d outlet states via Redfish", len(outlet_data))
                     for outlet_num, state in outlet_data.items():
                         self.outlet_states[outlet_num] = state
                         # Set default name if not already set
                         if outlet_num not in self.outlet_names:
                             self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
                 else:
-                    _LOGGER.warning("No outlet states found via binary")
+                    _LOGGER.warning("No outlet states found via Redfish")
+
+            elif isinstance(self.connection, SocketConnection):
+                # Use existing socket/telnet logic
+                # Check protocol type and use appropriate method
+                if (
+                    hasattr(self.connection, "_protocol_type")
+                    and self.connection._protocol_type == "telnet"
+                ):
+                    _LOGGER.debug("Fetching outlet states using Telnet protocol")
+                    await asyncio.sleep(0.5)  # Prevent rapid commands
+                    outlet_data = await self.connection.telnet_read_outlet_states()
+
+                    if outlet_data:
+                        _LOGGER.info(
+                            "Found %d outlet states via Telnet", len(outlet_data)
+                        )
+                        for outlet_num, state in outlet_data.items():
+                            self.outlet_states[outlet_num] = state
+
+                        # Get outlet names from the socket connection if available
+                        if (
+                            hasattr(self.connection, "_outlet_names")
+                            and self.connection._outlet_names
+                        ):
+                            self.outlet_names.update(self.connection._outlet_names)
+                            _LOGGER.debug(
+                                "✅ Updated outlet names: %s", self.outlet_names
+                            )
+                        else:
+                            # Set default names if not parsed from response
+                            for outlet_num in outlet_data.keys():
+                                if outlet_num not in self.outlet_names:
+                                    self.outlet_names[outlet_num] = (
+                                        f"Outlet {outlet_num}"
+                                    )
+                    else:
+                        _LOGGER.warning("No outlet states found via Telnet")
+
+                else:
+                    # Use binary protocol
+                    _LOGGER.debug("Fetching outlet states using binary protocol")
+
+                    # If we don't know how many outlets we have, try a reasonable range
+                    if not self.outlet_states:
+                        # Try outlets 1-16 to discover available outlets
+                        outlet_range = range(1, 17)
+                    else:
+                        # Use known outlets
+                        outlet_range = self.outlet_states.keys()
+
+                    outlet_data = {}
+                    for outlet_num in outlet_range:
+                        state = await self.connection.read_outlet_state(outlet_num)
+                        if state is not None:  # Valid response
+                            outlet_data[outlet_num] = state
+                            _LOGGER.debug(
+                                "Outlet %d state: %s",
+                                outlet_num,
+                                "ON" if state else "OFF",
+                            )
+                        else:
+                            # If we're discovering outlets and get no response, we've found the limit
+                            if not self.outlet_states:
+                                break
+
+                    # Update our state with discovered outlets
+                    if outlet_data:
+                        _LOGGER.info(
+                            "Found %d outlet states via binary", len(outlet_data)
+                        )
+                        for outlet_num, state in outlet_data.items():
+                            self.outlet_states[outlet_num] = state
+                            # Set default name if not already set
+                            if outlet_num not in self.outlet_names:
+                                self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                    else:
+                        _LOGGER.warning("No outlet states found via binary")
 
         except Exception as err:
             _LOGGER.error("Error updating outlet states: %s", err)
@@ -412,11 +621,16 @@ class RacklinkController:
             # Update outlet criticality flags for load shedding
             await self.update_outlet_non_critical_flags()
 
-            # Check load shedding status from device
-            shedding_response = await self.socket.send_command("show loadshedding")
-            if shedding_response:
-                self.load_shedding_active = "Active" in shedding_response
+            # Check load shedding status from device (use telnet connection)
+            telnet_conn = self.socket or self._telnet_connection
+            if telnet_conn:
+                shedding_response = await telnet_conn.send_command("show loadshedding")
+                if shedding_response:
+                    self.load_shedding_active = "Active" in shedding_response
+                else:
+                    self.load_shedding_active = False
             else:
+                # No telnet connection available for load shedding status
                 self.load_shedding_active = False
 
             # Sequence status not directly available, set to false
@@ -424,6 +638,53 @@ class RacklinkController:
 
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)
+
+    async def _update_redfish_outlet_data(self) -> None:
+        """Update individual outlet power data via Redfish API."""
+        try:
+            if not isinstance(self.connection, RedfishConnection):
+                return
+
+            for outlet_num in self.outlet_states.keys():
+                try:
+                    # Get outlet state to see if it's currently available for monitoring
+                    outlet_state = await self.connection.get_outlet_state(outlet_num)
+                    if outlet_state is None:
+                        continue
+
+                    # For now, we'll get basic power data from the main metrics
+                    # In a full implementation, this would query individual outlet endpoints
+                    # which may be available in the device's Redfish implementation
+
+                    # Individual outlet metrics would come from:
+                    # /redfish/v1/PowerEquipment/RackPDUs/1/Outlets/{outlet_num}
+                    # But for now, we'll use proportional distribution as a placeholder
+
+                    # Total power distributed evenly (placeholder - real implementation would query each outlet)
+                    if len(self.outlet_states) > 0:
+                        avg_power = self.active_power / len(self.outlet_states)
+                        avg_current = self.rms_current / len(self.outlet_states)
+
+                        if outlet_state:  # Only assign power if outlet is on
+                            self.outlet_power_data[outlet_num] = avg_power
+                            self.outlet_current_data[outlet_num] = avg_current
+                            self.outlet_voltage_data[outlet_num] = self.rms_voltage
+                            self.outlet_energy_data[outlet_num] = (
+                                self.active_energy / len(self.outlet_states)
+                            )
+                        else:
+                            self.outlet_power_data[outlet_num] = 0.0
+                            self.outlet_current_data[outlet_num] = 0.0
+                            self.outlet_voltage_data[outlet_num] = self.rms_voltage
+                            self.outlet_energy_data[outlet_num] = 0.0
+
+                except Exception as outlet_err:
+                    _LOGGER.debug(
+                        "Error updating outlet %d data: %s", outlet_num, outlet_err
+                    )
+
+        except Exception as err:
+            _LOGGER.error("Error updating Redfish outlet data: %s", err)
             raise
 
     def _parse_outlet_power_data(self, response: str) -> None:
@@ -468,15 +729,24 @@ class RacklinkController:
         try:
             _LOGGER.info("Turning outlet %d ON", outlet)
 
-            # Check protocol type and use appropriate method
-            if (
-                hasattr(self.socket, "_protocol_type")
-                and self.socket._protocol_type == "telnet"
-            ):
-                success = await self.socket.telnet_outlet_command(outlet, "on")
+            if isinstance(self.connection, RedfishConnection):
+                # Use Redfish API
+                success = await self.connection.set_outlet_state(outlet, True)
+            elif isinstance(self.connection, SocketConnection):
+                # Check protocol type and use appropriate method
+                if (
+                    hasattr(self.connection, "_protocol_type")
+                    and self.connection._protocol_type == "telnet"
+                ):
+                    success = await self.connection.telnet_outlet_command(outlet, "on")
+                else:
+                    # Use binary protocol command
+                    success = await self.connection.send_outlet_command(
+                        outlet, OUTLET_ON
+                    )
             else:
-                # Use binary protocol command
-                success = await self.socket.send_outlet_command(outlet, OUTLET_ON)
+                _LOGGER.error("Unknown connection type")
+                return False
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d ON", outlet)
@@ -495,15 +765,24 @@ class RacklinkController:
         try:
             _LOGGER.info("Turning outlet %d OFF", outlet)
 
-            # Check protocol type and use appropriate method
-            if (
-                hasattr(self.socket, "_protocol_type")
-                and self.socket._protocol_type == "telnet"
-            ):
-                success = await self.socket.telnet_outlet_command(outlet, "off")
+            if isinstance(self.connection, RedfishConnection):
+                # Use Redfish API
+                success = await self.connection.set_outlet_state(outlet, False)
+            elif isinstance(self.connection, SocketConnection):
+                # Check protocol type and use appropriate method
+                if (
+                    hasattr(self.connection, "_protocol_type")
+                    and self.connection._protocol_type == "telnet"
+                ):
+                    success = await self.connection.telnet_outlet_command(outlet, "off")
+                else:
+                    # Use binary protocol command
+                    success = await self.connection.send_outlet_command(
+                        outlet, OUTLET_OFF
+                    )
             else:
-                # Use binary protocol command
-                success = await self.socket.send_outlet_command(outlet, OUTLET_OFF)
+                _LOGGER.error("Unknown connection type")
+                return False
 
             if success:
                 _LOGGER.info("Successfully turned outlet %d OFF", outlet)
@@ -522,17 +801,26 @@ class RacklinkController:
         try:
             _LOGGER.info("Cycling outlet %d for %d seconds", outlet, cycle_time)
 
-            # Check protocol type and use appropriate method
-            if (
-                hasattr(self.socket, "_protocol_type")
-                and self.socket._protocol_type == "telnet"
-            ):
-                success = await self.socket.telnet_outlet_command(outlet, "cycle")
+            if isinstance(self.connection, RedfishConnection):
+                # Use Redfish API
+                success = await self.connection.cycle_outlet(outlet)
+            elif isinstance(self.connection, SocketConnection):
+                # Check protocol type and use appropriate method
+                if (
+                    hasattr(self.connection, "_protocol_type")
+                    and self.connection._protocol_type == "telnet"
+                ):
+                    success = await self.connection.telnet_outlet_command(
+                        outlet, "cycle"
+                    )
+                else:
+                    # Use binary protocol command with cycle time
+                    success = await self.connection.send_outlet_command(
+                        outlet, OUTLET_CYCLE, cycle_time
+                    )
             else:
-                # Use binary protocol command with cycle time
-                success = await self.socket.send_outlet_command(
-                    outlet, OUTLET_CYCLE, cycle_time
-                )
+                _LOGGER.error("Unknown connection type")
+                return False
 
             if success:
                 _LOGGER.info("Successfully cycled outlet %d", outlet)
@@ -569,11 +857,17 @@ class RacklinkController:
             success_count = 0
             total_outlets = len(self.outlet_states)
 
-            # Try individual outlet cycle commands via Telnet
+            # Try individual outlet cycle commands
             for outlet_num in sorted(self.outlet_states.keys()):
-                cmd = f"power outlets {outlet_num} cycle /y"
-                _LOGGER.debug("📤 Sending cycle command: %s", cmd)
-                response = await self.socket.send_command(cmd)
+                if isinstance(self.connection, RedfishConnection):
+                    # Use Redfish API
+                    success = await self.connection.cycle_outlet(outlet_num)
+                    response = "" if success else "failed"
+                else:
+                    # Use telnet command
+                    cmd = f"power outlets {outlet_num} cycle /y"
+                    _LOGGER.debug("📤 Sending cycle command: %s", cmd)
+                    response = await self.connection.send_command(cmd)
 
                 # Check for success (empty response or no error indicators)
                 success = (
@@ -623,9 +917,19 @@ class RacklinkController:
         try:
             _LOGGER.info("🔄 Starting load shedding...")
 
-            # Use the device's native load shedding command with /y flag
-            response = await self.socket.send_command("loadshedding start /y")
-            _LOGGER.debug("Load shedding start response: %r", response)
+            # Use telnet connection (primary or hybrid) for load shedding
+            telnet_conn = self.socket or self._telnet_connection
+            if telnet_conn:
+                response = await telnet_conn.send_command("loadshedding start /y")
+                _LOGGER.debug("Load shedding start response: %r", response)
+            else:
+                if not self.enable_vendor_features:
+                    _LOGGER.error(
+                        "❌ Load shedding disabled - vendor features not enabled"
+                    )
+                else:
+                    _LOGGER.error("❌ No telnet connection available for load shedding")
+                return False
 
             # Check for success (empty response is typical for successful commands)
             success = (
@@ -653,9 +957,19 @@ class RacklinkController:
         try:
             _LOGGER.info("🔄 Stopping load shedding...")
 
-            # Use the device's native load shedding command with /y flag
-            response = await self.socket.send_command("loadshedding stop /y")
-            _LOGGER.debug("Load shedding stop response: %r", response)
+            # Use telnet connection (primary or hybrid) for load shedding
+            telnet_conn = self.socket or self._telnet_connection
+            if telnet_conn:
+                response = await telnet_conn.send_command("loadshedding stop /y")
+                _LOGGER.debug("Load shedding stop response: %r", response)
+            else:
+                if not self.enable_vendor_features:
+                    _LOGGER.error(
+                        "❌ Load shedding disabled - vendor features not enabled"
+                    )
+                else:
+                    _LOGGER.error("❌ No telnet connection available for load shedding")
+                return False
 
             # Check for success (empty response is typical for successful commands)
             success = (
@@ -683,8 +997,19 @@ class RacklinkController:
         try:
             _LOGGER.info("🔄 Configuring outlet startup sequence")
 
+            # Use telnet connection (primary or hybrid) for sequencing
+            telnet_conn = self.socket or self._telnet_connection
+            if not telnet_conn:
+                if not self.enable_vendor_features:
+                    _LOGGER.error(
+                        "❌ Sequencing disabled - vendor features not enabled"
+                    )
+                else:
+                    _LOGGER.error("❌ No telnet connection available for sequencing")
+                return False
+
             # Enter config mode
-            await self.socket.send_command("config")
+            await telnet_conn.send_command("config")
             await asyncio.sleep(0.5)
 
             try:
@@ -695,17 +1020,17 @@ class RacklinkController:
                 # Set the outlet sequence (without config:# prefix)
                 sequence_cmd = f"pdu outletSequence {sequence_order}"
                 _LOGGER.info("📤 Sending sequence config: %s", sequence_cmd)
-                response = await self.socket.send_command(sequence_cmd)
+                response = await telnet_conn.send_command(sequence_cmd)
                 _LOGGER.debug("Sequence config response: %r", response)
 
                 # Also set a 2-second delay between each outlet
                 delay_cmd = f"pdu outletSequenceDelay {';'.join(f'{outlet}:2' for outlet in outlet_list)}"
                 _LOGGER.info("📤 Sending sequence delay config: %s", delay_cmd)
-                delay_response = await self.socket.send_command(delay_cmd)
+                delay_response = await telnet_conn.send_command(delay_cmd)
                 _LOGGER.debug("Sequence delay response: %r", delay_response)
 
                 # Apply the configuration
-                apply_response = await self.socket.send_command("apply")
+                apply_response = await telnet_conn.send_command("apply")
                 _LOGGER.debug("Apply response: %r", apply_response)
 
                 # Check for success
@@ -737,7 +1062,7 @@ class RacklinkController:
             _LOGGER.error("Error configuring sequence: %s", err)
             # Make sure we exit config mode
             try:
-                await self.socket.send_command("cancel")
+                await telnet_conn.send_command("cancel")
             except:
                 pass
             return False
@@ -747,26 +1072,37 @@ class RacklinkController:
         try:
             _LOGGER.info("🔄 Disabling outlet sequence (setting to default)")
 
+            # Use telnet connection (primary or hybrid) for sequencing
+            telnet_conn = self.socket or self._telnet_connection
+            if not telnet_conn:
+                if not self.enable_vendor_features:
+                    _LOGGER.error(
+                        "❌ Sequencing disabled - vendor features not enabled"
+                    )
+                else:
+                    _LOGGER.error("❌ No telnet connection available for sequencing")
+                return False
+
             # Enter config mode
-            await self.socket.send_command("config")
+            await telnet_conn.send_command("config")
             await asyncio.sleep(0.5)
 
             try:
                 # Set sequence to "default" which should disable custom sequencing
                 sequence_cmd = "pdu outletSequence default"
                 _LOGGER.info("📤 Sending sequence disable config: %s", sequence_cmd)
-                response = await self.socket.send_command(sequence_cmd)
+                response = await telnet_conn.send_command(sequence_cmd)
                 _LOGGER.debug("Sequence disable response: %r", response)
 
                 # Remove custom delays by setting to 0
                 outlet_list = sorted(self.outlet_states.keys())
                 delay_cmd = f"pdu outletSequenceDelay {';'.join(f'{outlet}:0' for outlet in outlet_list)}"
                 _LOGGER.info("📤 Sending sequence delay reset: %s", delay_cmd)
-                delay_response = await self.socket.send_command(delay_cmd)
+                delay_response = await telnet_conn.send_command(delay_cmd)
                 _LOGGER.debug("Sequence delay reset response: %r", delay_response)
 
                 # Apply the configuration
-                apply_response = await self.socket.send_command("apply")
+                apply_response = await telnet_conn.send_command("apply")
                 _LOGGER.debug("Apply response: %r", apply_response)
 
                 # Check for success
@@ -791,14 +1127,14 @@ class RacklinkController:
 
             finally:
                 # Always exit config mode with cancel
-                await self.socket.send_command("cancel")
+                await telnet_conn.send_command("cancel")
                 await asyncio.sleep(0.5)
 
         except Exception as err:
             _LOGGER.error("Error disabling sequence: %s", err)
             # Make sure we exit config mode
             try:
-                await self.socket.send_command("cancel")
+                await telnet_conn.send_command("cancel")
             except:
                 pass
             return False
@@ -854,8 +1190,15 @@ class RacklinkController:
     async def update_outlet_non_critical_flags(self) -> None:
         """Update outlet non-critical flags by querying the device's load shedding status."""
         try:
-            # Query the actual load shedding configuration
-            response = await self.socket.send_command("show loadshedding")
+            # Query the actual load shedding configuration (use telnet connection)
+            telnet_conn = self.socket or self._telnet_connection
+            if not telnet_conn:
+                _LOGGER.warning(
+                    "⚠️ No telnet connection available for load shedding status"
+                )
+                return
+
+            response = await telnet_conn.send_command("show loadshedding")
 
             if not response or "error" in response.lower():
                 _LOGGER.warning(

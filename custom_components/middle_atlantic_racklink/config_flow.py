@@ -26,9 +26,18 @@ from homeassistant.helpers import config_validation as cv
 from .const import (
     DOMAIN,
     DEFAULT_PORT,
+    DEFAULT_REDFISH_PORT,
+    DEFAULT_REDFISH_HTTP_PORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_USERNAME,
     DEFAULT_PASSWORD,
+    CONF_CONNECTION_TYPE,
+    CONF_USE_HTTPS,
+    CONF_ENABLE_VENDOR_FEATURES,
+    CONNECTION_TYPE_REDFISH,
+    CONNECTION_TYPE_TELNET,
+    CONNECTION_TYPE_AUTO,
+    CONNECTION_TYPE_DESCRIPTIONS,
 )
 from .controller.racklink_controller import RacklinkController
 from .discovery import discover_racklink_devices, DiscoveredDevice
@@ -37,6 +46,15 @@ _LOGGER = logging.getLogger(__name__)
 
 # Constants
 CONNECTION_TIMEOUT = 10
+
+# Data schema for connection type selection
+STEP_CONNECTION_TYPE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_CONNECTION_TYPE, default=CONNECTION_TYPE_AUTO): vol.In(
+            CONNECTION_TYPE_DESCRIPTIONS
+        ),
+    }
+)
 
 # Data schema for the user input in the config flow
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -47,6 +65,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=65535)
         ),
+        vol.Optional(CONF_USE_HTTPS, default=True): cv.boolean,
     }
 )
 
@@ -68,6 +87,9 @@ async def validate_connection(
     port = data[CONF_PORT]
     username = data[CONF_USERNAME]
     password = data[CONF_PASSWORD]
+    connection_type = data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
+    use_https = data.get(CONF_USE_HTTPS, True)
+    enable_vendor_features = data.get(CONF_ENABLE_VENDOR_FEATURES, True)
 
     controller = RacklinkController(
         host=host,
@@ -75,6 +97,9 @@ async def validate_connection(
         username=username,
         password=password,
         timeout=CONNECTION_TIMEOUT,
+        connection_type=connection_type,
+        use_https=use_https,
+        enable_vendor_features=enable_vendor_features,
     )
 
     try:
@@ -86,21 +111,34 @@ async def validate_connection(
         # Try to retrieve device information
         await controller.update()
 
-        # Also test basic device communication with a simple command
+        # Test basic device communication
+        device_responsive = True
         try:
-            test_response = await controller.socket.send_command("help")
-            _LOGGER.info(
-                "Device connectivity test - 'help' command response: %r",
-                test_response[:200],
-            )
-            device_responsive = bool(test_response.strip())
+            if hasattr(controller.connection, "send_command"):
+                # For socket connections, test with help command
+                test_response = await controller.connection.send_command("help")
+                _LOGGER.info(
+                    "Device connectivity test - 'help' command response: %r",
+                    test_response[:200],
+                )
+                device_responsive = bool(test_response.strip())
+            elif hasattr(controller.connection, "get_outlet_count"):
+                # For Redfish connections, test by getting outlet count
+                outlet_count = controller.connection.get_outlet_count()
+                device_responsive = outlet_count > 0
+                _LOGGER.info(
+                    "Device connectivity test - outlet count: %d", outlet_count
+                )
         except Exception as err:
             _LOGGER.warning("Device connectivity test failed: %s", err)
             device_responsive = False
 
         # Validate that we can at least communicate with the device
         # Even if parsing fails, as long as we're connected, authenticated, and device responds, it's valid
-        if not controller.socket.connected or not controller.socket.authenticated:
+        if (
+            not controller.connection.connected
+            or not controller.connection.authenticated
+        ):
             _LOGGER.error("Failed to establish authenticated connection to device")
             await controller.disconnect()
             raise CannotConnect("Authentication failed")
@@ -166,6 +204,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Initialize the config flow."""
         self._discovered_devices: List[DiscoveredDevice] = []
         self._discovery_completed = False
+        self._connection_type: str = CONNECTION_TYPE_AUTO
 
     @staticmethod
     @callback
@@ -231,11 +270,28 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             description_placeholders={"hostname": hostname},
         )
 
+    async def async_step_connection_type(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle connection type selection."""
+        if user_input is not None:
+            self._connection_type = user_input[CONF_CONNECTION_TYPE]
+            return await self.async_step_user()
+
+        return self.async_show_form(
+            step_id="connection_type",
+            data_schema=STEP_CONNECTION_TYPE_SCHEMA,
+        )
+
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
+
+        # If no connection type selected yet, go to connection type selection
+        if not hasattr(self, "_connection_type") or not self._connection_type:
+            return await self.async_step_connection_type()
 
         # If no input yet, try to discover devices first
         if user_input is None and not self._discovery_completed:
@@ -243,6 +299,20 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         if user_input is not None:
             try:
+                # Add connection type to user input
+                user_input[CONF_CONNECTION_TYPE] = self._connection_type
+
+                # Set default port based on connection type if not provided
+                if CONF_PORT not in user_input or user_input[CONF_PORT] == DEFAULT_PORT:
+                    if self._connection_type == CONNECTION_TYPE_REDFISH:
+                        user_input[CONF_PORT] = (
+                            DEFAULT_REDFISH_PORT
+                            if user_input.get(CONF_USE_HTTPS, True)
+                            else DEFAULT_REDFISH_HTTP_PORT
+                        )
+                    else:
+                        user_input[CONF_PORT] = DEFAULT_PORT
+
                 # If connection fails, try to discover the correct port
                 if not await self._test_connection_with_discovery(user_input):
                     # Check if it was a protocol mismatch (port accessible but auth failed)
@@ -306,7 +376,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             )
         else:
             return self.async_show_form(
-                step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+                step_id="user",
+                data_schema=self._build_user_data_schema(),
+                errors=errors,
             )
 
     async def async_step_discovery(
@@ -329,22 +401,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 device = self._discovered_devices[0]
                 return self.async_show_form(
                     step_id="user",
-                    data_schema=vol.Schema(
-                        {
-                            vol.Required(
-                                CONF_HOST, default=device.ip_address
-                            ): cv.string,
-                            vol.Optional(
-                                CONF_USERNAME, default=DEFAULT_USERNAME
-                            ): cv.string,
-                            vol.Optional(
-                                CONF_PASSWORD, default=DEFAULT_PASSWORD
-                            ): cv.string,
-                            vol.Optional(
-                                CONF_PORT, default=device.suggested_control_port
-                            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-                        }
-                    ),
+                    data_schema=self._build_single_device_schema(device),
                     description_placeholders={"device_name": device.name},
                 )
 
@@ -436,10 +493,66 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         return False
 
+    def _build_user_data_schema(self) -> vol.Schema:
+        """Build schema for manual entry based on connection type."""
+        # Set default port based on connection type
+        if self._connection_type == CONNECTION_TYPE_REDFISH:
+            default_port = DEFAULT_REDFISH_PORT
+            include_https = True
+        else:
+            default_port = DEFAULT_PORT
+            include_https = False
+
+        schema_dict = {
+            vol.Required(CONF_HOST): cv.string,
+            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+            vol.Optional(CONF_PORT, default=default_port): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+        }
+
+        if include_https:
+            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
+            # For Redfish connections, offer vendor features option
+            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
+                cv.boolean
+            )
+
+        return vol.Schema(schema_dict)
+
+    def _build_single_device_schema(self, device: DiscoveredDevice) -> vol.Schema:
+        """Build schema for a single discovered device."""
+        # Determine port based on connection type
+        if self._connection_type == CONNECTION_TYPE_REDFISH:
+            default_port = DEFAULT_REDFISH_PORT
+            include_https = True
+        else:
+            default_port = device.suggested_control_port
+            include_https = False
+
+        schema_dict = {
+            vol.Required(CONF_HOST, default=device.ip_address): cv.string,
+            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+            vol.Optional(CONF_PORT, default=default_port): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+        }
+
+        if include_https:
+            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
+            # For Redfish connections, offer vendor features option
+            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
+                cv.boolean
+            )
+
+        return vol.Schema(schema_dict)
+
     def _build_device_selection_schema(self) -> vol.Schema:
         """Build schema with discovered devices."""
         if not self._discovered_devices:
-            return STEP_USER_DATA_SCHEMA
+            return self._build_user_data_schema()
 
         # Create device options for selection
         device_options = {}
@@ -451,13 +564,21 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         # Add manual entry option
         device_options["manual"] = "Enter manually"
 
-        return vol.Schema(
-            {
-                vol.Required("device"): vol.In(device_options),
-                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-                vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-            }
-        )
+        schema_dict = {
+            vol.Required("device"): vol.In(device_options),
+            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
+        }
+
+        # Add HTTPS option for Redfish
+        if self._connection_type == CONNECTION_TYPE_REDFISH:
+            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
+            # For Redfish connections, offer vendor features option
+            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
+                cv.boolean
+            )
+
+        return vol.Schema(schema_dict)
 
     async def async_step_import(
         self, user_input: Optional[Dict[str, Any]] = None

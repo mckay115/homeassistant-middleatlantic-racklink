@@ -27,10 +27,15 @@ from homeassistant.helpers.typing import ConfigType
 # Local application/library specific imports
 from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
+from .const import (
+    DOMAIN,
+    DEFAULT_SCAN_INTERVAL_REDFISH,
+    DEFAULT_SCAN_INTERVAL_TELNET,
+    CONNECTION_TYPE_REDFISH,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = "middle_atlantic_racklink"
 DEFAULT_SCAN_INTERVAL = 30
 
 PLATFORMS = [
@@ -54,20 +59,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data.get(CONF_PORT, 60000)
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
-    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    connection_type = entry.data.get("connection_type", "auto")
+
+    # Smart default scan interval based on connection type
+    if connection_type == CONNECTION_TYPE_REDFISH:
+        default_interval = DEFAULT_SCAN_INTERVAL_REDFISH
+    else:
+        default_interval = DEFAULT_SCAN_INTERVAL_TELNET
+
+    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, default_interval)
 
     # Create controller instance
     _LOGGER.debug(
-        "Initializing RackLink controller with host=%s, port=%s, username=%s",
+        "Initializing RackLink controller with host=%s, port=%s, username=%s, connection_type=%s",
         host,
         port,
         username,
+        connection_type,
+    )
+    _LOGGER.info(
+        "Using %d second update interval for %s connection",
+        scan_interval,
+        connection_type,
     )
     controller = RacklinkController(
         host=host,
         port=port,
         username=username,
         password=password,
+        connection_type=connection_type,
+        use_https=entry.data.get("use_https", True),
+        enable_vendor_features=entry.data.get("enable_vendor_features", True),
     )
 
     # Create and initialize coordinator

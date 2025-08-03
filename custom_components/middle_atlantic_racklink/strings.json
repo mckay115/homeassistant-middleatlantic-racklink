@@ -1,15 +1,24 @@
 {
     "config": {
       "step": {
+        "connection_type": {
+          "title": "Choose Connection Method",
+          "description": "Select how to connect to your Middle Atlantic RackLink PDU. Redfish is recommended for modern devices.",
+          "data": {
+            "connection_type": "Connection Type"
+          }
+        },
         "user": {
           "title": "Connect to Middle Atlantic RackLink PDU",
           "description": "Set up a Middle Atlantic RackLink PDU to integrate with Home Assistant. {discovered_count} devices were discovered on your network.",
           "data": {
-            "host": "IP Address",
-            "username": "Username (default: admin)",
-            "password": "Password (device-specific, often changed from default)",
-            "port": "Port (6000 for Telnet, 60000 for Binary protocol)",
-            "device": "Select Device"
+                              "host": "IP Address",
+                  "username": "Username (default: admin)",
+                  "password": "Password (device-specific, often changed from default)",
+                  "port": "Port (443 for Redfish HTTPS, 80 for Redfish HTTP, 6000 for Telnet, 60000 for Binary protocol)",
+                  "device": "Select Device",
+                  "use_https": "Use HTTPS (Redfish only - recommended for security)",
+                  "enable_vendor_features": "Enable vendor features (load shedding, sequencing) - requires additional Telnet connection"
           }
         },
         "discovery": {
@@ -29,6 +38,8 @@
       },
       "error": {
         "cannot_connect": "Failed to connect to the device. Please check the IP address, port, and network connectivity.",
+        "redfish_not_supported": "Redfish API is not available on this device. Try using Telnet/Binary protocol instead.",
+        "invalid_redfish_response": "Invalid response from Redfish API. Please check device compatibility.",
         "cannot_connect_after_discovery": "Failed to connect even after trying to discover the correct port. Please verify the device is a RackLink PDU and control protocol is enabled. For Premium/Select series, try port 6000. For Premium+ series, try port 60000.",
         "invalid_auth": "Invalid username or password. Please check your credentials. Default username is often 'admin' with device-specific password.",
         "invalid_input": "Invalid input provided. Please check all fields.",
@@ -108,7 +119,7 @@
         "init": {
           "title": "Configure Racklink Options",
           "data": {
-            "update_interval": "Update interval in seconds (5-300)"
+            "update_interval": "Update interval in seconds (5-300) - defaults: 10s for Redfish, 60s for Telnet"
           }
         }
       }

@@ -1,10 +1,10 @@
 {
-  "name": "RackLink Power Sequencer",
+  "name": "Middle Atlantic RackLink PDU",
   "render_readme": true,
-  "domains": ["switch", "sensor", "binary_sensor"],
-  "iot_class": "local_push",
+  "domains": ["switch", "sensor", "binary_sensor", "button"],
+  "iot_class": "local_polling",
   "country": ["US"],
-  "homeassistant": "2021.12.0",
+  "homeassistant": "2023.1.0",
   "integration_type": "device",
   "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
   "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues"
