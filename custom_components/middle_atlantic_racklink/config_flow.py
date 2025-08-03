@@ -215,7 +215,6 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         # For storing selected device info
         self._selected_host: Optional[str] = None
-        self._selected_port: Optional[int] = None
         self._selected_username: Optional[str] = None
         self._selected_password: Optional[str] = None
 
@@ -298,7 +297,6 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 # Using discovered device
                 final_input = {
                     CONF_HOST: self._selected_host,
-                    CONF_PORT: self._selected_port,
                     CONF_USERNAME: self._selected_username,
                     CONF_PASSWORD: self._selected_password,
                     CONF_CONNECTION_TYPE: self._connection_type,
@@ -311,18 +309,19 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 # Fallback
                 return await self.async_step_user()
 
-            # Set default port based on connection type if not specified
-            if CONF_PORT not in final_input or final_input[CONF_PORT] == DEFAULT_PORT:
-                if self._connection_type == CONNECTION_TYPE_REDFISH:
-                    final_input[CONF_PORT] = (
-                        DEFAULT_REDFISH_PORT
-                        if final_input.get(CONF_USE_HTTPS, True)
-                        else DEFAULT_REDFISH_HTTP_PORT
-                    )
-                else:
-                    final_input[CONF_PORT] = DEFAULT_PORT
+            # Set automatic port and protocol based on connection type
+            if self._connection_type == CONNECTION_TYPE_REDFISH:
+                # For Redfish, try HTTP first (local networks), then HTTPS
+                final_input[CONF_PORT] = (
+                    DEFAULT_REDFISH_HTTP_PORT  # Start with HTTP (80)
+                )
+                final_input[CONF_USE_HTTPS] = False  # Try HTTP first for local networks
+                final_input[CONF_ENABLE_VENDOR_FEATURES] = True  # Default to enabled
+            else:
+                # For Telnet, use standard port
+                final_input[CONF_PORT] = DEFAULT_PORT  # 6000 for telnet
 
-            # Validate and create entry
+            # Validate and create entry - try HTTP first for Redfish, then HTTPS
             try:
                 info = await validate_connection(self.hass, final_input)
 
@@ -343,6 +342,38 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 return self.async_create_entry(title=title, data=final_input)
 
             except CannotConnect as err:
+                # For Redfish, if HTTP failed, try HTTPS
+                if (
+                    self._connection_type == CONNECTION_TYPE_REDFISH
+                    and not final_input.get(CONF_USE_HTTPS, False)
+                ):
+                    try:
+                        _LOGGER.info("HTTP failed, trying HTTPS for Redfish connection")
+                        final_input[CONF_PORT] = DEFAULT_REDFISH_PORT  # 443
+                        final_input[CONF_USE_HTTPS] = True
+
+                        info = await validate_connection(self.hass, final_input)
+
+                        # Handle unique ID
+                        mac_address = info.get("mac_address")
+                        if mac_address and mac_address != "Unknown MAC":
+                            await self.async_set_unique_id(mac_address)
+                            try:
+                                self._abort_if_unique_id_configured(updates=final_input)
+                            except AbortFlow as err:
+                                return self.async_abort(reason=err.reason)
+
+                        # Create entry
+                        title = info["pdu_name"]
+                        if info["pdu_model"] != "Unknown Model":
+                            title = f"{title} ({info['pdu_model']})"
+
+                        return self.async_create_entry(title=title, data=final_input)
+
+                    except Exception:
+                        # Both HTTP and HTTPS failed
+                        pass
+
                 return self.async_show_form(
                     step_id="connection_type",
                     data_schema=STEP_CONNECTION_TYPE_SCHEMA,
@@ -389,10 +420,8 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                             errors=errors,
                         )
                     else:
-                        # Parse selected device and store for connection type selection
-                        host, port = device_selection.split(":")
-                        self._selected_host = host
-                        self._selected_port = int(port)
+                        # Selected device IP (no port parsing needed)
+                        self._selected_host = device_selection
                         self._selected_username = user_input.get(
                             CONF_USERNAME, DEFAULT_USERNAME
                         )
@@ -563,37 +592,18 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         return False
 
     def _build_user_data_schema(self) -> vol.Schema:
-        """Build schema for manual entry based on connection type."""
-        # Set default port based on connection type
-        if self._connection_type == CONNECTION_TYPE_REDFISH:
-            default_port = DEFAULT_REDFISH_PORT
-            include_https = True
-        else:
-            default_port = DEFAULT_PORT
-            include_https = False
-
+        """Build schema for manual entry - simple IP and credentials only."""
         schema_dict = {
             vol.Required(CONF_HOST): cv.string,
             vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
             vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-            vol.Optional(CONF_PORT, default=default_port): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=65535)
-            ),
         }
-
-        if include_https:
-            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
-            # For Redfish connections, offer vendor features option
-            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
-                cv.boolean
-            )
-
         return vol.Schema(schema_dict)
 
     def _build_single_device_schema(self, device: DiscoveredDevice) -> vol.Schema:
         """Build schema for single device with option to use it or enter manually."""
-        # Create device options - discovered device + manual entry
-        device_key = f"{device.ip_address}:{device.suggested_control_port}"
+        # Create device options - discovered device + manual entry (no port in key)
+        device_key = device.ip_address
         device_options = {
             device_key: f"{device.name} ({device.ip_address})",
             "manual": "Enter manually",
@@ -612,10 +622,10 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         if not self._discovered_devices:
             return self._build_user_data_schema()
 
-        # Create device options for selection
+        # Create device options for selection (no port in key)
         device_options = {}
         for device in self._discovered_devices:
-            key = f"{device.ip_address}:{device.suggested_control_port}"
+            key = device.ip_address
             label = f"{device.name} ({device.ip_address})"
             device_options[key] = label
 

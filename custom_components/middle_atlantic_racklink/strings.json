@@ -12,13 +12,10 @@
           "title": "Add Middle Atlantic RackLink PDU",
           "description": "Select your RackLink PDU from the discovered devices below, or enter connection details manually. {discovered_count} devices were found on your network.",
           "data": {
-                              "host": "IP Address",
+                  "host": "IP Address or Hostname",
                   "username": "Username (default: admin)",
-                  "password": "Password (device-specific, often changed from default)",
-                  "port": "Port (443 for Redfish HTTPS, 80 for Redfish HTTP, 6000 for Telnet, 60000 for Binary protocol)",
-                  "device": "Select Device",
-                  "use_https": "Use HTTPS (Redfish only - recommended for security)",
-                  "enable_vendor_features": "Enable vendor features (load shedding, sequencing) - requires additional Telnet connection"
+                  "password": "Password (device-specific, check device label)",
+                  "device": "Select Device"
           }
         },
         "discovery": {
