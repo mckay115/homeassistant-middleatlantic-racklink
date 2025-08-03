@@ -64,9 +64,19 @@ def flow(mock_hass):
 @pytest.mark.asyncio
 async def test_user_success(flow):
     """Test successful user flow."""
-    with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        return_value=PDU_INFO_NO_MAC,
+    # Set connection type to avoid connection type selection step
+    flow._connection_type = "telnet"
+    flow._discovery_completed = True  # Skip discovery
+
+    with (
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.MiddleAtlanticRacklinkConfigFlow._test_connection_with_discovery",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+            return_value=PDU_INFO_NO_MAC,
+        ),
     ):
         result = await flow.async_step_user(
             {
@@ -93,9 +103,19 @@ async def test_user_success(flow):
 @pytest.mark.asyncio
 async def test_user_connection_error(flow):
     """Test connection error in user flow."""
-    with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        side_effect=CannotConnect("Connection failed"),
+    # Set connection type to avoid connection type selection step
+    flow._connection_type = "telnet"
+    flow._discovery_completed = True  # Skip discovery
+
+    with (
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.MiddleAtlanticRacklinkConfigFlow._test_connection_with_discovery",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+            side_effect=CannotConnect("Connection failed"),
+        ),
     ):
         result = await flow.async_step_user(
             {
@@ -113,17 +133,25 @@ async def test_user_connection_error(flow):
 @pytest.mark.asyncio
 async def test_user_invalid_input(flow):
     """Test invalid input in user flow."""
-    result = await flow.async_step_user(
-        {
-            CONF_HOST: "",  # Empty host should be invalid
-            CONF_PORT: 23,
-            CONF_USERNAME: "test_user",
-            CONF_PASSWORD: "test_pass",
-        }
-    )
+    # Set connection type to avoid connection type selection step
+    flow._connection_type = "telnet"
+    flow._discovery_completed = True  # Skip discovery
 
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-    assert result["errors"]["base"] == "cannot_connect"
+    with patch(
+        "custom_components.middle_atlantic_racklink.config_flow.MiddleAtlanticRacklinkConfigFlow._test_connection_with_discovery",
+        return_value=False,  # Connection discovery fails for empty host
+    ):
+        result = await flow.async_step_user(
+            {
+                CONF_HOST: "",  # Empty host should be invalid
+                CONF_PORT: 23,
+                CONF_USERNAME: "test_user",
+                CONF_PASSWORD: "test_pass",
+            }
+        )
+
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["errors"]["base"] == "cannot_connect_after_discovery"
 
 
 @pytest.mark.asyncio
@@ -158,9 +186,19 @@ async def test_import_success(flow):
 @pytest.mark.asyncio
 async def test_import_connection_error(flow):
     """Test connection error in import flow."""
-    with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        side_effect=CannotConnect("Connection failed"),
+    # Import flows don't go through connection type selection, so set it directly
+    flow._connection_type = "telnet"
+    flow._discovery_completed = True  # Skip discovery
+
+    with (
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.MiddleAtlanticRacklinkConfigFlow._test_connection_with_discovery",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+            side_effect=CannotConnect("Connection failed"),
+        ),
     ):
         result = await flow.async_step_import(
             {
@@ -188,11 +226,19 @@ async def test_duplicate_error(mock_hass):
     flow.hass = mock_hass
     flow.context = {}
     flow._unique_id = None  # Ensure unique_id is reset
+    flow._connection_type = "telnet"  # Set connection type to avoid selection step
+    flow._discovery_completed = True  # Skip discovery
 
     # Try to add an entry with the same MAC address
-    with patch(
-        "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
-        return_value=PDU_INFO,
+    with (
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.MiddleAtlanticRacklinkConfigFlow._test_connection_with_discovery",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.middle_atlantic_racklink.config_flow.validate_connection",
+            return_value=PDU_INFO,
+        ),
     ):
         result = await flow.async_step_user(
             {

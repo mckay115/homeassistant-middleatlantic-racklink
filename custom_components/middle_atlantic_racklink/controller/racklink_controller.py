@@ -559,7 +559,15 @@ class RacklinkController:
             await asyncio.sleep(1.0)  # Delay to prevent rapid commands
 
             # Get total inlet current (this gives us the actual system current)
-            inlet_response = await self.socket.send_command("show inlets all")
+            # Use telnet connection (primary or secondary hybrid)
+            telnet_conn = self.socket or self._telnet_connection
+            if not telnet_conn:
+                _LOGGER.warning(
+                    "No telnet connection available for system status update"
+                )
+                return
+
+            inlet_response = await telnet_conn.send_command("show inlets all")
             if inlet_response and "Unknown command" not in inlet_response:
                 # Parse total current from inlet data
                 # Expected format: "RMS Current:         1.621 A (normal)"
@@ -581,7 +589,7 @@ class RacklinkController:
             await asyncio.sleep(1.0)  # Delay between commands
 
             # Get voltage and frequency from outlet 1 details (representative)
-            outlet_response = await self.socket.send_command("show outlets 1 details")
+            outlet_response = await telnet_conn.send_command("show outlets 1 details")
             if outlet_response and "Unknown command" not in outlet_response:
                 # Parse voltage and frequency from outlet data
                 voltage_match = re.search(

@@ -204,7 +204,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Initialize the config flow."""
         self._discovered_devices: List[DiscoveredDevice] = []
         self._discovery_completed = False
-        self._connection_type: str = CONNECTION_TYPE_AUTO
+        self._connection_type: Optional[str] = (
+            None  # Will trigger connection type selection
+        )
 
     @staticmethod
     @callback

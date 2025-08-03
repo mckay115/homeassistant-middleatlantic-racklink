@@ -7,7 +7,7 @@
 DOMAIN = "middle_atlantic_racklink"
 
 # Default values
-DEFAULT_PORT = 60000  # TCP port for RackLink Select, Premium, Premium+ series
+DEFAULT_PORT = 6000  # TCP port for RackLink devices (most common)
 DEFAULT_REDFISH_PORT = 443  # HTTPS port for Redfish API
 DEFAULT_REDFISH_HTTP_PORT = 80  # HTTP port for Redfish API (fallback)
 DEFAULT_NAME = "Middle Atlantic Racklink"

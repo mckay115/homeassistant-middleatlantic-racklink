@@ -57,8 +57,14 @@ class DiscoveredDevice:
         # If we found a JSON-RPC service, use that port
         if "json-rpc" in self.service_type:
             return self.port
-        # Otherwise, assume standard control port
-        return 60000
+        # If we found a telnet service, use that port
+        if "_telnet" in self.service_type:
+            return self.port
+        # If we found an HTTPS service, likely Redfish
+        if "_https" in self.service_type:
+            return self.port
+        # Otherwise, assume standard telnet control port
+        return 6000
 
 
 class RackLinkDiscovery:
@@ -197,33 +203,47 @@ class RackLinkServiceListener(ServiceListener):
 
         # Check if this looks like a RackLink device
         if self._is_racklink_device(name):
+            # Instead of trying to create async tasks from sync callback,
+            # just store the service info and let the main discovery loop process it
             try:
-                # Try to get the current event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Create a task in the current loop
-                    asyncio.create_task(self._process_service(zc, type_, name))
-                except RuntimeError:
-                    # No running loop, try to get the event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            asyncio.ensure_future(
-                                self._process_service(zc, type_, name)
-                            )
-                        else:
-                            _LOGGER.warning(
-                                "Event loop not running, cannot process service %s",
-                                name,
-                            )
-                    except RuntimeError:
-                        _LOGGER.warning(
-                            "No event loop available to process service %s", name
-                        )
+                # Get basic service info synchronously
+                info = zc.get_service_info(
+                    type_, name, timeout=1000
+                )  # 1 second timeout
+
+                if info and info.addresses:
+                    ip_address = str(info.addresses[0])
+                    hostname = info.server.rstrip(".")
+
+                    properties = {
+                        key.decode("utf-8"): value.decode("utf-8") if value else ""
+                        for key, value in (
+                            info.properties.items() if info.properties else {}
+                        ).items()
+                    }
+
+                    device = DiscoveredDevice(
+                        hostname=hostname,
+                        ip_address=ip_address,
+                        port=info.port,
+                        service_type=type_,
+                        name=name,
+                        properties=properties,
+                    )
+
+                    # Use hostname as the key to avoid duplicates from different services
+                    self._discovered_devices[hostname] = device
+
+                    _LOGGER.info(
+                        "Discovered RackLink device: %s at %s:%d",
+                        hostname,
+                        ip_address,
+                        info.port,
+                    )
+                else:
+                    _LOGGER.debug("Service %s has no address info", name)
             except Exception as err:
-                _LOGGER.warning(
-                    "Error scheduling service processing for %s: %s", name, err
-                )
+                _LOGGER.debug("Could not process service %s: %s", name, err)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         """Called when a service is removed."""
@@ -256,42 +276,6 @@ class RackLinkServiceListener(ServiceListener):
             return True
 
         return False
-
-    async def _process_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        """Process a discovered service."""
-        try:
-            info = await AsyncServiceInfo.async_request(zc, type_, name, timeout=3000)
-
-            if info and info.addresses:
-                ip_address = str(info.addresses[0])
-                hostname = info.server.rstrip(".")
-
-                properties = {
-                    key.decode("utf-8"): value.decode("utf-8") if value else ""
-                    for key, value in info.properties.items()
-                }
-
-                device = DiscoveredDevice(
-                    hostname=hostname,
-                    ip_address=ip_address,
-                    port=info.port,
-                    service_type=type_,
-                    name=name,
-                    properties=properties,
-                )
-
-                # Use hostname as the key to avoid duplicates from different services
-                self._discovered_devices[hostname] = device
-
-                _LOGGER.info(
-                    "Processed RackLink device: %s at %s:%d",
-                    hostname,
-                    ip_address,
-                    info.port,
-                )
-
-        except Exception as err:
-            _LOGGER.debug("Error processing service %s: %s", name, err)
 
 
 async def discover_racklink_devices(
