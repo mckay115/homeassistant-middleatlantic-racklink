@@ -337,13 +337,8 @@ class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        # Only available if outlet is powered on and we have data
-        outlet_state = (
-            self.coordinator.data.get("outlets", {})
-            .get(self._outlet_id, {})
-            .get("state", False)
-        )
-        return self.coordinator.available and outlet_state
+        # Available when coordinator is available; value may be None if no data
+        return self.coordinator.available
 
 
 class RacklinkApparentPowerSensor(RacklinkSensorBase):
@@ -474,12 +469,7 @@ class RacklinkOutletCurrentSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        outlet_state = (
-            self.coordinator.data.get("outlets", {})
-            .get(self._outlet_id, {})
-            .get("state", False)
-        )
-        return self.coordinator.available and outlet_state
+        return self.coordinator.available
 
 
 class RacklinkOutletVoltageSensor(CoordinatorEntity, SensorEntity):
@@ -521,9 +511,4 @@ class RacklinkOutletVoltageSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        outlet_state = (
-            self.coordinator.data.get("outlets", {})
-            .get(self._outlet_id, {})
-            .get("state", False)
-        )
-        return self.coordinator.available and outlet_state
+        return self.coordinator.available

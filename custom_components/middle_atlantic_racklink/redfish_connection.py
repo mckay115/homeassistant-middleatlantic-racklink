@@ -337,6 +337,76 @@ class RedfishConnection:
                     self._outlet_names[outlet_num] = data["name"]
         return info
 
+    async def get_outlet_metrics(self, outlet_num: int) -> Optional[Dict[str, Any]]:
+        """Fetch metrics for a specific outlet if exposed by Redfish.
+
+        Tries either inline properties on the outlet resource or a nested
+        Metrics sub-resource commonly used by Redfish PDUs.
+        """
+        try:
+            if outlet_num not in self._outlet_endpoints:
+                return None
+
+            outlet_url = self._outlet_endpoints[outlet_num]
+            data = await self._fetch_json(outlet_url)
+            if not data:
+                return None
+
+            metrics: Dict[str, Any] = {}
+
+            # Inline fields first
+            # Common field names seen across vendors
+            inline_map = [
+                ("Power", "power"),
+                ("PowerWatts", "power"),
+                ("CurrentAmps", "current"),
+                ("Current", "current"),
+                ("Voltage", "voltage"),
+                ("EnergykWh", "energy_kwh"),
+                ("Energy", "energy_kwh"),
+            ]
+            for src, dest in inline_map:
+                v = data.get(src)
+                if isinstance(v, dict) and "Reading" in v:
+                    metrics[dest] = v.get("Reading")
+                elif isinstance(v, (int, float)):
+                    metrics[dest] = v
+
+            # Try Metrics sub-resource
+            if (
+                "Metrics" in data
+                and isinstance(data["Metrics"], dict)
+                and "@odata.id" in data["Metrics"]
+            ):
+                m_url = data["Metrics"]["@odata.id"]
+                m_data = await self._fetch_json(m_url)
+                if m_data:
+                    for key, dest in [
+                        ("PowerWatts", "power"),
+                        ("CurrentAmps", "current"),
+                        ("Voltage", "voltage"),
+                        ("EnergykWh", "energy_kwh"),
+                    ]:
+                        v = m_data.get(key)
+                        if isinstance(v, dict) and "Reading" in v:
+                            metrics[dest] = v.get("Reading")
+
+            if metrics:
+                return metrics
+        except Exception as err:
+            _LOGGER.debug("Outlet %d metrics fetch failed: %s", outlet_num, err)
+        return None
+
+    async def get_all_outlets_metrics(self) -> Dict[int, Dict[str, Any]]:
+        """Fetch metrics for all outlets concurrently, if available."""
+        tasks = [self.get_outlet_metrics(n) for n in self._outlet_endpoints.keys()]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        out: Dict[int, Dict[str, Any]] = {}
+        for (outlet_num, _), res in zip(self._outlet_endpoints.items(), results):
+            if isinstance(res, dict) and res:
+                out[outlet_num] = res
+        return out
+
     async def _discover_via_power_equipment(self) -> None:
         """Fallback discovery via generic PowerEquipment endpoint."""
         try:

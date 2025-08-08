@@ -823,113 +823,112 @@ class SocketConnection:
         Returns:
             str: The response from the device
         """
-        # Send command via Telnet
-        if not self._reader or not self._writer:
-            _LOGGER.error("Telnet not connected - cannot send command")
-            return ""
+        # Serialize Telnet access to prevent concurrent reads/writes
+        async with self._command_lock:
+            # Send command via Telnet
+            if not self._reader or not self._writer:
+                _LOGGER.error("Telnet not connected - cannot send command")
+                return ""
 
-        try:
-            # Check if session is corrupted (stuck in command mode)
-            if await self._is_session_corrupted():
-                _LOGGER.warning("🚨 Session corruption detected, attempting recovery")
-                if not await self._recover_telnet_session():
-                    _LOGGER.error("❌ Failed to recover Telnet session")
-                    return ""
+            try:
+                # Check if session is corrupted (stuck in command mode)
+                if await self._is_session_corrupted():
+                    _LOGGER.warning(
+                        "🚨 Session corruption detected, attempting recovery"
+                    )
+                    if not await self._recover_telnet_session():
+                        _LOGGER.error("❌ Failed to recover Telnet session")
+                        return ""
 
-            # Clear any buffered input before sending command
-            await self._flush_input_buffer()
+                # Clear any buffered input before sending command
+                await self._flush_input_buffer()
 
-            # Send command with proper termination
-            full_command = f"{command}\r\n"
-            _LOGGER.debug("📤 Sending Telnet command: %s", command)
+                # Send command with proper termination
+                full_command = f"{command}\r\n"
+                _LOGGER.debug("📤 Sending Telnet command: %s", command)
 
-            self._writer.write(full_command.encode("ascii"))
-            await self._writer.drain()
+                self._writer.write(full_command.encode("ascii"))
+                await self._writer.drain()
 
-            # Read response with improved timeout and corruption detection
-            response_parts = []
-            corruption_detected = False
-            start_time = time.time()
+                # Read response with improved timeout and corruption detection
+                response_parts = []
+                corruption_detected = False
+                start_time = time.time()
 
-            while True:
-                try:
-                    data = await asyncio.wait_for(self._reader.read(1024), timeout=3.0)
-                    if not data:
-                        break
+                while True:
+                    try:
+                        data = await asyncio.wait_for(
+                            self._reader.read(1024), timeout=3.0
+                        )
+                        if not data:
+                            break
 
-                    text = data.decode("utf-8", errors="ignore")
-                    response_parts.append(text)
+                        text = data.decode("utf-8", errors="ignore")
+                        response_parts.append(text)
 
-                    # Check for REAL corruption indicators (not normal command responses)
-                    corruption_indicators = [
-                        # Multiple ^ characters indicate command buffer corruption
-                        text.count("^") > 1,
-                        # Command history overflow (long repeated command strings)
-                        len(text) > 500 and "show" in text and text.count("show") > 3,
-                        # Interactive command prompt stuck (without proper completion)
-                        "(1/2/3/4/5/6/7/8/all)" in text and "] # " not in text,
-                        # Label prompt without proper context
-                        "label  Outlet label" in text and "] # " not in text,
-                        # Malformed response with multiple command echoes
-                        text.count(command) > 2 if command else False,
-                    ]
+                        # Check for REAL corruption indicators (not normal command responses)
+                        corruption_indicators = [
+                            text.count("^") > 1,
+                            len(text) > 500
+                            and "show" in text
+                            and text.count("show") > 3,
+                            "(1/2/3/4/5/6/7/8/all)" in text and "] # " not in text,
+                            "label  Outlet label" in text and "] # " not in text,
+                            text.count(command) > 2 if command else False,
+                        ]
 
-                    if any(corruption_indicators):
-                        corruption_detected = True
-                        _LOGGER.warning(
-                            "🚨 Real corruption detected: %s",
-                            text[:150],
+                        if any(corruption_indicators):
+                            corruption_detected = True
+                            _LOGGER.warning(
+                                "🚨 Real corruption detected: %s", text[:150]
+                            )
+                            break
+
+                        # End of response when prompt appears
+                        if "] # " in text or "> " in text or "$ " in text:
+                            break
+
+                        if time.time() - start_time > 8.0:
+                            _LOGGER.warning("⏱️ Command timeout after 8 seconds")
+                            break
+
+                    except asyncio.TimeoutError:
+                        _LOGGER.debug(
+                            "⏱️ Timeout reading Telnet response for '%s'", command
                         )
                         break
 
-                    # Look for command prompt indicating end of response
-                    if "] # " in text or "> " in text or "$ " in text:
-                        break
+                if corruption_detected:
+                    _LOGGER.error(
+                        "❌ Command '%s' failed due to session corruption", command
+                    )
+                    await self._recover_telnet_session()
+                    return ""
 
-                    # Prevent infinite loops
-                    if time.time() - start_time > 8.0:
-                        _LOGGER.warning("⏱️ Command timeout after 8 seconds")
-                        break
+                full_response = "".join(response_parts)
+                result = self._clean_telnet_response(full_response, command)
 
-                except asyncio.TimeoutError:
-                    _LOGGER.debug("⏱️ Timeout reading Telnet response for '%s'", command)
-                    break
+                if result and "Unknown command" in result:
+                    _LOGGER.info(
+                        "ℹ️ Command '%s' not recognized by device: %s",
+                        command,
+                        result.strip(),
+                    )
+                    return result
+                elif result:
+                    _LOGGER.debug(
+                        "✅ Command '%s' completed, response length: %d",
+                        command,
+                        len(result),
+                    )
+                else:
+                    _LOGGER.warning("⚠️ Command '%s' returned empty response", command)
 
-            if corruption_detected:
-                _LOGGER.error(
-                    "❌ Command '%s' failed due to session corruption", command
-                )
-                # Try immediate recovery for corruption
-                await self._recover_telnet_session()
+                return result
+
+            except Exception as err:
+                _LOGGER.error("Error sending Telnet command '%s': %s", command, err)
                 return ""
-
-            full_response = "".join(response_parts)
-
-            # Enhanced response cleaning
-            result = self._clean_telnet_response(full_response, command)
-
-            # Check for "Unknown command" and provide helpful feedback
-            if result and "Unknown command" in result:
-                _LOGGER.info(
-                    "ℹ️ Command '%s' not recognized by device: %s",
-                    command,
-                    result.strip(),
-                )
-                return result  # Return the error response for caller to handle
-            elif result:
-                _LOGGER.debug(
-                    "✅ Command '%s' completed, response length: %d",
-                    command,
-                    len(result),
-                )
-            else:
-                _LOGGER.warning("⚠️ Command '%s' returned empty response", command)
-
-            return result
-
-        except Exception as err:
-            _LOGGER.error("Error sending Telnet command '%s': %s", command, err)
-            return ""
 
     async def _is_session_corrupted(self) -> bool:
         """Check if the Telnet session is corrupted (stuck in command mode)."""

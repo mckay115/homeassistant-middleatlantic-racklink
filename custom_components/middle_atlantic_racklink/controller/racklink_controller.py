@@ -768,39 +768,48 @@ class RacklinkController:
             if not isinstance(self.connection, RedfishConnection):
                 return
 
+            # Try proper Redfish outlet metrics first
+            metrics_map = await self.connection.get_all_outlets_metrics()
+            if metrics_map:
+                for outlet_num, m in metrics_map.items():
+                    # Only store if the outlet exists in our state map
+                    if outlet_num not in self.outlet_states:
+                        continue
+                    if "power" in m:
+                        self.outlet_power_data[outlet_num] = float(m["power"]) or 0.0
+                    if "current" in m:
+                        self.outlet_current_data[outlet_num] = (
+                            float(m["current"]) or 0.0
+                        )
+                    if "voltage" in m:
+                        self.outlet_voltage_data[outlet_num] = (
+                            float(m["voltage"]) or 0.0
+                        )
+                    if "energy_kwh" in m:
+                        # store in Wh internally for consistency with sensors
+                        try:
+                            self.outlet_energy_data[outlet_num] = (
+                                float(m["energy_kwh"]) * 1000.0
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                return
+
+            # Fallback: proportional distribution when per-outlet metrics are unavailable
             for outlet_num in self.outlet_states.keys():
                 try:
-                    # Get outlet state to see if it's currently available for monitoring
-                    outlet_state = await self.connection.get_outlet_state(outlet_num)
-                    if outlet_state is None:
-                        continue
-
-                    # For now, we'll get basic power data from the main metrics
-                    # In a full implementation, this would query individual outlet endpoints
-                    # which may be available in the device's Redfish implementation
-
-                    # Individual outlet metrics would come from:
-                    # /redfish/v1/PowerEquipment/RackPDUs/1/Outlets/{outlet_num}
-                    # But for now, we'll use proportional distribution as a placeholder
-
-                    # Total power distributed evenly (placeholder - real implementation would query each outlet)
+                    outlet_state = self.outlet_states[outlet_num]
                     if len(self.outlet_states) > 0:
                         avg_power = self.active_power / len(self.outlet_states)
                         avg_current = self.rms_current / len(self.outlet_states)
-
-                        if outlet_state:  # Only assign power if outlet is on
+                        if outlet_state:
                             self.outlet_power_data[outlet_num] = avg_power
                             self.outlet_current_data[outlet_num] = avg_current
                             self.outlet_voltage_data[outlet_num] = self.rms_voltage
-                            self.outlet_energy_data[outlet_num] = (
-                                self.active_energy / len(self.outlet_states)
-                            )
                         else:
                             self.outlet_power_data[outlet_num] = 0.0
                             self.outlet_current_data[outlet_num] = 0.0
                             self.outlet_voltage_data[outlet_num] = self.rms_voltage
-                            self.outlet_energy_data[outlet_num] = 0.0
-
                 except Exception as outlet_err:
                     _LOGGER.debug(
                         "Error updating outlet %d data: %s", outlet_num, outlet_err
