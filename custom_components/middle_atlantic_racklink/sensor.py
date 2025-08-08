@@ -78,8 +78,8 @@ async def async_setup_entry(
 
     # Add individual outlet power sensors for Redfish connections (no session corruption risk)
     if (
-        hasattr(coordinator.controller, "connection_type")
-        and coordinator.controller.connection_type == "redfish"
+        hasattr(coordinator.controller, "per_outlet_metrics_available")
+        and coordinator.controller.per_outlet_metrics_available
     ):
         outlets = coordinator.data.get("outlets", {})
         for outlet_id in outlets:

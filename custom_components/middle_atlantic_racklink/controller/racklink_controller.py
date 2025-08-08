@@ -122,6 +122,7 @@ class RacklinkController:
 
         # Status flags
         self.connected: bool = False
+        self.per_outlet_metrics_available: bool = False
 
         # Initialize load shedding defaults immediately for reliable binary sensors
         self._initialize_load_shedding_defaults()
@@ -771,6 +772,7 @@ class RacklinkController:
             # Try proper Redfish outlet metrics first
             metrics_map = await self.connection.get_all_outlets_metrics()
             if metrics_map:
+                self.per_outlet_metrics_available = True
                 for outlet_num, m in metrics_map.items():
                     # Only store if the outlet exists in our state map
                     if outlet_num not in self.outlet_states:
@@ -796,6 +798,7 @@ class RacklinkController:
                 return
 
             # Fallback: proportional distribution when per-outlet metrics are unavailable
+            # Do not mark metrics available in this branch
             for outlet_num in self.outlet_states.keys():
                 try:
                     outlet_state = self.outlet_states[outlet_num]
