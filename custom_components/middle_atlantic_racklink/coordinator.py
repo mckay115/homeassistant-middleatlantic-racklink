@@ -234,6 +234,7 @@ class RacklinkCoordinator(DataUpdateCoordinator):
                 "name": self.controller.outlet_names.get(
                     outlet_num, f"Outlet {outlet_num}"
                 ),
+                "attrs": self.controller.outlet_attrs.get(outlet_num),
             }
             _LOGGER.debug(
                 "Processed outlet %d: state=%s, name=%r",

@@ -71,6 +71,7 @@ class RacklinkBinarySensor(BinarySensorEntity):
         self._sensor_type = sensor_type
         self._attr_unique_id = f"{controller.pdu_serial}_{self._sensor_type}"
         self._attr_available = False
+        self._attr_has_entity_name = True
 
     @property
     def name(self) -> str:

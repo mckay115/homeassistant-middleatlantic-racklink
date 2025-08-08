@@ -60,12 +60,15 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
 
         # Always include outlet number in name, custom name will be added in @name property
         self._base_name = f"Outlet {outlet_number}"
+        self._attr_has_entity_name = True
 
     @property
     def name(self) -> str:
         """Return the name of the switch, always including outlet number."""
         outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
         custom_name = outlet_data.get("name")
+        # Expose friendly attributes from Redfish if available
+        self._attr_extra_state_attributes = outlet_data.get("attrs")
 
         # If we have a custom name that's different from the default, use it with the outlet number
         if custom_name and custom_name != self._base_name:

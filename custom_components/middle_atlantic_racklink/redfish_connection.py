@@ -57,6 +57,7 @@ class RedfishConnection:
         self._pdu_id: Optional[str] = None
         self._outlet_endpoints: Dict[int, str] = {}
         self._outlet_names: Dict[int, str] = {}
+        self._redfish_version: Optional[str] = None
 
     @property
     def connected(self) -> bool:
@@ -146,6 +147,11 @@ class RedfishConnection:
                 if response.status == 200:
                     data = await response.json()
                     _LOGGER.debug("Redfish service root response: %s", data)
+                    # Capture RedfishVersion if available
+                    try:
+                        self._redfish_version = data.get("RedfishVersion")
+                    except Exception:
+                        pass
                     return True
                 else:
                     _LOGGER.error(
@@ -313,10 +319,20 @@ class RedfishConnection:
                 power_state = data.get("PowerState")
                 if isinstance(power_state, str):
                     result["state"] = power_state == "On"
-                # Name may be available on outlet resource
-                name = data.get("Name") or data.get("Id")
-                if isinstance(name, str):
+                # Prefer UserLabel when available for friendly naming
+                label = data.get("UserLabel")
+                name = (label or data.get("Name") or data.get("Id") or "").strip()
+                if isinstance(name, str) and name:
                     result["name"] = name
+                # Include useful attributes for entity extra attributes
+                result["attrs"] = {
+                    "user_label": label,
+                    "power_restore_policy": data.get("PowerRestorePolicy"),
+                    "power_on_delay_seconds": data.get("PowerOnDelaySeconds"),
+                    "power_cycle_delay_seconds": data.get("PowerCycleDelaySeconds"),
+                    "rated_current_amps": data.get("RatedCurrentAmps"),
+                    "nominal_voltage": data.get("NominalVoltage"),
+                }
             return outlet_num, result
 
         tasks = [
@@ -364,7 +380,15 @@ class RedfishConnection:
                 ("Voltage", "voltage"),
                 ("EnergykWh", "energy_kwh"),
                 ("Energy", "energy_kwh"),
+                ("FrequencyHz", "frequency"),
             ]
+            # Extract apparent power and power factor when embedded in PowerWatts
+            pw = data.get("PowerWatts")
+            if isinstance(pw, dict):
+                if "ApparentVA" in pw:
+                    metrics["apparent_va"] = pw.get("ApparentVA")
+                if "PowerFactor" in pw:
+                    metrics["power_factor"] = pw.get("PowerFactor")
             for src, dest in inline_map:
                 v = data.get(src)
                 if isinstance(v, dict) and "Reading" in v:
@@ -386,10 +410,17 @@ class RedfishConnection:
                         ("CurrentAmps", "current"),
                         ("Voltage", "voltage"),
                         ("EnergykWh", "energy_kwh"),
+                        ("FrequencyHz", "frequency"),
                     ]:
                         v = m_data.get(key)
                         if isinstance(v, dict) and "Reading" in v:
                             metrics[dest] = v.get("Reading")
+                    pw2 = m_data.get("PowerWatts")
+                    if isinstance(pw2, dict):
+                        if "ApparentVA" in pw2:
+                            metrics["apparent_va"] = pw2.get("ApparentVA")
+                        if "PowerFactor" in pw2:
+                            metrics["power_factor"] = pw2.get("PowerFactor")
 
             if metrics:
                 return metrics
@@ -406,6 +437,10 @@ class RedfishConnection:
             if isinstance(res, dict) and res:
                 out[outlet_num] = res
         return out
+
+    @property
+    def redfish_version(self) -> Optional[str]:
+        return self._redfish_version
 
     async def _discover_via_power_equipment(self) -> None:
         """Fallback discovery via generic PowerEquipment endpoint."""
@@ -645,3 +680,65 @@ class RedfishConnection:
     def get_outlet_count(self) -> int:
         """Get the number of discovered outlets."""
         return len(self._outlet_endpoints)
+
+    async def get_mains_metrics(self) -> Dict[str, float]:
+        """Get mains (inlet) metrics using Redfish Mains endpoint.
+
+        Returns keys: voltage, current, frequency, power, apparent_power, power_factor, energy (kWh)
+        """
+        try:
+            if not self._pdu_id:
+                return {}
+
+            # Fetch mains collection to find first circuit (e.g., I1)
+            mains_coll = f"/redfish/v1/PowerEquipment/RackPDUs/{self._pdu_id}/Mains"
+            mains_data = await self._fetch_json(mains_coll)
+            if (
+                not mains_data
+                or "Members" not in mains_data
+                or not mains_data["Members"]
+            ):
+                return {}
+
+            circuit_url = mains_data["Members"][0].get("@odata.id")
+            if not circuit_url:
+                return {}
+
+            circuit = await self._fetch_json(circuit_url)
+            if not circuit:
+                return {}
+
+            def read_val(obj: Any, key: str) -> Optional[float]:
+                val = obj.get(key)
+                if isinstance(val, dict) and "Reading" in val:
+                    return val.get("Reading")
+                if isinstance(val, (int, float)):
+                    return float(val)
+                return None
+
+            result: Dict[str, float] = {}
+            v = read_val(circuit, "Voltage")
+            if v is not None:
+                result["voltage"] = float(v)
+            i = read_val(circuit, "CurrentAmps")
+            if i is not None:
+                result["current"] = float(i)
+            f = read_val(circuit, "FrequencyHz")
+            if f is not None:
+                result["frequency"] = float(f)
+            pw = circuit.get("PowerWatts")
+            if isinstance(pw, dict):
+                if "Reading" in pw:
+                    result["power"] = float(pw["Reading"])  # Watts
+                if "ApparentVA" in pw:
+                    result["apparent_power"] = float(pw["ApparentVA"])  # VA
+                if "PowerFactor" in pw and pw["PowerFactor"] is not None:
+                    result["power_factor"] = float(pw["PowerFactor"])  # ratio
+            e = read_val(circuit, "EnergykWh")
+            if e is not None:
+                result["energy"] = float(e)  # kWh
+
+            return result
+        except Exception as err:
+            _LOGGER.debug("Error getting mains metrics: %s", err)
+            return {}

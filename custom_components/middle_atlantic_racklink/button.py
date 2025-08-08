@@ -26,6 +26,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Middle Atlantic RackLink buttons from config entry."""
     coordinator: RacklinkCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    controller = coordinator.controller
 
     entities = []
 
@@ -41,15 +42,21 @@ async def async_setup_entry(
         entities.append(RacklinkOutletCycleButton(coordinator, outlet_num))
 
     # Add system-wide buttons
-    entities.extend(
-        [
-            RacklinkAllOutletsCycleButton(coordinator),
-            RacklinkStartLoadSheddingButton(coordinator),
-            RacklinkStopLoadSheddingButton(coordinator),
-            RacklinkStartSequenceButton(coordinator),
-            RacklinkStopSequenceButton(coordinator),
-        ]
-    )
+    entities.append(RacklinkAllOutletsCycleButton(coordinator))
+
+    # Only expose vendor-feature buttons when available/enabled
+    if getattr(controller, "enable_vendor_features", False) and (
+        bool(getattr(controller, "socket", None))
+        or bool(getattr(controller, "_telnet_connection", None))
+    ):
+        entities.extend(
+            [
+                RacklinkStartLoadSheddingButton(coordinator),
+                RacklinkStopLoadSheddingButton(coordinator),
+                RacklinkStartSequenceButton(coordinator),
+                RacklinkStopSequenceButton(coordinator),
+            ]
+        )
 
     async_add_entities(entities)
 
@@ -74,6 +81,7 @@ class RacklinkButtonBase(CoordinatorEntity, ButtonEntity):
         self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{key}"
         self._attr_name = name
         self._attr_entity_category = entity_category
+        self._attr_has_entity_name = True
 
     @property
     def device_info(self) -> DeviceInfo:

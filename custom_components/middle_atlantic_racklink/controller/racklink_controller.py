@@ -107,6 +107,15 @@ class RacklinkController:
         self.apparent_power: float = 0.0  # VA
         self.power_factor: float = 0.0  # Power factor
 
+        # Mains (input) metrics
+        self.mains_voltage: float = 0.0
+        self.mains_current: float = 0.0
+        self.mains_power: float = 0.0
+        self.mains_energy_kwh: float = 0.0
+        self.mains_frequency: float = 0.0
+        self.mains_apparent_power: float = 0.0
+        self.mains_power_factor: float = 0.0
+
         # Outlet data
         self.outlet_states: Dict[int, bool] = {}
         self.outlet_names: Dict[int, str] = {}
@@ -119,6 +128,7 @@ class RacklinkController:
         self.outlet_current_data: Dict[int, float] = {}  # Individual outlet current (A)
         self.outlet_voltage_data: Dict[int, float] = {}  # Individual outlet voltage (V)
         self.outlet_non_critical: Dict[int, bool] = {}  # Non-critical outlet flags
+        self.outlet_attrs: Dict[int, Dict[str, Any]] = {}
 
         # Status flags
         self.connected: bool = False
@@ -537,26 +547,21 @@ class RacklinkController:
             if isinstance(self.connection, RedfishConnection):
                 # Use Redfish API
                 _LOGGER.debug("Fetching outlet states using Redfish API")
-                outlet_data = await self.connection.get_all_outlet_states()
+                info_map = await self.connection.get_all_outlets_info()
 
-                if outlet_data:
-                    _LOGGER.info("Found %d outlet states via Redfish", len(outlet_data))
-                    for outlet_num, state in outlet_data.items():
-                        self.outlet_states[outlet_num] = state
-                        # Set default name if not already set
-                        if outlet_num not in self.outlet_names:
-                            self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
-                    # Attempt to grab names if available from Redfish (populated in connection)
-                    try:
-                        if (
-                            hasattr(self.connection, "_outlet_names")
-                            and self.connection._outlet_names
-                        ):
-                            self.outlet_names.update(self.connection._outlet_names)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                if info_map:
+                    _LOGGER.info("Found %d outlets via Redfish", len(info_map))
+                    for outlet_num, data in info_map.items():
+                        state = data.get("state")
+                        if state is not None:
+                            self.outlet_states[outlet_num] = bool(state)
+                        # Store names and attrs
+                        if data.get("name"):
+                            self.outlet_names[outlet_num] = data["name"]
+                        if data.get("attrs"):
+                            self.outlet_attrs[outlet_num] = data["attrs"]
                 else:
-                    _LOGGER.warning("No outlet states found via Redfish")
+                    _LOGGER.warning("No outlet data found via Redfish")
 
             elif isinstance(self.connection, SocketConnection):
                 # Use existing socket/telnet logic
@@ -643,67 +648,70 @@ class RacklinkController:
         """Update system status using actual device power measurements."""
         try:
             _LOGGER.debug("Getting system power data from device")
-            # Throttle Telnet metrics if we already fetched recently
-            now = asyncio.get_event_loop().time()
-            need_telnet_metrics = (
-                now - self._last_telnet_metrics_fetch
-            ) >= self._telnet_metrics_interval_s
-
-            telnet_conn = self.socket or self._telnet_connection
-            if need_telnet_metrics and telnet_conn:
-                await asyncio.sleep(1.0)  # Delay to prevent rapid commands
-
-                # Get total inlet current
-                inlet_response = await telnet_conn.send_command("show inlets all")
-                if inlet_response and "Unknown command" not in inlet_response:
-                    current_match = re.search(
-                        r"RMS Current:\s+([\d.]+)\s*A", inlet_response
+            # Prefer Redfish mains metrics when Redfish is the active connection
+            if isinstance(self.connection, RedfishConnection):
+                mains = await self.connection.get_mains_metrics()
+                if mains:
+                    self.rms_voltage = mains.get("voltage", self.rms_voltage)
+                    self.rms_current = mains.get("current", self.rms_current)
+                    self.line_frequency = mains.get("frequency", self.line_frequency)
+                    self.active_power = mains.get("power", self.active_power)
+                    # Convert kWh to Wh for internal consistency
+                    energy_kwh = mains.get("energy")
+                    if energy_kwh is not None:
+                        self.active_energy = float(energy_kwh) * 1000.0
+                    self.apparent_power = mains.get(
+                        "apparent_power", self.apparent_power
                     )
-                    if current_match:
-                        self.rms_current = float(current_match.group(1))
-                        _LOGGER.debug(
-                            "✅ Got total inlet current: %.3f A", self.rms_current
+                    self.power_factor = mains.get("power_factor", self.power_factor)
+
+                    # Also set explicit mains fields for dedicated sensors
+                    self.mains_voltage = self.rms_voltage
+                    self.mains_current = self.rms_current
+                    self.mains_frequency = self.line_frequency
+                    self.mains_power = self.active_power
+                    self.mains_apparent_power = self.apparent_power
+                    self.mains_power_factor = self.power_factor
+                    if energy_kwh is not None:
+                        self.mains_energy_kwh = float(energy_kwh)
+            else:
+                # Legacy Telnet metrics path (fallback)
+                now = asyncio.get_event_loop().time()
+                need_telnet_metrics = (
+                    now - self._last_telnet_metrics_fetch
+                ) >= self._telnet_metrics_interval_s
+                telnet_conn = self.socket or self._telnet_connection
+                if need_telnet_metrics and telnet_conn:
+                    await asyncio.sleep(1.0)
+                    inlet_response = await telnet_conn.send_command("show inlets all")
+                    if inlet_response and "Unknown command" not in inlet_response:
+                        current_match = re.search(
+                            r"RMS Current:\s+([\d.]+)\s*A", inlet_response
                         )
-                    else:
-                        self.rms_current = 0.0
-                        _LOGGER.warning("Could not parse inlet current")
-                else:
-                    _LOGGER.warning("Could not get inlet data, using default current")
-                    self.rms_current = 0.0
-
-                await asyncio.sleep(1.0)  # Delay between commands
-
-                # Get voltage and frequency from outlet 1 details (representative)
-                outlet_response = await telnet_conn.send_command(
-                    "show outlets 1 details"
-                )
-                if outlet_response and "Unknown command" not in outlet_response:
-                    voltage_match = re.search(
-                        r"RMS Voltage:\s+([\d.]+)\s*V", outlet_response
+                        if current_match:
+                            self.rms_current = float(current_match.group(1))
+                    outlet_response = await telnet_conn.send_command(
+                        "show outlets 1 details"
                     )
-                    if voltage_match:
-                        self.rms_voltage = float(voltage_match.group(1))
-                        _LOGGER.debug("✅ Got voltage: %.1f V", self.rms_voltage)
-                    else:
-                        self.rms_voltage = 120.0
-
-                    freq_match = re.search(
-                        r"Line Frequency:\s+([\d.]+)\s*Hz", outlet_response
-                    )
-                    if freq_match:
-                        self.line_frequency = float(freq_match.group(1))
-                        _LOGGER.debug("✅ Got frequency: %.1f Hz", self.line_frequency)
-                    else:
-                        self.line_frequency = 60.0
-                else:
-                    _LOGGER.warning("Could not get outlet details, using defaults")
-                    self.rms_voltage = 120.0
-                    self.line_frequency = 60.0
-
-                self._last_telnet_metrics_fetch = now
+                    if outlet_response and "Unknown command" not in outlet_response:
+                        voltage_match = re.search(
+                            r"RMS Voltage:\s+([\d.]+)\s*V", outlet_response
+                        )
+                        if voltage_match:
+                            self.rms_voltage = float(voltage_match.group(1))
+                        freq_match = re.search(
+                            r"Line Frequency:\s+([\d.]+)\s*Hz", outlet_response
+                        )
+                        if freq_match:
+                            self.line_frequency = float(freq_match.group(1))
+                    self._last_telnet_metrics_fetch = now
 
             # Calculate total power if missing or outdated
-            if self.rms_voltage and self.rms_current:
+            if (
+                self.rms_voltage
+                and self.rms_current
+                and not isinstance(self.connection, RedfishConnection)
+            ):
                 self.active_power = self.rms_voltage * self.rms_current
 
             _LOGGER.info(

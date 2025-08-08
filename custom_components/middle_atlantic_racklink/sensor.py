@@ -65,6 +65,13 @@ async def async_setup_entry(
             RacklinkFrequencySensor(coordinator),
             RacklinkApparentPowerSensor(coordinator),
             RacklinkPowerFactorSensor(coordinator),
+            RacklinkMainsVoltageSensor(coordinator),
+            RacklinkMainsCurrentSensor(coordinator),
+            RacklinkMainsPowerSensor(coordinator),
+            RacklinkMainsEnergySensor(coordinator),
+            RacklinkMainsFrequencySensor(coordinator),
+            RacklinkMainsApparentPowerSensor(coordinator),
+            RacklinkMainsPowerFactorSensor(coordinator),
         ]
     )
 
@@ -73,6 +80,7 @@ async def async_setup_entry(
         [
             RacklinkLoadSheddingSensor(coordinator),
             RacklinkSequenceSensor(coordinator),
+            RacklinkHealthSensor(coordinator),
         ]
     )
 
@@ -110,10 +118,12 @@ class RacklinkSensorBase(CoordinatorEntity, SensorEntity):
         # Set entity attributes
         self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{config.key}"
         self._attr_name = config.name
+        self._attr_has_entity_name = True
         self._attr_device_class = config.device_class
         self._attr_state_class = config.state_class
         self._attr_native_unit_of_measurement = config.unit_of_measurement
         self._attr_entity_category = config.entity_category
+        self._attr_entity_registry_enabled_default = True
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -297,6 +307,35 @@ class RacklinkSequenceSensor(RacklinkSensorBase):
         )
 
 
+class RacklinkHealthSensor(RacklinkSensorBase):
+    """Sensor for Redfish health status."""
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="health",
+                name="Health",
+                entity_category=EntityCategory.DIAGNOSTIC,
+            ),
+        )
+
+    @property
+    def native_value(self) -> str:
+        controller = self.coordinator.controller
+        # If Redfish info present on controller, prefer it
+        try:
+            if hasattr(controller, "pdu_model"):
+                # health is not cached centrally; use available data on coordinator/system
+                # For now, expose OK when system voltage/frequency are present
+                return (
+                    "OK" if self.coordinator.system_data.get("voltage") else "Unknown"
+                )
+        except Exception:
+            pass
+        return "Unknown"
+
+
 class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
     """Sensor for individual outlet power consumption."""
 
@@ -383,6 +422,132 @@ class RacklinkPowerFactorSensor(RacklinkSensorBase):
     def native_value(self) -> float:
         """Return the power factor value."""
         return self.coordinator.system_data.get("power_factor")
+
+
+class RacklinkMainsVoltageSensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_voltage",
+                name="Input Voltage",
+                device_class=SensorDeviceClass.VOLTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfElectricPotential.VOLT,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_voltage", None)
+
+
+class RacklinkMainsCurrentSensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_current",
+                name="Input Current",
+                device_class=SensorDeviceClass.CURRENT,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_current", None)
+
+
+class RacklinkMainsPowerSensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_power",
+                name="Input Power",
+                device_class=SensorDeviceClass.POWER,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfPower.WATT,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_power", None)
+
+
+class RacklinkMainsEnergySensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_energy",
+                name="Input Energy",
+                device_class=SensorDeviceClass.ENERGY,
+                state_class=SensorStateClass.TOTAL_INCREASING,
+                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        # controller stores mains energy in kWh
+        return getattr(self.coordinator.controller, "mains_energy_kwh", None)
+
+
+class RacklinkMainsFrequencySensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_frequency",
+                name="Input Frequency",
+                device_class=SensorDeviceClass.FREQUENCY,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement=UnitOfFrequency.HERTZ,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_frequency", None)
+
+
+class RacklinkMainsApparentPowerSensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_apparent_power",
+                name="Input Apparent Power",
+                device_class=SensorDeviceClass.APPARENT_POWER,
+                state_class=SensorStateClass.MEASUREMENT,
+                unit_of_measurement="VA",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_apparent_power", None)
+
+
+class RacklinkMainsPowerFactorSensor(RacklinkSensorBase):
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        super().__init__(
+            coordinator=coordinator,
+            config=SensorConfig(
+                key="mains_power_factor",
+                name="Input Power Factor",
+                device_class=SensorDeviceClass.POWER_FACTOR,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return getattr(self.coordinator.controller, "mains_power_factor", None)
 
 
 class RacklinkOutletEnergySensor(CoordinatorEntity, SensorEntity):
