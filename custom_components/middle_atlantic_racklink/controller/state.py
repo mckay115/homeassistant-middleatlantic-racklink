@@ -157,9 +157,11 @@ class StateMixin:
         if not self._pdu_serial:
             # Generate a pseudo-serial based on MAC if we have it, otherwise use host
             if self._mac_address:
-                self._pdu_serial = f"UNKNOWN-{self._mac_address.replace(':', '')}"
+                mac_sanitized = str(self._mac_address or "unknown").replace(":", "")
+                self._pdu_serial = f"UNKNOWN-{mac_sanitized}"
             else:
-                self._pdu_serial = f"UNKNOWN-{self._host.replace('.', '')}"
+                host_sanitized = str(self._host or "unknown").replace(".", "")
+                self._pdu_serial = f"UNKNOWN-{host_sanitized}"
 
         # Update PDU info dictionary
         self._pdu_info = {

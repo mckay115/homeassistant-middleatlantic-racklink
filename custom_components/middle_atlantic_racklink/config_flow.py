@@ -98,8 +98,13 @@ async def validate_connection(
     use_https = data.get(CONF_USE_HTTPS, True)
     enable_vendor_features = data.get(CONF_ENABLE_VENDOR_FEATURES, True)
 
-    _LOGGER.info("Creating RacklinkController with: host=%s, port=%s, connection_type=%s, use_https=%s", 
-                 host, port, connection_type, use_https)
+    _LOGGER.info(
+        "Creating RacklinkController with: host=%s, port=%s, connection_type=%s, use_https=%s",
+        host,
+        port,
+        connection_type,
+        use_https,
+    )
     try:
         controller = RacklinkController(
             host=host,
@@ -113,10 +118,17 @@ async def validate_connection(
         )
         _LOGGER.info("RacklinkController created successfully")
     except Exception as init_err:
-        _LOGGER.error("Failed to create RacklinkController: %s (type: %s)", init_err, type(init_err).__name__)
+        _LOGGER.error(
+            "Failed to create RacklinkController: %s (type: %s)",
+            init_err,
+            type(init_err).__name__,
+        )
         import traceback
+
         _LOGGER.error("Controller init traceback: %s", traceback.format_exc())
-        raise CannotConnect(f"Controller initialization failed: {init_err}") from init_err
+        raise CannotConnect(
+            f"Controller initialization failed: {init_err}"
+        ) from init_err
 
     try:
         # Connect to the device
@@ -320,11 +332,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             # Set automatic port and protocol based on connection type
             if self._connection_type == CONNECTION_TYPE_REDFISH:
-                # For Redfish, try HTTP first (local networks), then HTTPS
-                final_input[CONF_PORT] = (
-                    DEFAULT_REDFISH_HTTP_PORT  # Start with HTTP (80)
-                )
-                final_input[CONF_USE_HTTPS] = False  # Try HTTP first for local networks
+                # For Redfish, default to HTTPS first (self-signed certs common)
+                final_input[CONF_PORT] = DEFAULT_REDFISH_PORT  # 443
+                final_input[CONF_USE_HTTPS] = True
                 final_input[CONF_ENABLE_VENDOR_FEATURES] = True  # Default to enabled
             else:
                 # For Telnet, use standard port
@@ -332,7 +342,13 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             # Validate and create entry - try HTTP first for Redfish, then HTTPS
             try:
-                _LOGGER.info("Starting connection validation with config: %s", {k: v if k != CONF_PASSWORD else "***" for k, v in final_input.items()})
+                _LOGGER.info(
+                    "Starting connection validation with config: %s",
+                    {
+                        k: v if k != CONF_PASSWORD else "***"
+                        for k, v in final_input.items()
+                    },
+                )
                 info = await validate_connection(self.hass, final_input)
 
                 # Handle unique ID based on MAC address
@@ -352,15 +368,15 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 return self.async_create_entry(title=title, data=final_input)
 
             except CannotConnect as err:
-                # For Redfish, if HTTP failed, try HTTPS
+                # For Redfish, if HTTPS failed, try HTTP as fallback
                 if (
                     self._connection_type == CONNECTION_TYPE_REDFISH
-                    and not final_input.get(CONF_USE_HTTPS, False)
+                    and final_input.get(CONF_USE_HTTPS, False)
                 ):
                     try:
-                        _LOGGER.info("HTTP failed, trying HTTPS for Redfish connection")
-                        final_input[CONF_PORT] = DEFAULT_REDFISH_PORT  # 443
-                        final_input[CONF_USE_HTTPS] = True
+                        _LOGGER.info("HTTPS failed, trying HTTP for Redfish connection")
+                        final_input[CONF_PORT] = DEFAULT_REDFISH_HTTP_PORT  # 80
+                        final_input[CONF_USE_HTTPS] = False
 
                         info = await validate_connection(self.hass, final_input)
 
@@ -382,9 +398,16 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
                     except Exception as https_err:
                         # Both HTTP and HTTPS failed
-                        _LOGGER.error("HTTPS retry also failed: %s (type: %s)", https_err, type(https_err).__name__)
+                        _LOGGER.error(
+                            "HTTPS retry also failed: %s (type: %s)",
+                            https_err,
+                            type(https_err).__name__,
+                        )
                         import traceback
-                        _LOGGER.error("HTTPS retry traceback: %s", traceback.format_exc())
+
+                        _LOGGER.error(
+                            "HTTPS retry traceback: %s", traceback.format_exc()
+                        )
 
                 return self.async_show_form(
                     step_id="connection_type",
@@ -398,8 +421,13 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     errors={"base": "invalid_auth"},
                 )
             except Exception as err:
-                _LOGGER.error("Unexpected error during validation: %s (type: %s)", err, type(err).__name__)
+                _LOGGER.error(
+                    "Unexpected error during validation: %s (type: %s)",
+                    err,
+                    type(err).__name__,
+                )
                 import traceback
+
                 _LOGGER.error("Full traceback: %s", traceback.format_exc())
                 return self.async_show_form(
                     step_id="connection_type",

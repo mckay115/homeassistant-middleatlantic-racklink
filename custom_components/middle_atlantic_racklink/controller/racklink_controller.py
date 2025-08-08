@@ -81,11 +81,19 @@ class RacklinkController:
         self._telnet_connection = None
         self._hybrid_mode = False
 
+        # Validate host early and normalize for ID usage
+        if not host or not isinstance(host, str) or not host.strip():
+            _LOGGER.warning("Host was empty or None during controller init; defaulting to 'unknown'")
+            host = "unknown"
+
+        # Helper for safe host formatting in IDs (instance method used elsewhere)
+        self._host_safe_id = self._safe_host_for_id(host)
+
         # Device information
         self.pdu_name: str = f"RackLink PDU {host}"
         self.pdu_model: str = "RackLink"
         self.pdu_firmware: str = "Unknown"
-        self.pdu_serial: str = f"PDU-{host.replace('.', '-')}"  # Default fallback
+        self.pdu_serial: str = f"PDU-{self._host_safe_id}"  # Default fallback
         self.mac_address: str = ""
 
         # System power data
@@ -127,6 +135,15 @@ class RacklinkController:
                 self.host,
                 self.port,
                 self.connection_type,
+            )
+            _LOGGER.debug(
+                "Connection params: host=%r, port=%r, username_set=%s, timeout=%s, use_https=%s, vendor_features=%s",
+                self.host,
+                self.port,
+                bool(self.username),
+                self.timeout,
+                getattr(self, "use_https", None),
+                self.enable_vendor_features,
             )
 
             # Create connection based on type
@@ -202,6 +219,11 @@ class RacklinkController:
             self.connected = False
             self.available = False
             return False
+
+    def _safe_host_for_id(self, value: Optional[str]) -> str:
+        """Return a filesystem/ID safe string from host/IP."""
+        base = (value or "unknown").strip()
+        return base.replace(".", "-").replace(":", "-")
 
     async def disconnect(self) -> None:
         """Disconnect from the PDU."""
@@ -345,7 +367,7 @@ class RacklinkController:
                     self.pdu_model = pdu_info.get("Model", "RackLink")
                     self.pdu_firmware = pdu_info.get("FirmwareVersion", "Unknown")
                     self.pdu_serial = pdu_info.get(
-                        "SerialNumber", f"PDU-{self.host.replace('.', '-')}"
+                        "SerialNumber", f"PDU-{self._safe_host_for_id(self.host)}"
                     )
 
                     # Try to get MAC address from network info if available
@@ -435,7 +457,7 @@ class RacklinkController:
                         _LOGGER.debug("Using MAC as serial: %s", self.pdu_serial)
                     else:
                         # Use host-based fallback if no MAC available yet
-                        self.pdu_serial = f"PDU-{self.host.replace('.', '-')}"
+                        self.pdu_serial = f"PDU-{self._safe_host_for_id(self.host)}"
                         _LOGGER.debug("Using host-based serial: %s", self.pdu_serial)
 
             # Get MAC address using exact command syntax
@@ -464,7 +486,7 @@ class RacklinkController:
                     )
                     await asyncio.sleep(1.0)
 
-            _LOGGER.debug("Network interface response: %s", network_response[:200])
+            _LOGGER.debug("Network interface response (first 200 chars): %s", network_response[:200])
             await asyncio.sleep(0.5)  # Prevent rapid commands
 
             # Parse MAC address - exact format: MAC address:               00:1e:c5:05:0a:82
@@ -482,8 +504,8 @@ class RacklinkController:
 
                 # If neither serial nor MAC is available, use host as fallback
                 if not self.pdu_serial:
-                    self.pdu_serial = f"PDU-{self.host}"
-                    _LOGGER.debug("Using host as serial: %s", self.pdu_serial)
+                    self.pdu_serial = f"PDU-{self._safe_host_for_id(self.host)}"
+            _LOGGER.debug("Using host as serial: %s", self.pdu_serial)
 
         except Exception as err:
             _LOGGER.error("Error updating PDU details: %s", err)

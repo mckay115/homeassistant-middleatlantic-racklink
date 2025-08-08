@@ -82,6 +82,10 @@ class RedfishConnection:
                 self.config.port,
                 self.config.use_https,
             )
+            _LOGGER.debug(
+                "Redfish SSL verify: %s (self-signed certs will be accepted when False)",
+                self.config.verify_ssl,
+            )
 
             # Create HTTP session with appropriate SSL settings
             connector = aiohttp.TCPConnector(
