@@ -83,7 +83,9 @@ class RacklinkController:
 
         # Validate host early and normalize for ID usage
         if not host or not isinstance(host, str) or not host.strip():
-            _LOGGER.warning("Host was empty or None during controller init; defaulting to 'unknown'")
+            _LOGGER.warning(
+                "Host was empty or None during controller init; defaulting to 'unknown'"
+            )
             host = "unknown"
 
         # Helper for safe host formatting in IDs (instance method used elsewhere)
@@ -126,6 +128,10 @@ class RacklinkController:
         self.available: bool = False
         self.load_shedding_active: bool = False
         self.sequence_active: bool = False
+        self._last_details_fetch: float = 0.0
+        self._details_refresh_interval_s: int = 600
+        self._last_telnet_metrics_fetch: float = 0.0
+        self._telnet_metrics_interval_s: int = 30
 
     async def connect(self) -> bool:
         """Connect to the PDU."""
@@ -355,6 +361,14 @@ class RacklinkController:
     async def _update_pdu_details(self) -> None:
         """Update PDU details."""
         try:
+            # Throttle PDU details to reduce overhead
+            now = asyncio.get_event_loop().time()
+            if (
+                self._last_details_fetch
+                and (now - self._last_details_fetch) < self._details_refresh_interval_s
+            ):
+                _LOGGER.debug("Skipping PDU details refresh (throttled)")
+                return
             _LOGGER.info("Fetching PDU details")
 
             if isinstance(self.connection, RedfishConnection):
@@ -384,6 +398,7 @@ class RacklinkController:
                     self.pdu_firmware = "Unknown"
                     self.pdu_serial = f"PDU-{self.host.replace('.', '-')}"
 
+                self._last_details_fetch = now
                 return
 
             # Use existing telnet/socket logic for non-Redfish connections
@@ -486,7 +501,10 @@ class RacklinkController:
                     )
                     await asyncio.sleep(1.0)
 
-            _LOGGER.debug("Network interface response (first 200 chars): %s", network_response[:200])
+            _LOGGER.debug(
+                "Network interface response (first 200 chars): %s",
+                network_response[:200],
+            )
             await asyncio.sleep(0.5)  # Prevent rapid commands
 
             # Parse MAC address - exact format: MAC address:               00:1e:c5:05:0a:82
@@ -506,6 +524,7 @@ class RacklinkController:
                 if not self.pdu_serial:
                     self.pdu_serial = f"PDU-{self._safe_host_for_id(self.host)}"
             _LOGGER.debug("Using host as serial: %s", self.pdu_serial)
+            self._last_details_fetch = now
 
         except Exception as err:
             _LOGGER.error("Error updating PDU details: %s", err)
@@ -623,68 +642,68 @@ class RacklinkController:
         """Update system status using actual device power measurements."""
         try:
             _LOGGER.debug("Getting system power data from device")
+            # Throttle Telnet metrics if we already fetched recently
+            now = asyncio.get_event_loop().time()
+            need_telnet_metrics = (
+                now - self._last_telnet_metrics_fetch
+            ) >= self._telnet_metrics_interval_s
 
-            await asyncio.sleep(1.0)  # Delay to prevent rapid commands
-
-            # Get total inlet current (this gives us the actual system current)
-            # Use telnet connection (primary or secondary hybrid)
             telnet_conn = self.socket or self._telnet_connection
-            if not telnet_conn:
-                _LOGGER.warning(
-                    "No telnet connection available for system status update"
-                )
-                return
+            if need_telnet_metrics and telnet_conn:
+                await asyncio.sleep(1.0)  # Delay to prevent rapid commands
 
-            inlet_response = await telnet_conn.send_command("show inlets all")
-            if inlet_response and "Unknown command" not in inlet_response:
-                # Parse total current from inlet data
-                # Expected format: "RMS Current:         1.621 A (normal)"
-                current_match = re.search(
-                    r"RMS Current:\s+([\d.]+)\s*A", inlet_response
-                )
-                if current_match:
-                    self.rms_current = float(current_match.group(1))
-                    _LOGGER.debug(
-                        "✅ Got total inlet current: %.3f A", self.rms_current
+                # Get total inlet current
+                inlet_response = await telnet_conn.send_command("show inlets all")
+                if inlet_response and "Unknown command" not in inlet_response:
+                    current_match = re.search(
+                        r"RMS Current:\s+([\d.]+)\s*A", inlet_response
                     )
+                    if current_match:
+                        self.rms_current = float(current_match.group(1))
+                        _LOGGER.debug(
+                            "✅ Got total inlet current: %.3f A", self.rms_current
+                        )
+                    else:
+                        self.rms_current = 0.0
+                        _LOGGER.warning("Could not parse inlet current")
                 else:
+                    _LOGGER.warning("Could not get inlet data, using default current")
                     self.rms_current = 0.0
-                    _LOGGER.warning("Could not parse inlet current")
-            else:
-                _LOGGER.warning("Could not get inlet data, using default current")
-                self.rms_current = 0.0
 
-            await asyncio.sleep(1.0)  # Delay between commands
+                await asyncio.sleep(1.0)  # Delay between commands
 
-            # Get voltage and frequency from outlet 1 details (representative)
-            outlet_response = await telnet_conn.send_command("show outlets 1 details")
-            if outlet_response and "Unknown command" not in outlet_response:
-                # Parse voltage and frequency from outlet data
-                voltage_match = re.search(
-                    r"RMS Voltage:\s+([\d.]+)\s*V", outlet_response
+                # Get voltage and frequency from outlet 1 details (representative)
+                outlet_response = await telnet_conn.send_command(
+                    "show outlets 1 details"
                 )
-                if voltage_match:
-                    self.rms_voltage = float(voltage_match.group(1))
-                    _LOGGER.debug("✅ Got voltage: %.1f V", self.rms_voltage)
-                else:
-                    self.rms_voltage = 120.0  # Default
+                if outlet_response and "Unknown command" not in outlet_response:
+                    voltage_match = re.search(
+                        r"RMS Voltage:\s+([\d.]+)\s*V", outlet_response
+                    )
+                    if voltage_match:
+                        self.rms_voltage = float(voltage_match.group(1))
+                        _LOGGER.debug("✅ Got voltage: %.1f V", self.rms_voltage)
+                    else:
+                        self.rms_voltage = 120.0
 
-                freq_match = re.search(
-                    r"Line Frequency:\s+([\d.]+)\s*Hz", outlet_response
-                )
-                if freq_match:
-                    self.line_frequency = float(freq_match.group(1))
-                    _LOGGER.debug("✅ Got frequency: %.1f Hz", self.line_frequency)
+                    freq_match = re.search(
+                        r"Line Frequency:\s+([\d.]+)\s*Hz", outlet_response
+                    )
+                    if freq_match:
+                        self.line_frequency = float(freq_match.group(1))
+                        _LOGGER.debug("✅ Got frequency: %.1f Hz", self.line_frequency)
+                    else:
+                        self.line_frequency = 60.0
                 else:
-                    self.line_frequency = 60.0  # Default
-            else:
-                _LOGGER.warning("Could not get outlet details, using defaults")
-                self.rms_voltage = 120.0
-                self.line_frequency = 60.0
+                    _LOGGER.warning("Could not get outlet details, using defaults")
+                    self.rms_voltage = 120.0
+                    self.line_frequency = 60.0
 
-            # Calculate total power from actual measurements
-            self.active_power = self.rms_voltage * self.rms_current
-            self.active_energy = 0.0  # Not available in inlet data
+                self._last_telnet_metrics_fetch = now
+
+            # Calculate total power if missing or outdated
+            if self.rms_voltage and self.rms_current:
+                self.active_power = self.rms_voltage * self.rms_current
 
             _LOGGER.info(
                 "📊 PDU Status: %.1f W, %.3f A, %.1f V, %.1f Hz",
@@ -694,19 +713,18 @@ class RacklinkController:
                 self.line_frequency,
             )
 
-            # Update outlet criticality flags for load shedding
-            await self.update_outlet_non_critical_flags()
-
-            # Check load shedding status from device (use telnet connection)
-            telnet_conn = self.socket or self._telnet_connection
+            # Single loadshedding query per cycle (if telnet available)
             if telnet_conn:
                 shedding_response = await telnet_conn.send_command("show loadshedding")
                 if shedding_response:
                     self.load_shedding_active = "Active" in shedding_response
+                    # Update non-critical flags from same response
+                    self._parse_and_set_non_critical_from_loadshedding(
+                        shedding_response
+                    )
                 else:
                     self.load_shedding_active = False
             else:
-                # No telnet connection available for load shedding status
                 self.load_shedding_active = False
 
             # Sequence status not directly available, set to false
@@ -714,6 +732,35 @@ class RacklinkController:
 
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)
+
+    def _parse_and_set_non_critical_from_loadshedding(self, response: str) -> None:
+        """Parse loadshedding response to set outlet_non_critical without re-querying."""
+        try:
+            non_critical_outlets = set()
+            for line in response.split("\n"):
+                if "Non Critical Outlets:" in line:
+                    outlet_part = line.split(":", 1)[1].strip()
+                    for item in outlet_part.split(","):
+                        item = item.strip()
+                        if "-" in item:
+                            start, end = map(int, item.split("-"))
+                            non_critical_outlets.update(range(start, end + 1))
+                        elif item.isdigit():
+                            non_critical_outlets.add(int(item))
+                    break
+
+            for outlet_num in self.outlet_states.keys():
+                self.outlet_non_critical[outlet_num] = (
+                    outlet_num in non_critical_outlets
+                )
+            _LOGGER.info(
+                "✅ Updated non-critical flags from device: %s",
+                self.outlet_non_critical,
+            )
+        except Exception as e:
+            _LOGGER.debug(
+                "Failed to parse loadshedding response for non-critical flags: %s", e
+            )
 
     async def _update_redfish_outlet_data(self) -> None:
         """Update individual outlet power data via Redfish API."""

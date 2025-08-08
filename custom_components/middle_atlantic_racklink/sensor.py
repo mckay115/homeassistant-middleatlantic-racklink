@@ -210,10 +210,21 @@ class RacklinkEnergySensor(RacklinkSensorBase):
 
     @property
     def native_value(self) -> float:
-        """Return the energy value in kWh."""
-        energy_wh = self.coordinator.system_data.get("energy", 0)
-        # Convert from Wh to kWh
-        return energy_wh / 1000 if energy_wh else 0
+        """Return the energy value in kWh.
+
+        Prefer kWh directly when the controller reports kWh; otherwise
+        convert Wh to kWh if values appear large.
+        """
+        energy_val = self.coordinator.system_data.get("energy", 0)
+        if energy_val is None:
+            return 0
+        # Heuristic: if the value is small (<100000), assume kWh and return as-is
+        # If it's large, assume Wh and convert to kWh
+        try:
+            value = float(energy_val)
+        except (TypeError, ValueError):
+            return 0
+        return value if value < 100000 else value / 1000
 
 
 class RacklinkFrequencySensor(RacklinkSensorBase):
