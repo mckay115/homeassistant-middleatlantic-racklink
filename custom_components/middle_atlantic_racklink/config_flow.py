@@ -98,6 +98,13 @@ async def validate_connection(
     use_https = data.get(CONF_USE_HTTPS, True)
     enable_vendor_features = data.get(CONF_ENABLE_VENDOR_FEATURES, True)
 
+    # Guard against missing/empty host
+    if host is None or (isinstance(host, str) and not host.strip()):
+        _LOGGER.error(
+            "Host is required but was missing/empty in validate_connection: %r", host
+        )
+        raise CannotConnect("Host is required")
+
     _LOGGER.info(
         "Creating RacklinkController with: host=%s, port=%s, connection_type=%s, use_https=%s",
         host,
@@ -314,7 +321,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
 
             # Build final config data
-            if hasattr(self, "_selected_host"):
+            if self._selected_host:
                 # Using discovered device
                 final_input = {
                     CONF_HOST: self._selected_host,
@@ -322,12 +329,13 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     CONF_PASSWORD: self._selected_password,
                     CONF_CONNECTION_TYPE: self._connection_type,
                 }
-            elif hasattr(self, "_manual_input"):
+            elif self._manual_input:
                 # Using manual input
                 final_input = self._manual_input.copy()
                 final_input[CONF_CONNECTION_TYPE] = self._connection_type
             else:
                 # Fallback
+                _LOGGER.warning("No host selected or entered; returning to user step")
                 return await self.async_step_user()
 
             # Set automatic port and protocol based on connection type
