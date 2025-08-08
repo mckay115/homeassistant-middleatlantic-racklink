@@ -85,20 +85,18 @@ async def async_setup_entry(
     )
 
     # Add individual outlet power sensors for Redfish connections (no session corruption risk)
-    if (
-        hasattr(coordinator.controller, "per_outlet_metrics_available")
-        and coordinator.controller.per_outlet_metrics_available
-    ):
-        outlets = coordinator.data.get("outlets", {})
-        for outlet_id in outlets:
-            entities.extend(
-                [
-                    RacklinkOutletPowerSensor(coordinator, outlet_id),
-                    RacklinkOutletEnergySensor(coordinator, outlet_id),
-                    RacklinkOutletCurrentSensor(coordinator, outlet_id),
-                    RacklinkOutletVoltageSensor(coordinator, outlet_id),
-                ]
-            )
+    # Create per-outlet metric sensors by default; values will be unknown until
+    # Redfish metrics are detected, at which point they populate automatically.
+    outlets = coordinator.data.get("outlets", {})
+    for outlet_id in outlets:
+        entities.extend(
+            [
+                RacklinkOutletPowerSensor(coordinator, outlet_id),
+                RacklinkOutletEnergySensor(coordinator, outlet_id),
+                RacklinkOutletCurrentSensor(coordinator, outlet_id),
+                RacklinkOutletVoltageSensor(coordinator, outlet_id),
+            ]
+        )
 
     async_add_entities(entities)
 

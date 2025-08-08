@@ -333,6 +333,11 @@ class RacklinkController:
             _LOGGER.debug("Updating system status")
             await self._update_system_status()
 
+            # Fetch per-outlet metrics via Redfish when available
+            if isinstance(self.connection, RedfishConnection):
+                _LOGGER.debug("Updating per-outlet metrics via Redfish")
+                await self._update_redfish_outlet_data()
+
             # If Redfish connection, also try to fetch Redfish metrics for richer data
             if isinstance(self.connection, RedfishConnection):
                 try:
