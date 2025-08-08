@@ -98,16 +98,25 @@ async def validate_connection(
     use_https = data.get(CONF_USE_HTTPS, True)
     enable_vendor_features = data.get(CONF_ENABLE_VENDOR_FEATURES, True)
 
-    controller = RacklinkController(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        timeout=CONNECTION_TIMEOUT,
-        connection_type=connection_type,
-        use_https=use_https,
-        enable_vendor_features=enable_vendor_features,
-    )
+    _LOGGER.info("Creating RacklinkController with: host=%s, port=%s, connection_type=%s, use_https=%s", 
+                 host, port, connection_type, use_https)
+    try:
+        controller = RacklinkController(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=CONNECTION_TIMEOUT,
+            connection_type=connection_type,
+            use_https=use_https,
+            enable_vendor_features=enable_vendor_features,
+        )
+        _LOGGER.info("RacklinkController created successfully")
+    except Exception as init_err:
+        _LOGGER.error("Failed to create RacklinkController: %s (type: %s)", init_err, type(init_err).__name__)
+        import traceback
+        _LOGGER.error("Controller init traceback: %s", traceback.format_exc())
+        raise CannotConnect(f"Controller initialization failed: {init_err}") from init_err
 
     try:
         # Connect to the device
@@ -323,6 +332,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             # Validate and create entry - try HTTP first for Redfish, then HTTPS
             try:
+                _LOGGER.info("Starting connection validation with config: %s", {k: v if k != CONF_PASSWORD else "***" for k, v in final_input.items()})
                 info = await validate_connection(self.hass, final_input)
 
                 # Handle unique ID based on MAC address
@@ -370,9 +380,11 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
                         return self.async_create_entry(title=title, data=final_input)
 
-                    except Exception:
+                    except Exception as https_err:
                         # Both HTTP and HTTPS failed
-                        pass
+                        _LOGGER.error("HTTPS retry also failed: %s (type: %s)", https_err, type(https_err).__name__)
+                        import traceback
+                        _LOGGER.error("HTTPS retry traceback: %s", traceback.format_exc())
 
                 return self.async_show_form(
                     step_id="connection_type",
@@ -386,6 +398,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     errors={"base": "invalid_auth"},
                 )
             except Exception as err:
+                _LOGGER.error("Unexpected error during validation: %s (type: %s)", err, type(err).__name__)
+                import traceback
+                _LOGGER.error("Full traceback: %s", traceback.format_exc())
                 return self.async_show_form(
                     step_id="connection_type",
                     data_schema=STEP_CONNECTION_TYPE_SCHEMA,

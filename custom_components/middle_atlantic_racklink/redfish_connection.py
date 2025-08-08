@@ -56,6 +56,7 @@ class RedfishConnection:
         self._base_url = self._build_base_url()
         self._pdu_id: Optional[str] = None
         self._outlet_endpoints: Dict[int, str] = {}
+        self._outlet_names: Dict[int, str] = {}
 
     @property
     def connected(self) -> bool:
@@ -279,6 +280,59 @@ class RedfishConnection:
         except Exception as err:
             _LOGGER.error("Error parsing PDU outlets: %s", err)
 
+    async def _fetch_json(self, relative_url: str) -> Optional[Dict[str, Any]]:
+        """Helper to fetch JSON from a Redfish relative URL safely."""
+        try:
+            async with self._session.get(urljoin(self._base_url, relative_url)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                _LOGGER.debug("GET %s returned status %d", relative_url, resp.status)
+        except Exception as err:
+            _LOGGER.debug("GET %s failed: %s", relative_url, err)
+        return None
+
+    async def get_all_outlets_info(self) -> Dict[int, Dict[str, Any]]:
+        """Fetch info for all outlets concurrently (state, name, etc.).
+
+        Returns a dict: {outlet_num: {"state": bool, "name": str}}
+        """
+        if not self._outlet_endpoints:
+            return {}
+
+        async def fetch_one(
+            outlet_num: int, outlet_url: str
+        ) -> Tuple[int, Dict[str, Any]]:
+            data = await self._fetch_json(outlet_url)
+            result: Dict[str, Any] = {}
+            if data:
+                # Middle Atlantic uses string PowerState: "On" or "Off"
+                power_state = data.get("PowerState")
+                if isinstance(power_state, str):
+                    result["state"] = power_state == "On"
+                # Name may be available on outlet resource
+                name = data.get("Name") or data.get("Id")
+                if isinstance(name, str):
+                    result["name"] = name
+            return outlet_num, result
+
+        tasks = [
+            fetch_one(outlet_num, outlet_url)
+            for outlet_num, outlet_url in self._outlet_endpoints.items()
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        info: Dict[int, Dict[str, Any]] = {}
+        for item in results:
+            if isinstance(item, Exception):
+                _LOGGER.debug("Outlet info fetch error: %s", item)
+                continue
+            outlet_num, data = item
+            if data:
+                info[outlet_num] = data
+                if "name" in data:
+                    self._outlet_names[outlet_num] = data["name"]
+        return info
+
     async def _discover_via_power_equipment(self) -> None:
         """Fallback discovery via generic PowerEquipment endpoint."""
         try:
@@ -462,13 +516,17 @@ class RedfishConnection:
 
     async def get_all_outlet_states(self) -> Dict[int, bool]:
         """Get states of all outlets."""
-        outlet_states = {}
+        # Prefer concurrent fetch via outlet info when available
+        info = await self.get_all_outlets_info()
+        if info:
+            return {num: data.get("state", False) for num, data in info.items()}
 
+        # Fallback to sequential state queries
+        outlet_states: Dict[int, bool] = {}
         for outlet_num in self._outlet_endpoints:
             state = await self.get_outlet_state(outlet_num)
             if state is not None:
                 outlet_states[outlet_num] = state
-
         return outlet_states
 
     async def get_power_metrics(self) -> Dict[str, float]:

@@ -294,6 +294,34 @@ class RacklinkController:
             _LOGGER.debug("Updating system status")
             await self._update_system_status()
 
+            # If Redfish connection, also try to fetch Redfish metrics for richer data
+            if isinstance(self.connection, RedfishConnection):
+                try:
+                    metrics = await self.connection.get_power_metrics()
+                    if metrics:
+                        # Populate controller metrics if present
+                        if "power" in metrics:
+                            self.active_power = (
+                                float(metrics["power"]) or self.active_power
+                            )
+                        if "energy" in metrics:
+                            # Metrics may be in kWh; convert to Wh if clearly a small number
+                            energy_val = float(metrics["energy"]) or 0.0
+                            # Heuristic: if energy < 100000 assume kWh -> convert to Wh
+                            self.active_energy = (
+                                energy_val * 1000 if energy_val < 100000 else energy_val
+                            )
+                        if "power_factor" in metrics:
+                            self.power_factor = (
+                                float(metrics["power_factor"]) or self.power_factor
+                            )
+                        if "apparent_power" in metrics:
+                            self.apparent_power = (
+                                float(metrics["apparent_power"]) or self.apparent_power
+                            )
+                except Exception as metrics_err:
+                    _LOGGER.debug("Redfish metrics fetch failed: %s", metrics_err)
+
             self.available = True
             _LOGGER.debug("Update completed successfully")
             return True
@@ -476,6 +504,15 @@ class RacklinkController:
                         # Set default name if not already set
                         if outlet_num not in self.outlet_names:
                             self.outlet_names[outlet_num] = f"Outlet {outlet_num}"
+                    # Attempt to grab names if available from Redfish (populated in connection)
+                    try:
+                        if (
+                            hasattr(self.connection, "_outlet_names")
+                            and self.connection._outlet_names
+                        ):
+                            self.outlet_names.update(self.connection._outlet_names)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                 else:
                     _LOGGER.warning("No outlet states found via Redfish")
 
