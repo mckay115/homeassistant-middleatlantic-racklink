@@ -1301,9 +1301,27 @@ class RacklinkController:
         Returns:
             bool: True if surge protection is active/OK, False if failed
         """
-        # Most RackLink devices have surge protection that's typically active
-        # This would need specific parsing if the device provides surge status
-        return True  # Default to True for now
+        try:
+            # Prefer Redfish if available
+            if isinstance(self.connection, RedfishConnection):
+                info = await self.connection.get_pdu_info()
+                # Look for common fields that might indicate protection state
+                # Many implementations expose a Status/Health or Surge/Protected flag
+                status = info.get("Status") if isinstance(info, dict) else None
+                if isinstance(status, dict):
+                    health = status.get("Health")
+                    if isinstance(health, str):
+                        return health.lower() in ("ok", "healthy", "normal")
+                protected = info.get("SurgeProtected") or info.get("Protected")
+                if isinstance(protected, bool):
+                    return protected
+
+            # Fallback: assume OK (devices typically ship protected). If the
+            # Telnet CLI exposes a status in the future, we can parse it here.
+            return True
+        except Exception as err:
+            _LOGGER.debug("Surge protection status fetch failed: %s", err)
+            return True
 
     def _initialize_load_shedding_defaults(self) -> None:
         """Initialize load shedding defaults for reliable binary sensor startup."""

@@ -13,7 +13,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 # Local application/library specific imports
@@ -45,7 +45,7 @@ async def async_setup_entry(
     if capabilities.get("has_surge_protection", False):
         binary_sensors.append(RacklinkSurgeProtection(controller))
 
-    # Add non-critical binary sensor for each outlet
+    # Add load shedding participation binary sensor for each outlet
     for i in range(1, outlet_count + 1):
         binary_sensors.append(RacklinkOutletNonCritical(controller, i))
 
@@ -112,10 +112,11 @@ class RacklinkSurgeProtection(RacklinkBinarySensor):
         """Initialize the surge protection sensor."""
         super().__init__(
             controller,
-            "Racklink Surge Protection",
-            BinarySensorDeviceClass.SAFETY,
+            "Surge Protection OK",
+            None,  # Do not use SAFETY to avoid 'unsafe' semantics on True
             "surge_protection",
         )
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -131,7 +132,11 @@ class RacklinkSurgeProtection(RacklinkBinarySensor):
 
 
 class RacklinkOutletNonCritical(RacklinkBinarySensor):
-    """Outlet non-critical flag binary sensor."""
+    """Binary sensor indicating if an outlet WILL BE SHED during load shedding.
+
+    True  => Outlet will turn OFF during load shedding (participates in shedding)
+    False => Outlet remains ON during load shedding (critical/exempt)
+    """
 
     def __init__(self, controller: RacklinkController, outlet: int) -> None:
         """Initialize the outlet non-critical sensor."""
@@ -141,18 +146,20 @@ class RacklinkOutletNonCritical(RacklinkBinarySensor):
         outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
 
         # Always include outlet number in sensor name
-        if outlet_name.startswith(f"Outlet {outlet}"):
-            sensor_name = f"{outlet_name} Non-Critical"
-        else:
-            sensor_name = f"Outlet {outlet} - {outlet_name} Non-Critical"
+        base = (
+            f"{outlet_name} Sheds on Load Shedding"
+            if outlet_name.startswith(f"Outlet {outlet}")
+            else f"Outlet {outlet} - {outlet_name} Sheds on Load Shedding"
+        )
 
         super().__init__(
             controller,
-            sensor_name,
-            BinarySensorDeviceClass.PROBLEM,
+            base,
+            None,  # device class None to avoid Problem/OK semantics confusion
             f"outlet_{outlet}_non_critical",
         )
         self._outlet_name = outlet_name
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     async def async_update(self) -> None:
         """Update the sensor state."""
@@ -169,12 +176,11 @@ class RacklinkOutletNonCritical(RacklinkBinarySensor):
                 self._outlet_name = new_outlet_name
                 # Always include outlet number in sensor name
                 if self._outlet_name.startswith(f"Outlet {self._outlet}"):
-                    self._attr_name = f"{self._outlet_name} Non-Critical"
+                    self._attr_name = f"{self._outlet_name} Sheds on Load Shedding"
                 else:
-                    self._attr_name = (
-                        f"Outlet {self._outlet} - {self._outlet_name} Non-Critical"
-                    )
+                    self._attr_name = f"Outlet {self._outlet} - {self._outlet_name} Sheds on Load Shedding"
 
+            # True means this outlet will be shed (turn off) during load shedding
             self._state = self._controller.outlet_non_critical.get(self._outlet, False)
             self._attr_available = (
                 self._controller.connected and self._controller.available
