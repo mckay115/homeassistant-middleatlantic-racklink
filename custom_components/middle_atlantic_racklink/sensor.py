@@ -345,13 +345,17 @@ class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
             f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_power"
         )
 
-        # Get outlet name for entity naming
-        outlet_name = (
+        # Get outlet name for entity naming and always include outlet number
+        label = (
             coordinator.data.get("outlets", {})
             .get(outlet_id, {})
             .get("name", f"Outlet {outlet_id}")
         )
-        self._attr_name = f"{outlet_name} Power"
+        if label != f"Outlet {outlet_id}":
+            self._attr_name = f"Outlet {outlet_id}: {label} Power"
+        else:
+            self._attr_name = f"Outlet {outlet_id} Power"
+        self._attr_has_entity_name = True
 
         self._attr_device_class = SensorDeviceClass.POWER
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -559,13 +563,16 @@ class RacklinkOutletEnergySensor(CoordinatorEntity, SensorEntity):
             f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_energy"
         )
 
-        # Get outlet name for entity naming
-        outlet_name = (
+        label = (
             coordinator.data.get("outlets", {})
             .get(outlet_id, {})
             .get("name", f"Outlet {outlet_id}")
         )
-        self._attr_name = f"{outlet_name} Energy"
+        if label != f"Outlet {outlet_id}":
+            self._attr_name = f"Outlet {outlet_id}: {label} Energy"
+        else:
+            self._attr_name = f"Outlet {outlet_id} Energy"
+        self._attr_has_entity_name = True
 
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -604,13 +611,16 @@ class RacklinkOutletCurrentSensor(CoordinatorEntity, SensorEntity):
             f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_current"
         )
 
-        # Get outlet name for entity naming
-        outlet_name = (
+        label = (
             coordinator.data.get("outlets", {})
             .get(outlet_id, {})
             .get("name", f"Outlet {outlet_id}")
         )
-        self._attr_name = f"{outlet_name} Current"
+        if label != f"Outlet {outlet_id}":
+            self._attr_name = f"Outlet {outlet_id}: {label} Current"
+        else:
+            self._attr_name = f"Outlet {outlet_id} Current"
+        self._attr_has_entity_name = True
 
         self._attr_device_class = SensorDeviceClass.CURRENT
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -646,13 +656,16 @@ class RacklinkOutletVoltageSensor(CoordinatorEntity, SensorEntity):
             f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_voltage"
         )
 
-        # Get outlet name for entity naming
-        outlet_name = (
+        label = (
             coordinator.data.get("outlets", {})
             .get(outlet_id, {})
             .get("name", f"Outlet {outlet_id}")
         )
-        self._attr_name = f"{outlet_name} Voltage"
+        if label != f"Outlet {outlet_id}":
+            self._attr_name = f"Outlet {outlet_id}: {label} Voltage"
+        else:
+            self._attr_name = f"Outlet {outlet_id} Voltage"
+        self._attr_has_entity_name = True
 
         self._attr_device_class = SensorDeviceClass.VOLTAGE
         self._attr_state_class = SensorStateClass.MEASUREMENT
