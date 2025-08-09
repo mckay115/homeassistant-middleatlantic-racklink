@@ -30,8 +30,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # Install the matrix-pinned Home Assistant FIRST to avoid heavy
+          # downgrade thrashing when the requirements file specifies
+          # a broad version range (e.g., ">=2023.1.0").
+          pip install "homeassistant==${{ matrix.home-assistant-version }}"
+          # Then install test/dev tooling. This will not upgrade HA because
+          # pip's resolver keeps already-satisfied pinned dependencies.
           pip install -r requirements-test.txt
-          pip install homeassistant==${{ matrix.home-assistant-version }}
 
       - name: Lint with flake8
         run: |
