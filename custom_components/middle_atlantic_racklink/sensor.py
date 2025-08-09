@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+# Local application/library specific imports
+from . import DOMAIN
+from .coordinator import RacklinkCoordinator
+
 # Standard library imports
 from dataclasses import dataclass
-import logging
-from typing import Optional
 
 # Home Assistant core imports
 from homeassistant.components.sensor import (
@@ -25,10 +27,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Optional
 
-# Local application/library specific imports
-from . import DOMAIN
-from .coordinator import RacklinkCoordinator
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 

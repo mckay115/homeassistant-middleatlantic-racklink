@@ -1,27 +1,27 @@
 """Controller for Middle Atlantic RackLink PDUs."""
 
 # Standard library imports
+# Local application/library specific imports
+from ..connection_factory import AutoConnectionManager, ConnectionFactory
+from ..const import (
+    CONF_CONNECTION_TYPE,
+    CONNECTION_TYPE_AUTO,
+    CONNECTION_TYPE_REDFISH,
+    CONNECTION_TYPE_TELNET,
+)
+from ..redfish_connection import RedfishConnection
+from ..socket_connection import (
+    OUTLET_CYCLE,
+    OUTLET_OFF,
+    OUTLET_ON,
+    SocketConfig,
+    SocketConnection,
+)
+from typing import Any, Dict, Optional
+
 import asyncio
 import logging
 import re
-from typing import Any, Dict, Optional
-
-# Local application/library specific imports
-from ..socket_connection import (
-    SocketConnection,
-    SocketConfig,
-    OUTLET_ON,
-    OUTLET_OFF,
-    OUTLET_CYCLE,
-)
-from ..redfish_connection import RedfishConnection
-from ..connection_factory import ConnectionFactory, AutoConnectionManager
-from ..const import (
-    CONNECTION_TYPE_REDFISH,
-    CONNECTION_TYPE_TELNET,
-    CONNECTION_TYPE_AUTO,
-    CONF_CONNECTION_TYPE,
-)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ class RacklinkController:
             }
 
             # Import here to avoid circular imports
-            from ..socket_connection import SocketConnection, SocketConfig
+            from ..socket_connection import SocketConfig, SocketConnection
 
             # Create telnet connection
             socket_config = SocketConfig(

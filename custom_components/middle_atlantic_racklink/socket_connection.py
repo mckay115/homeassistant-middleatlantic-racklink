@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, List
-import struct
+from typing import Dict, List, Optional, Tuple
 
 import asyncio
 import logging
+import struct
 import time
 
 _LOGGER = logging.getLogger(__name__)

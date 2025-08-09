@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import ssl
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 import aiohttp
+import asyncio
+import json
+import logging
+import ssl
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -1,22 +1,12 @@
 """Base controller for managing communication with Middle Atlantic RackLink devices."""
 
 # Standard library imports
-import asyncio
-import logging
-import socket
-import dataclasses  # Import dataclasses
-from asyncio.exceptions import CancelledError
-from typing import Any, Dict, Optional, Set
-
 # Local application/library specific imports
-from ..const import (
+from ..const import DEFAULT_SCAN_INTERVAL  # Added import
+from ..const import MAX_FAILED_COMMANDS  # Re-add import
+from ..const import (  # DEVICE_TYPES, # Removed unused import; MAX_CONNECTION_ATTEMPTS, # Removed unused import; SUPPORTED_COMMANDS_BY_MODEL, # This line should be removed; from ..config_flow import CannotConnect, InvalidAuth # Removed unused import
     DEFAULT_RECONNECT_INTERVAL,
-    DEFAULT_SCAN_INTERVAL,  # Added import
     DEFAULT_TIMEOUT,
-    MAX_FAILED_COMMANDS,  # Re-add import
-    # DEVICE_TYPES, # Removed unused import
-    # MAX_CONNECTION_ATTEMPTS, # Removed unused import
-    # SUPPORTED_COMMANDS_BY_MODEL, # This line should be removed
     SENSOR_PDU_CURRENT,
     SENSOR_PDU_ENERGY,
     SENSOR_PDU_FREQUENCY,
@@ -24,23 +14,17 @@ from ..const import (
     SENSOR_PDU_POWER_FACTOR,
     SENSOR_PDU_TEMPERATURE,
     SENSOR_PDU_VOLTAGE,
-    # from ..config_flow import CannotConnect, InvalidAuth # Removed unused import
 )
 
 # from ..config_flow import CannotConnect, InvalidAuth # Removed unused import
-from ..parser import (
-    # extract_device_name_from_prompt, # Removed unused import
-    # is_command_prompt, # Removed unused import
-    # normalize_model_name, # Removed unused import
+from ..parser import parse_available_commands  # Re-add import
+from ..parser import parse_network_info  # Re-add import
+from ..parser import parse_outlet_names  # Kept needed import
+from ..parser import parse_pdu_power_data  # Re-add import
+from ..parser import parse_pdu_temperature  # Re-add import
+from ..parser import (  # extract_device_name_from_prompt, # Removed unused import; is_command_prompt, # Removed unused import; normalize_model_name, # Removed unused import; parse_outlet_details, # Removed unused import; parse_outlet_state, # Removed unused import
     parse_all_outlet_states,
-    parse_available_commands,  # Re-add import
     parse_device_info,
-    parse_network_info,  # Re-add import
-    # parse_outlet_details, # Removed unused import
-    parse_outlet_names,  # Kept needed import
-    # parse_outlet_state, # Removed unused import
-    parse_pdu_power_data,  # Re-add import
-    parse_pdu_temperature,  # Re-add import
 )
 from ..socket_connection import SocketConfig, SocketConnection
 
@@ -49,6 +33,13 @@ from .commands import CommandsMixin
 from .config import ConfigMixin
 from .network import NetworkMixin
 from .state import StateMixin
+from asyncio.exceptions import CancelledError
+from typing import Any, Dict, Optional, Set
+
+import asyncio
+import dataclasses  # Import dataclasses
+import logging
+import socket
 
 _LOGGER = logging.getLogger(__name__)
 

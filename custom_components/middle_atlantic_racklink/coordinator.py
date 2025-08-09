@@ -1,18 +1,18 @@
 """Data update coordinator for the Middle Atlantic RackLink integration."""
 
 # Standard library imports
-import asyncio
+# Local application/library specific imports
+from .const import DOMAIN
+from .controller.racklink_controller import RacklinkController
 from datetime import timedelta
-import logging
-from typing import Any, Dict
 
 # Home Assistant core imports
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from typing import Any, Dict
 
-# Local application/library specific imports
-from .const import DOMAIN
-from .controller.racklink_controller import RacklinkController
+import asyncio
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 

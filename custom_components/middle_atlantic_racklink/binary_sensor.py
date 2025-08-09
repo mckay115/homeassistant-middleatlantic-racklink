@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-# Standard library imports
-import logging
-from typing import Any, Dict
+# Local application/library specific imports
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
 
 # Home Assistant core imports
 from homeassistant.components.binary_sensor import (
@@ -15,11 +16,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from typing import Any, Dict
 
-# Local application/library specific imports
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
+# Standard library imports
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 

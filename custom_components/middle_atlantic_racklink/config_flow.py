@@ -1,12 +1,25 @@
 """Config flow for Middle Atlantic RackLink."""
 
 # Standard library imports
-import asyncio
-import logging
-from typing import Any, Dict, List, Optional
-
-# Third-party imports
-import voluptuous as vol
+# Local application/library specific imports
+from .const import (
+    CONF_CONNECTION_TYPE,
+    CONF_ENABLE_VENDOR_FEATURES,
+    CONF_USE_HTTPS,
+    CONNECTION_TYPE_AUTO,
+    CONNECTION_TYPE_DESCRIPTIONS,
+    CONNECTION_TYPE_REDFISH,
+    CONNECTION_TYPE_TELNET,
+    DEFAULT_PASSWORD,
+    DEFAULT_PORT,
+    DEFAULT_REDFISH_HTTP_PORT,
+    DEFAULT_REDFISH_PORT,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USERNAME,
+    DOMAIN,
+)
+from .controller.racklink_controller import RacklinkController
+from .discovery import discover_racklink_devices, DiscoveredDevice
 
 # Home Assistant core imports
 from homeassistant import config_entries
@@ -17,30 +30,17 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     CONF_USERNAME,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback, HomeAssistant
 from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from typing import Any, Dict, List, Optional
 
-# Local application/library specific imports
-from .const import (
-    DOMAIN,
-    DEFAULT_PORT,
-    DEFAULT_REDFISH_PORT,
-    DEFAULT_REDFISH_HTTP_PORT,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_USERNAME,
-    DEFAULT_PASSWORD,
-    CONF_CONNECTION_TYPE,
-    CONF_USE_HTTPS,
-    CONF_ENABLE_VENDOR_FEATURES,
-    CONNECTION_TYPE_REDFISH,
-    CONNECTION_TYPE_TELNET,
-    CONNECTION_TYPE_AUTO,
-    CONNECTION_TYPE_DESCRIPTIONS,
-)
-from .controller.racklink_controller import RacklinkController
-from .discovery import discover_racklink_devices, DiscoveredDevice
+import asyncio
+import logging
+
+# Third-party imports
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -562,7 +562,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def _test_connection_with_discovery(self, user_input: Dict[str, Any]) -> bool:
         """Test connection and try to discover correct port if needed."""
-        from .socket_connection import SocketConnection, SocketConfig
+        from .socket_connection import SocketConfig, SocketConnection
 
         host = user_input[CONF_HOST]
         port = user_input[CONF_PORT]

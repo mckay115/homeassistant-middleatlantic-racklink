@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from homeassistant.components import zeroconf
+from typing import Dict, List, Optional, Set
+from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+from zeroconf.asyncio import AsyncServiceInfo
+
 import asyncio
 import logging
-from typing import Dict, List, Optional, Set
-from dataclasses import dataclass
-
-from zeroconf import ServiceListener, ServiceBrowser, Zeroconf
-from zeroconf.asyncio import AsyncServiceInfo
-from homeassistant.components import zeroconf
 
 _LOGGER = logging.getLogger(__name__)
 

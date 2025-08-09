@@ -1,12 +1,17 @@
 """Middle Atlantic RackLink integration for Home Assistant."""
 
 # Standard library imports
-from datetime import timedelta
-import logging
-from typing import Any, Dict
+from .const import (
+    CONNECTION_TYPE_REDFISH,
+    DEFAULT_SCAN_INTERVAL_REDFISH,
+    DEFAULT_SCAN_INTERVAL_TELNET,
+    DOMAIN,
+)
 
-# Third-party imports
-import voluptuous as vol
+# Local application/library specific imports
+from .controller.racklink_controller import RacklinkController
+from .coordinator import RacklinkCoordinator
+from datetime import timedelta
 
 # Home Assistant core imports
 from homeassistant.config_entries import ConfigEntry
@@ -23,16 +28,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
+from typing import Any, Dict
 
-# Local application/library specific imports
-from .controller.racklink_controller import RacklinkController
-from .coordinator import RacklinkCoordinator
-from .const import (
-    DOMAIN,
-    DEFAULT_SCAN_INTERVAL_REDFISH,
-    DEFAULT_SCAN_INTERVAL_TELNET,
-    CONNECTION_TYPE_REDFISH,
-)
+import logging
+
+# Third-party imports
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 

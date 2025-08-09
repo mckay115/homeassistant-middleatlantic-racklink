@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Union
-
 from .const import (
-    CONNECTION_TYPE_REDFISH,
-    CONNECTION_TYPE_TELNET,
-    CONNECTION_TYPE_AUTO,
     CONF_CONNECTION_TYPE,
     CONF_USE_HTTPS,
-    DEFAULT_REDFISH_PORT,
+    CONNECTION_TYPE_AUTO,
+    CONNECTION_TYPE_REDFISH,
+    CONNECTION_TYPE_TELNET,
     DEFAULT_REDFISH_HTTP_PORT,
+    DEFAULT_REDFISH_PORT,
 )
-from .redfish_connection import RedfishConnection, RedfishConfig
-from .socket_connection import SocketConnection, SocketConfig
+from .redfish_connection import RedfishConfig, RedfishConnection
+from .socket_connection import SocketConfig, SocketConnection
+from typing import Union
+
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
