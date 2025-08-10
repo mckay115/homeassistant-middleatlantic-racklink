@@ -47,7 +47,7 @@ Model number guide:
 1. Open HACS in your Home Assistant instance
 2. Go to "Integrations"
 3. Click the three dots in the top right corner and select "Custom repositories"
-4. Add this repository URL: `https://github.com/yodazach/homeassistant-middleatlantic-racklink`
+4. Add this repository URL: `https://github.com/mckay115/homeassistant-middleatlantic-racklink`
 5. Select "Integration" as the category
 6. Click "ADD"
 7. Search for "Middle Atlantic RackLink" and install it
