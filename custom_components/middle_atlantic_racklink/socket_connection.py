@@ -401,6 +401,28 @@ class SocketConnection:
             await self._cleanup_connection()
             _LOGGER.debug("Disconnected from %s:%d", self.config.host, self.config.port)
 
+    async def reconnect(self) -> bool:
+        """Attempt to reconnect to the device."""
+        _LOGGER.info(
+            "Attempting to reconnect to %s:%d", self.config.host, self.config.port
+        )
+
+        # Disconnect first if already connected
+        if self._connected:
+            await self.disconnect()
+
+        # Try to reconnect
+        return await self.connect()
+
+    async def ensure_connected(self) -> bool:
+        """Ensure we are connected, reconnecting if necessary."""
+        if not self._connected or not self._authenticated:
+            _LOGGER.info(
+                "Connection lost or not authenticated, attempting to reconnect"
+            )
+            return await self.reconnect()
+        return True
+
     async def _read_message(self, timeout: float = 10.0) -> Optional[bytes]:
         """Read a complete RackLink message from the device.
 
@@ -1270,13 +1292,25 @@ class SocketConnection:
         """
         _LOGGER.debug("Legacy command called: %s", command)
 
-        # Route to appropriate protocol based on connection type
-        # For now, try Telnet if we detect we're using a Telnet connection
-        if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
-            result = await self.send_telnet_command(command)
-            return result
-        else:
-            _LOGGER.warning(
-                "Legacy command '%s' - no appropriate protocol handler", command
-            )
+        # Ensure we're connected before sending command
+        if not await self.ensure_connected():
+            _LOGGER.error("Cannot send command '%s' - connection failed", command)
+            return ""
+
+        try:
+            # Route to appropriate protocol based on connection type
+            # For now, try Telnet if we detect we're using a Telnet connection
+            if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
+                result = await self.send_telnet_command(command)
+                return result
+            else:
+                _LOGGER.warning(
+                    "Legacy command '%s' - no appropriate protocol handler", command
+                )
+                return ""
+        except (ConnectionError, OSError, asyncio.TimeoutError) as err:
+            _LOGGER.warning("Connection error during command '%s': %s", command, err)
+            # Mark as disconnected so next call will attempt reconnection
+            self._connected = False
+            self._authenticated = False
             return ""

@@ -321,9 +321,35 @@ class RacklinkController:
                     _LOGGER.error("Connection failed during update")
                     return False
 
+            # Check if Redfish authentication has expired and reconnect if needed
+            if (
+                isinstance(self.connection, RedfishConnection)
+                and not self.connection.authenticated
+            ):
+                _LOGGER.warning(
+                    "Redfish authentication expired, attempting to reconnect"
+                )
+                if not await self.connect():
+                    _LOGGER.error("Reconnection failed during update")
+                    return False
+
             # Get PDU details
             _LOGGER.debug("Updating PDU details")
             await self._update_pdu_details()
+
+            # Check again if we lost authentication during PDU details fetch
+            if (
+                isinstance(self.connection, RedfishConnection)
+                and not self.connection.authenticated
+            ):
+                _LOGGER.warning(
+                    "Lost authentication during PDU details fetch, reconnecting"
+                )
+                if not await self.connect():
+                    _LOGGER.error("Reconnection failed after authentication loss")
+                    return False
+                # Retry PDU details after reconnection
+                await self._update_pdu_details()
 
             # Get outlet states
             _LOGGER.debug("Updating outlet states")
@@ -653,6 +679,10 @@ class RacklinkController:
         """Update system status using actual device power measurements."""
         try:
             _LOGGER.debug("Getting system power data from device")
+
+            # Initialize telnet_conn at the beginning to avoid scoping issues
+            telnet_conn = self.socket or self._telnet_connection
+
             # Prefer Redfish mains metrics when Redfish is the active connection
             if isinstance(self.connection, RedfishConnection):
                 mains = await self.connection.get_mains_metrics()
@@ -685,7 +715,6 @@ class RacklinkController:
                 need_telnet_metrics = (
                     now - self._last_telnet_metrics_fetch
                 ) >= self._telnet_metrics_interval_s
-                telnet_conn = self.socket or self._telnet_connection
                 if need_telnet_metrics and telnet_conn:
                     await asyncio.sleep(1.0)
                     inlet_response = await telnet_conn.send_command("show inlets all")
@@ -1067,10 +1096,7 @@ class RacklinkController:
 
             # Use telnet connection (primary or hybrid) for load shedding
             telnet_conn = self.socket or self._telnet_connection
-            if telnet_conn:
-                response = await telnet_conn.send_command("loadshedding start /y")
-                _LOGGER.debug("Load shedding start response: %r", response)
-            else:
+            if not telnet_conn:
                 if not self.enable_vendor_features:
                     _LOGGER.error(
                         "❌ Load shedding disabled - vendor features not enabled"
@@ -1078,6 +1104,9 @@ class RacklinkController:
                 else:
                     _LOGGER.error("❌ No telnet connection available for load shedding")
                 return False
+
+            response = await telnet_conn.send_command("loadshedding start /y")
+            _LOGGER.debug("Load shedding start response: %r", response)
 
             # Check for success (empty response is typical for successful commands)
             success = (
@@ -1107,10 +1136,7 @@ class RacklinkController:
 
             # Use telnet connection (primary or hybrid) for load shedding
             telnet_conn = self.socket or self._telnet_connection
-            if telnet_conn:
-                response = await telnet_conn.send_command("loadshedding stop /y")
-                _LOGGER.debug("Load shedding stop response: %r", response)
-            else:
+            if not telnet_conn:
                 if not self.enable_vendor_features:
                     _LOGGER.error(
                         "❌ Load shedding disabled - vendor features not enabled"
@@ -1118,6 +1144,9 @@ class RacklinkController:
                 else:
                     _LOGGER.error("❌ No telnet connection available for load shedding")
                 return False
+
+            response = await telnet_conn.send_command("loadshedding stop /y")
+            _LOGGER.debug("Load shedding stop response: %r", response)
 
             # Check for success (empty response is typical for successful commands)
             success = (

@@ -190,12 +190,28 @@ class RedfishConnection:
                             "Authentication succeeded but no token received"
                         )
                         return True
+                elif response.status == 401:
+                    _LOGGER.error("Authentication failed (401): Invalid credentials")
+                    return False
                 else:
                     _LOGGER.error("Authentication failed, status: %d", response.status)
                     return False
         except Exception as err:
             _LOGGER.error("Error during Redfish authentication: %s", err)
             return False
+
+    async def _ensure_authenticated(self) -> bool:
+        """Ensure we are authenticated, re-authenticating if necessary."""
+        if not self._authenticated and self.config.username and self.config.password:
+            _LOGGER.info("Session expired or not authenticated, re-authenticating...")
+            if await self._authenticate():
+                self._authenticated = True
+                _LOGGER.info("Successfully re-authenticated")
+                return True
+            else:
+                _LOGGER.error("Failed to re-authenticate")
+                return False
+        return self._authenticated
 
     async def _discover_pdu_structure(self) -> None:
         """Discover PDU structure and outlet endpoints for Middle Atlantic devices."""
@@ -296,7 +312,32 @@ class RedfishConnection:
             async with self._session.get(urljoin(self._base_url, relative_url)) as resp:
                 if resp.status == 200:
                     return await resp.json()
-                _LOGGER.debug("GET %s returned status %d", relative_url, resp.status)
+                elif resp.status == 401:
+                    _LOGGER.warning(
+                        "Authentication failed (401) for %s - session may have expired",
+                        relative_url,
+                    )
+                    # Mark as unauthenticated to trigger re-authentication
+                    self._authenticated = False
+                    # Try to re-authenticate and retry the request once
+                    if await self._ensure_authenticated():
+                        _LOGGER.debug("Retrying request after re-authentication")
+                        async with self._session.get(
+                            urljoin(self._base_url, relative_url)
+                        ) as retry_resp:
+                            if retry_resp.status == 200:
+                                return await retry_resp.json()
+                            else:
+                                _LOGGER.error(
+                                    "Retry failed after re-authentication, status: %d",
+                                    retry_resp.status,
+                                )
+                    else:
+                        _LOGGER.error("Re-authentication failed, cannot retry request")
+                else:
+                    _LOGGER.debug(
+                        "GET %s returned status %d", relative_url, resp.status
+                    )
         except Exception as err:
             _LOGGER.debug("GET %s failed: %s", relative_url, err)
         return None
@@ -519,6 +560,13 @@ class RedfishConnection:
             async with self._session.get(urljoin(self._base_url, pdu_url)) as response:
                 if response.status == 200:
                     return await response.json()
+                elif response.status == 401:
+                    _LOGGER.warning(
+                        "Authentication failed (401) for PDU info - session may have expired"
+                    )
+                    # Mark as unauthenticated to trigger re-authentication
+                    self._authenticated = False
+                    return {}
                 else:
                     _LOGGER.error("Failed to get PDU info, status: %d", response.status)
                     return {}
