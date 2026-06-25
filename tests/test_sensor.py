@@ -3,6 +3,10 @@
 from custom_components.middle_atlantic_racklink.sensor import (
     RacklinkCurrentSensor,
     RacklinkFrequencySensor,
+    RacklinkOutletCurrentSensor,
+    RacklinkOutletEnergySensor,
+    RacklinkOutletPowerSensor,
+    RacklinkOutletVoltageSensor,
     RacklinkPowerSensor,
     RacklinkVoltageSensor,
 )
@@ -102,3 +106,38 @@ async def test_sensor_error_handling(controller):
 
     # Check state
     assert sensor.native_value is None
+
+
+def _outlet_coordinator(serial: str) -> MagicMock:
+    """Build a mock coordinator for an outlet metric sensor."""
+    coordinator = MagicMock()
+    coordinator.controller.pdu_serial = serial
+    # Real dict so the chained .get(...) calls in __init__ behave correctly.
+    coordinator.data = {}
+    return coordinator
+
+
+@pytest.mark.parametrize(
+    ("sensor_cls", "suffix"),
+    [
+        (RacklinkOutletPowerSensor, "power"),
+        (RacklinkOutletEnergySensor, "energy"),
+        (RacklinkOutletCurrentSensor, "current"),
+        (RacklinkOutletVoltageSensor, "voltage"),
+    ],
+)
+def test_outlet_metric_unique_id_distinct_per_pdu(sensor_cls, suffix):
+    """Outlet metric unique IDs must be namespaced by the PDU serial.
+
+    Regression test: previously these IDs used a never-populated
+    ``device_id`` key and fell back to the literal ``"unknown"``, so two
+    PDUs produced identical IDs (e.g. ``unknown_7_voltage``) and the second
+    PDU's outlet metric entities were dropped as duplicates.
+    """
+    pdu_a = sensor_cls(_outlet_coordinator("SERIAL-A"), 7)
+    pdu_b = sensor_cls(_outlet_coordinator("SERIAL-B"), 7)
+
+    assert pdu_a.unique_id == f"SERIAL-A_7_{suffix}"
+    assert pdu_b.unique_id == f"SERIAL-B_7_{suffix}"
+    assert pdu_a.unique_id != pdu_b.unique_id
+    assert "unknown" not in pdu_a.unique_id

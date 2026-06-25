@@ -343,7 +343,7 @@ class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._outlet_id = outlet_id
         self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_power"
+            f"{coordinator.controller.pdu_serial}_{outlet_id}_power"
         )
 
         # Get outlet name for entity naming and always include outlet number
@@ -561,7 +561,7 @@ class RacklinkOutletEnergySensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._outlet_id = outlet_id
         self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_energy"
+            f"{coordinator.controller.pdu_serial}_{outlet_id}_energy"
         )
 
         label = (
@@ -609,7 +609,7 @@ class RacklinkOutletCurrentSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._outlet_id = outlet_id
         self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_current"
+            f"{coordinator.controller.pdu_serial}_{outlet_id}_current"
         )
 
         label = (
@@ -654,7 +654,7 @@ class RacklinkOutletVoltageSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._outlet_id = outlet_id
         self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_voltage"
+            f"{coordinator.controller.pdu_serial}_{outlet_id}_voltage"
         )
 
         label = (
