@@ -23,7 +23,7 @@ from homeassistant.const import (
     CONF_USERNAME,
     Platform,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -123,6 +123,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
+    # Migrate legacy outlet-metric unique IDs now that the serial is known
+    await _async_migrate_outlet_metric_unique_ids(
+        hass, entry, controller.pdu_serial
+    )
+
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -141,6 +146,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     return True
+
+
+# Suffixes of the outlet-metric sensors that historically used a
+# never-populated "device_id" and collapsed to the literal "unknown_" prefix.
+_LEGACY_OUTLET_METRIC_PREFIX = "unknown_"
+_OUTLET_METRIC_SUFFIXES = ("_power", "_energy", "_current", "_voltage")
+
+
+async def _async_migrate_outlet_metric_unique_ids(
+    hass: HomeAssistant, entry: ConfigEntry, serial: str | None
+) -> None:
+    """Rename legacy ``unknown_<outlet>_<metric>`` unique IDs to use the serial.
+
+    Earlier versions built the outlet power/energy/current/voltage unique IDs
+    from a ``device_id`` key that was never set, so they all collapsed to
+    ``unknown_<outlet>_<metric>``. With more than one PDU these collided and the
+    second PDU's entities were dropped. The IDs are now namespaced by
+    ``pdu_serial``; rename any pre-existing entities on this entry so their
+    history carries over instead of orphaning them.
+    """
+    if not serial or serial == "unknown":
+        # Without a usable serial the new ID would be no better than the old one.
+        return
+
+    registry = er.async_get(hass)
+
+    @callback
+    def _migrate(entity: er.RegistryEntry) -> dict[str, str] | None:
+        old_unique_id = entity.unique_id
+        if not old_unique_id.startswith(_LEGACY_OUTLET_METRIC_PREFIX):
+            return None
+        if not old_unique_id.endswith(_OUTLET_METRIC_SUFFIXES):
+            return None
+
+        # "unknown_7_voltage" -> "<serial>_7_voltage"
+        suffix = old_unique_id[len(_LEGACY_OUTLET_METRIC_PREFIX) :]
+        new_unique_id = f"{serial}_{suffix}"
+        if new_unique_id == old_unique_id:
+            return None
+
+        # Don't clobber an entity that already owns the target unique ID.
+        if registry.async_get_entity_id(
+            entity.domain, entity.platform, new_unique_id
+        ):
+            _LOGGER.warning(
+                "Cannot migrate unique_id %s to %s; target already exists",
+                old_unique_id,
+                new_unique_id,
+            )
+            return None
+
+        _LOGGER.info(
+            "Migrating outlet metric unique_id %s -> %s",
+            old_unique_id,
+            new_unique_id,
+        )
+        return {"new_unique_id": new_unique_id}
+
+    await er.async_migrate_entries(hass, entry.entry_id, _migrate)
 
 
 async def async_update_options(

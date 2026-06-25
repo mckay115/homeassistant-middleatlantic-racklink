@@ -3,9 +3,13 @@
 import pytest
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.middle_atlantic_racklink import DOMAIN
+from custom_components.middle_atlantic_racklink import (
+    DOMAIN,
+    _async_migrate_outlet_metric_unique_ids,
+)
 from custom_components.middle_atlantic_racklink.const import (
     CONNECTION_TYPE_AUTO,
     CONNECTION_TYPE_REDFISH,
@@ -228,3 +232,68 @@ class TestIntegrationSetup:
 
         # Verify suggested area
         assert device_info.get("suggested_area") == "Electrical"
+
+
+class TestOutletMetricUniqueIdMigration:
+    """Tests for the legacy outlet-metric unique ID migration."""
+
+    def _add_entry(self, hass: HomeAssistant) -> MockConfigEntry:
+        entry = MockConfigEntry(domain=DOMAIN, entry_id="migrate_entry")
+        entry.add_to_hass(hass)
+        return entry
+
+    async def test_renames_legacy_unknown_ids(self, hass: HomeAssistant) -> None:
+        """Legacy ``unknown_<outlet>_<metric>`` IDs are renamed to the serial."""
+        entry = self._add_entry(hass)
+        registry = er.async_get(hass)
+        entity = registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            "unknown_7_voltage",
+            config_entry=entry,
+        )
+
+        await _async_migrate_outlet_metric_unique_ids(hass, entry, "SERIAL-A")
+
+        assert (
+            registry.async_get(entity.entity_id).unique_id == "SERIAL-A_7_voltage"
+        )
+
+    async def test_skips_when_target_exists(self, hass: HomeAssistant) -> None:
+        """A collision with an existing serial-based ID leaves the legacy one."""
+        entry = self._add_entry(hass)
+        registry = er.async_get(hass)
+        legacy = registry.async_get_or_create(
+            "sensor", DOMAIN, "unknown_7_voltage", config_entry=entry
+        )
+        registry.async_get_or_create(
+            "sensor", DOMAIN, "SERIAL-A_7_voltage", config_entry=entry
+        )
+
+        await _async_migrate_outlet_metric_unique_ids(hass, entry, "SERIAL-A")
+
+        assert registry.async_get(legacy.entity_id).unique_id == "unknown_7_voltage"
+
+    async def test_no_serial_is_noop(self, hass: HomeAssistant) -> None:
+        """Without a usable serial nothing is renamed."""
+        entry = self._add_entry(hass)
+        registry = er.async_get(hass)
+        entity = registry.async_get_or_create(
+            "sensor", DOMAIN, "unknown_7_voltage", config_entry=entry
+        )
+
+        await _async_migrate_outlet_metric_unique_ids(hass, entry, "unknown")
+
+        assert registry.async_get(entity.entity_id).unique_id == "unknown_7_voltage"
+
+    async def test_unrelated_ids_untouched(self, hass: HomeAssistant) -> None:
+        """IDs that aren't legacy outlet metrics are left alone."""
+        entry = self._add_entry(hass)
+        registry = er.async_get(hass)
+        switch = registry.async_get_or_create(
+            "switch", DOMAIN, "unknown_outlet_7", config_entry=entry
+        )
+
+        await _async_migrate_outlet_metric_unique_ids(hass, entry, "SERIAL-A")
+
+        assert registry.async_get(switch.entity_id).unique_id == "unknown_outlet_7"
