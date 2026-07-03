@@ -40,7 +40,12 @@ rules:
   log-when-unavailable: todo
   parallel-updates: todo
   reauthentication-flow: done
-  test-coverage: todo
+  test-coverage:
+    status: todo
+    comment: >
+      Config flow, setup/unload, entities, services, diagnostics, and the
+      controller command paths are covered; the raw socket/Redfish transport
+      code is not yet.
 
   # Gold
   devices: done
@@ -61,4 +66,6 @@ rules:
   # Platinum
   async-dependency: done
   inject-websession: todo
-  strict-typing: todo
+  strict-typing:
+    status: done
+    comment: mypy passes with disallow_untyped_defs under pyproject.toml.
