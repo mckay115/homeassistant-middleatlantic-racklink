@@ -71,7 +71,7 @@ The polling interval can be tuned under the integration's **Configure** menu (5â
 - **Switches**: one per outlet (device class *outlet*), with outlet metadata (power-on delays, rated current) as attributes; plus **Load shedding** and **Outlet sequence** switches when a telnet channel is available
 - **Sensors** (PDU): voltage, current, power, apparent power, power factor, frequency, energy
 - **Sensors** (per outlet, Redfish): power, energy, current, voltage (voltage is disabled by default since it duplicates the mains voltage)
-- **Binary sensors**: surge protection problem, per-outlet non-critical (sheds on load shedding) flag
+- **Binary sensors**: surge protection problem, and a per-outlet "powers off during load shedding" flag (on = the PDU has marked the outlet non-critical, so it sheds when load shedding is activated)
 - **Buttons**: cycle per outlet, cycle all outlets
 - **Numbers**: outlet sequence delay (seconds between outlets during a power-on sequence)
 

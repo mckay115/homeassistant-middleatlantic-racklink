@@ -89,7 +89,7 @@
     },
     "binary_sensor": {
       "surge_protection": { "name": "Surge protection" },
-      "outlet_non_critical": { "name": "Outlet {outlet_number} sheds on load shedding" }
+      "outlet_non_critical": { "name": "Outlet {outlet_number} powers off during load shedding" }
     },
     "switch": {
       "outlet": { "name": "Outlet {outlet_number}" },
