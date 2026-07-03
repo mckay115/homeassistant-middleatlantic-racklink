@@ -71,13 +71,34 @@ The polling interval can be tuned under the integration's **Configure** menu (5â
 - **Switches**: one per outlet (device class *outlet*), with outlet metadata (power-on delays, rated current) as attributes; plus **Load shedding** and **Outlet sequence** switches when a telnet channel is available
 - **Sensors** (PDU): voltage, current, power, apparent power, power factor, frequency, energy
 - **Sensors** (per outlet, Redfish): power, energy, current, voltage (voltage is disabled by default since it duplicates the mains voltage)
-- **Binary sensors**: surge protection problem, per-outlet non-critical (sheds on load shedding) flag
+- **Binary sensors**: surge protection problem, and a per-outlet "powers off during load shedding" flag (on = the PDU has marked the outlet non-critical, so it sheds when load shedding is activated)
 - **Buttons**: cycle per outlet, cycle all outlets
 - **Numbers**: outlet sequence delay (seconds between outlets during a power-on sequence)
 
 ### Energy dashboard
 
 The PDU **Energy** sensor and the per-outlet **Outlet N energy** sensors are total-increasing kWh sensors, so they can be added to the Home Assistant Energy dashboard under **Individual devices** to track rack-level and per-device consumption. The power sensors (W) feed the power graphs and can drive automations (e.g. shut down a server when its outlet draws less than a threshold).
+
+## Dashboard cards
+
+The integration bundles two custom Lovelace cards and registers them automatically â€” no manual resource configuration or extra HACS frontend install is needed. Both appear in the card picker ("RackLink PDU" and "RackLink sequencer") with a visual editor, or can be added via YAML:
+
+```yaml
+type: custom:racklink-pdu-card
+device_id: YOUR_PDU_DEVICE_ID   # pick the device in the visual editor
+title: Rack PDU                 # optional
+```
+
+The **PDU card** shows live voltage, current, energy, and power factor chips with the total power headline, plus one row per outlet with its state, power draw, a cycle button, and an on/off toggle. Outlets marked non-critical are tagged "sheds".
+
+```yaml
+type: custom:racklink-sequencer-card
+device_id: YOUR_PDU_DEVICE_ID
+```
+
+The **sequencer card** manages power-on sequencing (enable/disable plus a delay stepper), load shedding (with the list of outlets that will power off), and a cycle-all-outlets action. Sequencing and load shedding rows appear only when the telnet vendor channel is available.
+
+Cards discover the PDU's entities through the device registry, so they keep working if you rename entities.
 
 ## Services
 

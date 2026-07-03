@@ -113,6 +113,7 @@ class RacklinkOutletCycleButton(RacklinkButtonBase):
             f"{coordinator.controller.pdu_serial}_outlet_{outlet_number}_cycle"
         )
         self._attr_translation_placeholders = {"outlet_number": str(outlet_number)}
+        self._attr_extra_state_attributes = {"outlet_number": outlet_number}
 
     async def async_press(self) -> None:
         """Press the button."""

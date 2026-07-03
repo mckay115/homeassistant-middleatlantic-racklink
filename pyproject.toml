@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "homeassistant-middleatlantic-racklink"
-version = "1.1.0"
+version = "1.2.0"
 description = "Home Assistant integration for Middle Atlantic RackLink PDUs with Redfish and Telnet support"
 readme = "README.md"
 authors = [{ name = "mckay115", email = "" }]

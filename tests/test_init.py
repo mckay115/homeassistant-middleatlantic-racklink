@@ -15,6 +15,7 @@ from custom_components.middle_atlantic_racklink.exceptions import (
     RacklinkAuthenticationError,
 )
 from datetime import timedelta
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -34,6 +35,11 @@ async def test_setup_and_unload_entry(
     assert coordinator.system_data["voltage"] == 120.0
     assert coordinator.outlet_data[1]["state"] is True
     assert coordinator.status_data["surge_protection_ok"] is True
+
+    # The bundled dashboard cards are loaded on every dashboard
+    assert any(
+        "racklink-cards.js" in url for url in hass.data[DATA_EXTRA_MODULE_URL].urls
+    )
 
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
     await hass.async_block_till_done()

@@ -153,6 +153,7 @@ class RacklinkOutletBinarySensor(RacklinkBinarySensorBase):
             f"{coordinator.controller.pdu_serial}_outlet_{outlet}_{description.key}"
         )
         self._attr_translation_placeholders = {"outlet_number": str(outlet)}
+        self._attr_extra_state_attributes = {"outlet_number": outlet}
 
     @property
     def is_on(self) -> Optional[bool]:

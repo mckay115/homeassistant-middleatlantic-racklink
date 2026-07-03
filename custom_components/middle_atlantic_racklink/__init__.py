@@ -17,6 +17,8 @@ from .const import (
 from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
 from datetime import timedelta
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -28,10 +30,15 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
+from pathlib import Path
 
 import logging
 
 _LOGGER = logging.getLogger(__name__)
+
+CARDS_URL = f"/{DOMAIN}/racklink-cards.js"
+CARDS_PATH = Path(__file__).parent / "frontend" / "racklink-cards.js"
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -46,9 +53,20 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 RacklinkConfigEntry = ConfigEntry[RacklinkCoordinator]
 
 
-async def async_setup(_hass: HomeAssistant, _config: ConfigType) -> bool:
+async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
     """Set up the Middle Atlantic RackLink component."""
+    await _async_register_cards(hass)
     return True
+
+
+async def _async_register_cards(hass: HomeAssistant) -> None:
+    """Serve the bundled Lovelace cards and load them on every dashboard."""
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(CARDS_URL, str(CARDS_PATH), cache_headers=True)]
+    )
+    # Versioned query string busts browser caches on upgrades
+    integration = await async_get_integration(hass, DOMAIN)
+    add_extra_js_url(hass, f"{CARDS_URL}?v={integration.version}")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: RacklinkConfigEntry) -> bool:
