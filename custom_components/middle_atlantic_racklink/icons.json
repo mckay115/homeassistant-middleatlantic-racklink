@@ -1,0 +1,60 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "surge_protection": {
+        "default": "mdi:flash-alert",
+        "state": {
+          "on": "mdi:flash"
+        }
+      },
+      "load_shedding": {
+        "default": "mdi:transmission-tower-off"
+      },
+      "sequence": {
+        "default": "mdi:timer-play-outline"
+      },
+      "outlet_non_critical": {
+        "default": "mdi:power-plug-off-outline"
+      }
+    },
+    "button": {
+      "cycle_outlet": {
+        "default": "mdi:restart"
+      },
+      "cycle_all_outlets": {
+        "default": "mdi:restart-alert"
+      },
+      "start_load_shedding": {
+        "default": "mdi:transmission-tower-off"
+      },
+      "stop_load_shedding": {
+        "default": "mdi:transmission-tower"
+      },
+      "start_sequence": {
+        "default": "mdi:timer-play"
+      },
+      "stop_sequence": {
+        "default": "mdi:timer-stop"
+      }
+    },
+    "switch": {
+      "outlet": {
+        "default": "mdi:power-socket"
+      }
+    }
+  },
+  "services": {
+    "cycle_outlet": {
+      "service": "mdi:restart"
+    },
+    "cycle_all_outlets": {
+      "service": "mdi:restart-alert"
+    },
+    "set_outlet_name": {
+      "service": "mdi:rename-box"
+    },
+    "set_pdu_name": {
+      "service": "mdi:rename-box"
+    }
+  }
+}

@@ -2,86 +2,115 @@
 
 from __future__ import annotations
 
-# Local application/library specific imports
-from . import DOMAIN
-from .coordinator import RacklinkCoordinator
+from typing import Any, Dict, Optional, Set
 
-# Home Assistant core imports
+import logging
+
+import voluptuous as vol
+
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from typing import Any
 
-# Standard library imports
-import logging
+from . import RacklinkConfigEntry
+from .const import (
+    SERVICE_CYCLE_ALL_OUTLETS,
+    SERVICE_CYCLE_OUTLET,
+    SERVICE_SET_OUTLET_NAME,
+    SERVICE_SET_PDU_NAME,
+)
+from .coordinator import RacklinkCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: RacklinkConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Middle Atlantic RackLink switches from config entry."""
-    coordinator: RacklinkCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    """Set up the Middle Atlantic RackLink switches from a config entry."""
+    coordinator = config_entry.runtime_data
 
-    entities = []
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_CYCLE_OUTLET,
+        None,
+        "async_cycle_outlet",
+    )
+    platform.async_register_entity_service(
+        SERVICE_CYCLE_ALL_OUTLETS,
+        None,
+        "async_cycle_all_outlets",
+    )
+    platform.async_register_entity_service(
+        SERVICE_SET_OUTLET_NAME,
+        {vol.Required(CONF_NAME): cv.string},
+        "async_set_outlet_name",
+    )
+    platform.async_register_entity_service(
+        SERVICE_SET_PDU_NAME,
+        {vol.Required(CONF_NAME): cv.string},
+        "async_set_pdu_name",
+    )
 
-    # Add outlets as switches - ensure we create switches even if no outlet data yet
-    # Default to creating 8 outlets, which is common for these PDUs
-    max_outlets = 8
-    existing_outlets = list(coordinator.outlet_data.keys())
+    known_outlets: Set[int] = set()
 
-    # Use existing outlet data if available, otherwise create for standard number
-    outlet_numbers = existing_outlets if existing_outlets else range(1, max_outlets + 1)
+    @callback
+    def _add_outlet_entities() -> None:
+        """Add switches for outlets discovered on the device."""
+        new_outlets = sorted(set(coordinator.outlet_data) - known_outlets)
+        if not new_outlets:
+            return
+        known_outlets.update(new_outlets)
+        async_add_entities(
+            RacklinkOutletSwitch(coordinator, outlet) for outlet in new_outlets
+        )
 
-    for outlet_num in outlet_numbers:
-        entities.append(RacklinkOutletSwitch(coordinator, outlet_num))
-
-    async_add_entities(entities)
+    _add_outlet_entities()
+    config_entry.async_on_unload(coordinator.async_add_listener(_add_outlet_entities))
 
 
-class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
+class RacklinkOutletSwitch(CoordinatorEntity[RacklinkCoordinator], SwitchEntity):
     """Representation of a Middle Atlantic RackLink outlet switch."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "outlet"
 
     def __init__(self, coordinator: RacklinkCoordinator, outlet_number: int) -> None:
         """Initialize the outlet switch."""
         super().__init__(coordinator)
         self._outlet_number = outlet_number
-
-        # Set unique ID
         self._attr_unique_id = (
             f"{coordinator.controller.pdu_serial}_outlet_{outlet_number}"
         )
-
-        # Always include outlet number in name, custom name will be added in @name property
-        self._base_name = f"Outlet {outlet_number}"
-        self._attr_has_entity_name = True
+        self._attr_translation_placeholders = {"outlet_number": str(outlet_number)}
 
     @property
-    def name(self) -> str:
-        """Return the name of the switch, always including outlet number."""
-        outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
-        custom_name = outlet_data.get("name")
-        # Expose friendly attributes from Redfish if available
-        self._attr_extra_state_attributes = outlet_data.get("attrs")
-
-        # If we have a custom name that's different from the default, use it with the outlet number
-        if custom_name and custom_name != self._base_name:
-            return f"{self._base_name}: {custom_name}"
-
-        # Otherwise just return the base name (Outlet X)
-        return self._base_name
+    def _outlet_data(self) -> Dict[str, Any]:
+        """Return the coordinator data for this outlet."""
+        return self.coordinator.outlet_data.get(self._outlet_number, {})
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> Optional[bool]:
         """Return True if the outlet is on."""
-        outlet_data = self.coordinator.outlet_data.get(self._outlet_number, {})
-        return outlet_data.get("state", False)
+        return self._outlet_data.get("state")
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return outlet attributes reported by the device."""
+        attributes: Dict[str, Any] = {"outlet_number": self._outlet_number}
+        outlet_data = self._outlet_data
+        if outlet_data.get("name"):
+            attributes["outlet_name"] = outlet_data["name"]
+        if outlet_data.get("attrs"):
+            attributes.update(outlet_data["attrs"])
+        return attributes
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -91,9 +120,11 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        # Consider the switch available if coordinator is available,
-        # even if no outlet data yet (will show as OFF)
-        return self.coordinator.available
+        return (
+            super().available
+            and self.coordinator.controller.connected
+            and self._outlet_number in self.coordinator.outlet_data
+        )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the outlet on."""
@@ -103,10 +134,18 @@ class RacklinkOutletSwitch(CoordinatorEntity, SwitchEntity):
         """Turn the outlet off."""
         await self.coordinator.turn_outlet_off(self._outlet_number)
 
-    def turn_on(self, **kwargs: Any) -> None:
-        """Turn the outlet on (abstract method implementation)."""
-        raise NotImplementedError("Use async_turn_on instead")
+    async def async_cycle_outlet(self) -> None:
+        """Cycle this outlet (service handler)."""
+        await self.coordinator.cycle_outlet(self._outlet_number)
 
-    def turn_off(self, **kwargs: Any) -> None:
-        """Turn the outlet off (abstract method implementation)."""
-        raise NotImplementedError("Use async_turn_off instead")
+    async def async_cycle_all_outlets(self) -> None:
+        """Cycle all outlets on the PDU (service handler)."""
+        await self.coordinator.cycle_all_outlets()
+
+    async def async_set_outlet_name(self, name: str) -> None:
+        """Set the label of this outlet on the device (service handler)."""
+        await self.coordinator.set_outlet_name(self._outlet_number, name)
+
+    async def async_set_pdu_name(self, name: str) -> None:
+        """Set the PDU display name on the device (service handler)."""
+        await self.coordinator.set_pdu_name(name)

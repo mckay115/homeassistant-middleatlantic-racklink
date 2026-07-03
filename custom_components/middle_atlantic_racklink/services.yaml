@@ -1,72 +1,35 @@
-cycle_all_outlets:
-  name: Cycle All Outlets
-  description: Cycles power for all outlets.
-  target:
-    entity:
-      integration: middle_atlantic_racklink
-      domain: switch
-  fields: {}
-
 cycle_outlet:
-  name: Cycle Outlet
-  description: Cycles power for a specific outlet.
   target:
     entity:
       integration: middle_atlantic_racklink
       domain: switch
-  fields:
-    outlet:
-      name: Outlet
-      description: The outlet number to cycle.
-      required: true
-      example: 1
-      selector:
-        number:
-          min: 1
-          max: 16
-          mode: box
+
+cycle_all_outlets:
+  target:
+    entity:
+      integration: middle_atlantic_racklink
+      domain: switch
 
 set_outlet_name:
-  name: Set Outlet Name
-  description: Sets the name of a specific outlet.
   target:
     entity:
       integration: middle_atlantic_racklink
       domain: switch
   fields:
-    outlet:
-      name: Outlet
-      description: The outlet number to rename.
-      required: true
-      example: 1
-      selector:
-        number:
-          min: 1
-          max: 16
-          mode: box
     name:
-      name: Name
-      description: The new name for the outlet.
       required: true
       example: "Server"
       selector:
         text:
 
 set_pdu_name:
-  name: Set PDU Name
-  description: Sets the name of the PDU.
   target:
     entity:
       integration: middle_atlantic_racklink
+      domain: switch
   fields:
     name:
-      name: Name
-      description: The new name for the PDU.
       required: true
       example: "Rack Power"
       selector:
         text:
-
-test_direct_commands:
-  name: Test Direct Commands
-  description: Test different command syntaxes with the RackLink device. This is a debug service to help determine the correct command formats.

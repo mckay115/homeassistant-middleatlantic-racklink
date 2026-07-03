@@ -8,11 +8,16 @@ from urllib.parse import urljoin
 
 import aiohttp
 import asyncio
-import json
 import logging
 import ssl
 
+from .exceptions import RacklinkAuthenticationError
+
 _LOGGER = logging.getLogger(__name__)
+
+# Created at import time (the integration sets ``import_executor`` in its
+# manifest, so this blocking call runs off the event loop).
+_DEFAULT_SSL_CONTEXT = ssl.create_default_context()
 
 # Redfish API endpoints
 REDFISH_SERVICE_ROOT = "/redfish/v1/"
@@ -69,6 +74,11 @@ class RedfishConnection:
         """Return True if authenticated with the device."""
         return self._authenticated
 
+    @property
+    def port(self) -> int:
+        """Return the configured port."""
+        return self.config.port
+
     def _build_base_url(self) -> str:
         """Build the base URL for Redfish API."""
         protocol = "https" if self.config.use_https else "http"
@@ -90,11 +100,7 @@ class RedfishConnection:
 
             # Create HTTP session with appropriate SSL settings
             connector = aiohttp.TCPConnector(
-                ssl=(
-                    False
-                    if not self.config.verify_ssl
-                    else ssl.create_default_context()
-                )
+                ssl=False if not self.config.verify_ssl else _DEFAULT_SSL_CONTEXT
             )
             timeout = aiohttp.ClientTimeout(total=self.config.timeout)
 
@@ -133,6 +139,9 @@ class RedfishConnection:
 
             return True
 
+        except RacklinkAuthenticationError:
+            await self._close_session()
+            raise
         except Exception as err:
             _LOGGER.error("Error connecting to Redfish API: %s", err)
             await self._close_session()
@@ -191,11 +200,14 @@ class RedfishConnection:
                         )
                         return True
                 elif response.status == 401:
-                    _LOGGER.error("Authentication failed (401): Invalid credentials")
-                    return False
+                    raise RacklinkAuthenticationError(
+                        "Redfish authentication failed: invalid credentials"
+                    )
                 else:
                     _LOGGER.error("Authentication failed, status: %d", response.status)
                     return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error during Redfish authentication: %s", err)
             return False
@@ -338,6 +350,8 @@ class RedfishConnection:
                     _LOGGER.debug(
                         "GET %s returned status %d", relative_url, resp.status
                     )
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.debug("GET %s failed: %s", relative_url, err)
         return None
@@ -728,6 +742,52 @@ class RedfishConnection:
     def get_outlet_count(self) -> int:
         """Get the number of discovered outlets."""
         return len(self._outlet_endpoints)
+
+    async def set_outlet_label(self, outlet_num: int, label: str) -> bool:
+        """Set the user label of an outlet via a Redfish PATCH."""
+        try:
+            if outlet_num not in self._outlet_endpoints:
+                _LOGGER.error("Outlet %d not found in discovered outlets", outlet_num)
+                return False
+
+            outlet_url = self._outlet_endpoints[outlet_num]
+            async with self._session.patch(
+                urljoin(self._base_url, outlet_url),
+                json={"UserLabel": label},
+            ) as response:
+                if response.status in (200, 202, 204):
+                    self._outlet_names[outlet_num] = label
+                    return True
+                _LOGGER.error(
+                    "Failed to set outlet %d label, status: %d",
+                    outlet_num,
+                    response.status,
+                )
+                return False
+        except Exception as err:
+            _LOGGER.error("Error setting outlet %d label: %s", outlet_num, err)
+            return False
+
+    async def set_pdu_name(self, name: str) -> bool:
+        """Set the PDU display name via a Redfish PATCH."""
+        try:
+            if not self._pdu_id:
+                return False
+
+            pdu_url = f"/redfish/v1/PowerEquipment/RackPDUs/{self._pdu_id}"
+            async with self._session.patch(
+                urljoin(self._base_url, pdu_url),
+                json={"Name": name},
+            ) as response:
+                if response.status in (200, 202, 204):
+                    return True
+                _LOGGER.error(
+                    "Failed to set PDU name, status: %d", response.status
+                )
+                return False
+        except Exception as err:
+            _LOGGER.error("Error setting PDU name: %s", err)
+            return False
 
     async def get_mains_metrics(self) -> Dict[str, float]:
         """Get mains (inlet) metrics using Redfish Mains endpoint.

@@ -1,503 +1,249 @@
 """Data update coordinator for the Middle Atlantic RackLink integration."""
 
-# Standard library imports
-# Local application/library specific imports
-from .const import DOMAIN
-from .controller.racklink_controller import RacklinkController
-from datetime import timedelta
+from __future__ import annotations
 
-# Home Assistant core imports
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from datetime import timedelta
 from typing import Any, Dict
 
-import asyncio
 import logging
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    DeviceInfo,
+)
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .controller.racklink_controller import RacklinkController
+from .exceptions import RacklinkAuthenticationError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Default polling interval in seconds
-DEFAULT_POLLING_INTERVAL = timedelta(seconds=5)
 
-
-class RacklinkCoordinator(DataUpdateCoordinator):
+class RacklinkCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     """Coordinator to manage data updates from the RackLink controller."""
+
+    config_entry: ConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
+        config_entry: ConfigEntry,
         controller: RacklinkController,
-        update_interval: timedelta = DEFAULT_POLLING_INTERVAL,
+        update_interval: timedelta = timedelta(seconds=DEFAULT_SCAN_INTERVAL),
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=DOMAIN,
             update_interval=update_interval,
         )
         self.controller = controller
-        self._data: Dict[str, Any] = {}
-        self._initialized = False
-
-    async def _async_setup(self) -> None:
-        """Initialize the coordinator with device setup."""
-        _LOGGER.debug("Setting up RackLink coordinator")
-
-        # Connect to the device and perform initial setup
-        await self.controller.connect()
-
-        # Mark as initialized
-        self._initialized = True
-        _LOGGER.info("RackLink coordinator setup completed")
-        _LOGGER.info(
-            "Initialized RackLink coordinator with scan interval: %d seconds",
-            self.update_interval.total_seconds() if self.update_interval else 0,
-        )
 
     @property
-    def available(self) -> bool:
-        """Return True if the controller is available."""
-        return self.controller.connected and self.controller.available
-
-    @property
-    def device_info(self) -> Dict[str, Any]:
+    def device_info(self) -> DeviceInfo:
         """Return device information."""
-        device_info = {
-            "identifiers": {
-                ("middle_atlantic_racklink", self.controller.pdu_serial or "unknown")
-            },
-            "name": self.controller.pdu_name or "RackLink PDU",
-            "manufacturer": "Legrand - Middle Atlantic",
-            "model": self.controller.pdu_model or "RackLink PDU",
-            "sw_version": self.controller.pdu_firmware,
-            "connections": (
-                {("mac", self.controller.mac_address)}
-                if self.controller.mac_address
-                else None
-            ),
-            # Identify as power monitoring device
-            "suggested_area": "Electrical",
-            "configuration_url": (
-                f"https://{self.controller.host}"
-                if hasattr(self.controller, "host")
-                else None
-            ),
-        }
-        _LOGGER.debug("Device info: %r", device_info)
+        device_info = DeviceInfo(
+            identifiers={(DOMAIN, self.controller.pdu_serial or "unknown")},
+            name=self.controller.pdu_name or "RackLink PDU",
+            manufacturer=ATTR_MANUFACTURER,
+            model=self.controller.pdu_model or ATTR_MODEL,
+            sw_version=self.controller.pdu_firmware,
+            configuration_url=f"https://{self.controller.host}",
+        )
+        if self.controller.mac_address:
+            device_info["connections"] = {
+                (CONNECTION_NETWORK_MAC, self.controller.mac_address)
+            }
         return device_info
-
-    def get_model_capabilities(self) -> Dict[str, Any]:
-        """Return model capabilities based on available data.
-
-        Returns:
-            Dict containing model capabilities like number of outlets, features, etc.
-        """
-        capabilities = {
-            "num_outlets": 8,  # Default assumption for RackLink devices
-            "has_surge_protection": True,  # Most RackLink devices have surge protection
-            "has_current_monitoring": True,
-            "has_power_monitoring": True,
-            "has_energy_monitoring": True,
-            "supports_outlet_control": True,
-        }
-
-        # Try to determine actual outlet count from controller data
-        if hasattr(self.controller, "outlet_states") and self.controller.outlet_states:
-            actual_outlets = len(self.controller.outlet_states)
-            if actual_outlets > 0:
-                capabilities["num_outlets"] = actual_outlets
-                _LOGGER.debug(
-                    "Detected %d outlets from controller data", actual_outlets
-                )
-
-        # Check model-specific capabilities if we have model info
-        if self.controller.pdu_model:
-            model = self.controller.pdu_model.upper()
-            if "920" in model:  # RLNK-P920R series
-                capabilities["num_outlets"] = 8
-            elif "424" in model:  # Smaller models
-                capabilities["num_outlets"] = 4
-            elif "1600" in model or "16" in model:  # Larger models
-                capabilities["num_outlets"] = 16
-
-        _LOGGER.info("Model capabilities determined: %s", capabilities)
-        return capabilities
 
     @property
     def outlet_data(self) -> Dict[int, Dict[str, Any]]:
         """Return outlet data."""
-        if "outlets" in self.data:
+        if self.data and "outlets" in self.data:
             return self.data["outlets"]
-        _LOGGER.debug("No outlet data found in coordinator data")
         return {}
 
     @property
     def system_data(self) -> Dict[str, Any]:
         """Return system power data."""
-        if "system" in self.data:
+        if self.data and "system" in self.data:
             return self.data["system"]
-        _LOGGER.debug("No system data found in coordinator data")
         return {}
 
     @property
     def status_data(self) -> Dict[str, Any]:
         """Return status information."""
-        if "status" in self.data:
+        if self.data and "status" in self.data:
             return self.data["status"]
-        _LOGGER.debug("No status data found in coordinator data")
         return {}
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Update data from the PDU."""
-        max_retries = 3
-        retry_count = 0
+        controller = self.controller
 
-        while retry_count < max_retries:
-            try:
-                # Check connection status and try to connect if needed
-                if not self.controller.connected:
-                    _LOGGER.debug(
-                        "Coordinator: Controller not connected (attempt %d/%d), connecting...",
-                        retry_count + 1,
-                        max_retries,
-                    )
-                    if not await self.controller.connect():
-                        retry_count += 1
-                        if retry_count >= max_retries:
-                            _LOGGER.error(
-                                "Coordinator: Failed to connect to PDU after %d attempts",
-                                max_retries,
-                            )
-                            raise UpdateFailed(
-                                "Failed to connect to PDU after multiple attempts"
-                            )
-                        else:
-                            _LOGGER.warning(
-                                "Coordinator: Connection attempt %d failed, retrying...",
-                                retry_count,
-                            )
-                            await asyncio.sleep(2)  # Wait before retry
-                            continue
+        try:
+            if not controller.connected:
+                _LOGGER.debug("Controller not connected, connecting")
+                if not await controller.connect():
+                    raise UpdateFailed("Failed to connect to PDU")
 
-                # Update the PDU data
-                _LOGGER.debug("Coordinator: Updating PDU data")
-                success = await self.controller.update()
+            if not await controller.update():
+                # The connection might be stale; disconnect so the next
+                # refresh performs a clean reconnect.
+                await controller.disconnect()
+                raise UpdateFailed("Failed to update PDU data")
 
-                if not success:
-                    # If update failed, the connection might be stale
-                    _LOGGER.warning(
-                        "Coordinator: Failed to update PDU data, connection may be stale"
-                    )
-                    await self.controller.disconnect()
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        raise UpdateFailed(
-                            "Failed to update PDU data after multiple attempts"
-                        )
-                    else:
-                        _LOGGER.warning(
-                            "Coordinator: Update attempt %d failed, retrying...",
-                            retry_count,
-                        )
-                        await asyncio.sleep(2)  # Wait before retry
-                        continue
+        except RacklinkAuthenticationError as err:
+            raise ConfigEntryAuthFailed(
+                "Device rejected the configured credentials"
+            ) from err
+        except UpdateFailed:
+            raise
+        except Exception as err:
+            await controller.disconnect()
+            raise UpdateFailed(f"Error communicating with PDU: {err}") from err
 
-                # If we get here, the update was successful
-                break
+        return self._build_data()
 
-            except Exception as err:
-                _LOGGER.error(
-                    "Coordinator: Error during update attempt %d: %s",
-                    retry_count + 1,
-                    err,
-                )
-                retry_count += 1
-                if retry_count >= max_retries:
-                    raise UpdateFailed(
-                        f"Error communicating with PDU after {max_retries} attempts: {err}"
-                    ) from err
-                else:
-                    # Disconnect and retry
-                    await self.controller.disconnect()
-                    await asyncio.sleep(2)
-                    continue
+    def _build_data(self) -> Dict[str, Any]:
+        """Build the coordinator data structure from controller state."""
+        controller = self.controller
 
-        # Process outlet data (outside the retry loop)
-        outlets = {}
-        _LOGGER.debug("Processing outlet states: %r", self.controller.outlet_states)
-        _LOGGER.debug("Processing outlet names: %r", self.controller.outlet_names)
-
-        for outlet_num, state in self.controller.outlet_states.items():
+        outlets: Dict[int, Dict[str, Any]] = {}
+        for outlet_num, state in controller.outlet_states.items():
             outlets[outlet_num] = {
                 "state": state,
-                "name": self.controller.outlet_names.get(
+                "name": controller.outlet_names.get(
                     outlet_num, f"Outlet {outlet_num}"
                 ),
-                "attrs": self.controller.outlet_attrs.get(outlet_num),
+                "attrs": controller.outlet_attrs.get(outlet_num),
+                "power": controller.outlet_power_data.get(outlet_num),
+                "energy_wh": controller.outlet_energy_data.get(outlet_num),
+                "current": controller.outlet_current_data.get(outlet_num),
+                "voltage": controller.outlet_voltage_data.get(outlet_num),
+                "non_critical": controller.outlet_non_critical.get(outlet_num),
             }
-            _LOGGER.debug(
-                "Processed outlet %d: state=%s, name=%r",
-                outlet_num,
-                "ON" if state else "OFF",
-                outlets[outlet_num]["name"],
-            )
 
-        _LOGGER.debug("Coordinator: Updated %d outlets", len(outlets))
-
-        # Process system power data
         system = {
-            "voltage": self.controller.rms_voltage,
-            "current": self.controller.rms_current,
-            "power": self.controller.active_power,
-            "energy": self.controller.active_energy,
-            "frequency": self.controller.line_frequency,
-            "apparent_power": getattr(self.controller, "apparent_power", 0.0),
-            "power_factor": getattr(self.controller, "power_factor", 0.0),
+            "voltage": controller.rms_voltage,
+            "current": controller.rms_current,
+            "power": controller.active_power,
+            "energy_wh": controller.active_energy,
+            "frequency": controller.line_frequency,
+            "apparent_power": controller.apparent_power,
+            "power_factor": controller.power_factor,
         }
 
-        _LOGGER.debug("📊 Coordinator: Updated system data: %r", system)
-
-        # Process status information
         status = {
-            "load_shedding_active": self.controller.load_shedding_active,
-            "sequence_active": self.controller.sequence_active,
+            "load_shedding_active": controller.load_shedding_active,
+            "sequence_active": controller.sequence_active,
+            "surge_protection_ok": controller.surge_protection_ok,
         }
 
-        _LOGGER.debug("Coordinator: Updated status data: %r", status)
+        return {"outlets": outlets, "system": system, "status": status}
 
-        # Build the complete data structure
-        data = {
-            "outlets": outlets,
-            "system": system,
-            "status": status,
+    def _apply_optimistic_outlet_state(self, outlet: int, state: bool) -> None:
+        """Publish an optimistic outlet state until the next poll confirms it."""
+        if not self.data or outlet not in self.data.get("outlets", {}):
+            return
+        new_data = {
+            **self.data,
+            "outlets": {
+                num: dict(outlet_data)
+                for num, outlet_data in self.data["outlets"].items()
+            },
         }
+        new_data["outlets"][outlet]["state"] = state
+        self.async_set_updated_data(new_data)
 
-        _LOGGER.debug("Full updated data: %r", data)
-        self._data = data
-        return data
+    def _apply_optimistic_status(self, key: str, value: bool) -> None:
+        """Publish an optimistic status flag until the next poll confirms it."""
+        if not self.data:
+            return
+        new_data = {**self.data, "status": {**self.data.get("status", {}), key: value}}
+        self.async_set_updated_data(new_data)
 
     async def turn_outlet_on(self, outlet: int) -> None:
-        """Turn an outlet on and refresh data."""
-        _LOGGER.info("Coordinator: Turning outlet %d on", outlet)
-        success = await self.controller.turn_outlet_on(outlet)
-
-        if success:
-            # Update our local data to reflect the change before refresh
-            if "outlets" in self._data and outlet in self._data["outlets"]:
-                _LOGGER.debug(
-                    "Updating local outlet %d state from %s to ON",
-                    outlet,
-                    "ON" if self._data["outlets"][outlet]["state"] else "OFF",
-                )
-                self._data["outlets"][outlet]["state"] = True
-
-            # Ensure we update the entity state right away
-            _LOGGER.debug("Pushing updated data to entities")
-            self.async_set_updated_data(self._data)
-
-            # Do a full refresh to ensure the data is accurate
-            _LOGGER.debug("Scheduling a full data refresh")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to turn outlet %d on", outlet)
-            # Force a refresh to get the current state
-            _LOGGER.debug("Scheduling a full data refresh after failed command")
-            await self.async_request_refresh()
+        """Turn an outlet on."""
+        _LOGGER.debug("Turning outlet %d on", outlet)
+        if not await self.controller.turn_outlet_on(outlet):
+            raise HomeAssistantError(f"Failed to turn outlet {outlet} on")
+        self._apply_optimistic_outlet_state(outlet, True)
 
     async def turn_outlet_off(self, outlet: int) -> None:
-        """Turn an outlet off and refresh data."""
-        _LOGGER.info("Coordinator: Turning outlet %d off", outlet)
-        success = await self.controller.turn_outlet_off(outlet)
-
-        if success:
-            # Update our local data to reflect the change before refresh
-            if "outlets" in self._data and outlet in self._data["outlets"]:
-                _LOGGER.debug(
-                    "Updating local outlet %d state from %s to OFF",
-                    outlet,
-                    "ON" if self._data["outlets"][outlet]["state"] else "OFF",
-                )
-                self._data["outlets"][outlet]["state"] = False
-
-            # Ensure we update the entity state right away
-            _LOGGER.debug("Pushing updated data to entities")
-            self.async_set_updated_data(self._data)
-
-            # Do a full refresh to ensure the data is accurate
-            _LOGGER.debug("Scheduling a full data refresh")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to turn outlet %d off", outlet)
-            # Force a refresh to get the current state
-            _LOGGER.debug("Scheduling a full data refresh after failed command")
-            await self.async_request_refresh()
+        """Turn an outlet off."""
+        _LOGGER.debug("Turning outlet %d off", outlet)
+        if not await self.controller.turn_outlet_off(outlet):
+            raise HomeAssistantError(f"Failed to turn outlet {outlet} off")
+        self._apply_optimistic_outlet_state(outlet, False)
 
     async def cycle_outlet(self, outlet: int) -> None:
-        """Cycle an outlet and refresh data."""
-        _LOGGER.info("Coordinator: Cycling outlet %d", outlet)
-        success = await self.controller.cycle_outlet(outlet)
-
-        if success:
-            # Outlet will be on after cycling
-            if "outlets" in self._data and outlet in self._data["outlets"]:
-                _LOGGER.debug(
-                    "Updating local outlet %d state to ON after cycle (was %s)",
-                    outlet,
-                    "ON" if self._data["outlets"][outlet]["state"] else "OFF",
-                )
-                self._data["outlets"][outlet]["state"] = True
-
-            # Ensure we update the entity state right away
-            _LOGGER.debug("Pushing updated data to entities after cycle")
-            self.async_set_updated_data(self._data)
-
-            # Force a refresh after cycling to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after cycle")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to cycle outlet %d", outlet)
-            _LOGGER.debug("Scheduling a full data refresh after failed cycle command")
-            await self.async_request_refresh()
+        """Cycle an outlet."""
+        _LOGGER.debug("Cycling outlet %d", outlet)
+        if not await self.controller.cycle_outlet(outlet):
+            raise HomeAssistantError(f"Failed to cycle outlet {outlet}")
+        # The outlet ends up on after a completed cycle
+        self._apply_optimistic_outlet_state(outlet, True)
 
     async def cycle_all_outlets(self) -> None:
-        """Cycle all outlets and refresh data."""
-        _LOGGER.info("Coordinator: Cycling all outlets")
-        success = await self.controller.cycle_all_outlets()
-
-        if success:
-            # Update all outlets to on
-            if "outlets" in self._data:
-                _LOGGER.debug("Updating all local outlet states to ON after cycle")
-                for outlet in self._data["outlets"]:
-                    self._data["outlets"][outlet]["state"] = True
-
-            # Ensure we update the entity states right away
-            _LOGGER.debug("Pushing updated data to entities after cycle all")
-            self.async_set_updated_data(self._data)
-
-            # Force a refresh after cycling to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after cycling all outlets")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to cycle all outlets")
-            _LOGGER.debug(
-                "Scheduling a full data refresh after failed cycle all command"
-            )
-            await self.async_request_refresh()
+        """Cycle all outlets."""
+        _LOGGER.debug("Cycling all outlets")
+        if not await self.controller.cycle_all_outlets():
+            raise HomeAssistantError("Failed to cycle all outlets")
+        if self.data:
+            new_data = {
+                **self.data,
+                "outlets": {
+                    num: {**outlet_data, "state": True}
+                    for num, outlet_data in self.data.get("outlets", {}).items()
+                },
+            }
+            self.async_set_updated_data(new_data)
 
     async def start_load_shedding(self) -> None:
-        """Start load shedding and refresh data."""
-        _LOGGER.info("Coordinator: Starting load shedding")
-        success = await self.controller.start_load_shedding()
-
-        if success:
-            # Update status in local data
-            if "status" in self._data:
-                _LOGGER.debug(
-                    "Updating local load_shedding_active state to True (was %s)",
-                    self._data["status"].get("load_shedding_active", False),
-                )
-                self._data["status"]["load_shedding_active"] = True
-
-            # Ensure we update the entity states right away
-            _LOGGER.debug("Pushing updated data to entities after load shedding start")
-            self.async_set_updated_data(self._data)
-
-            # Refresh data to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after starting load shedding")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to start load shedding")
-            _LOGGER.debug(
-                "Scheduling a full data refresh after failed load shedding start"
-            )
-            await self.async_request_refresh()
+        """Start load shedding."""
+        _LOGGER.debug("Starting load shedding")
+        if not await self.controller.start_load_shedding():
+            raise HomeAssistantError("Failed to start load shedding")
+        self._apply_optimistic_status("load_shedding_active", True)
 
     async def stop_load_shedding(self) -> None:
-        """Stop load shedding and refresh data."""
-        _LOGGER.info("Coordinator: Stopping load shedding")
-        success = await self.controller.stop_load_shedding()
-
-        if success:
-            # Update status in local data
-            if "status" in self._data:
-                _LOGGER.debug(
-                    "Updating local load_shedding_active state to False (was %s)",
-                    self._data["status"].get("load_shedding_active", False),
-                )
-                self._data["status"]["load_shedding_active"] = False
-
-            # Ensure we update the entity states right away
-            _LOGGER.debug("Pushing updated data to entities after load shedding stop")
-            self.async_set_updated_data(self._data)
-
-            # Refresh data to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after stopping load shedding")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to stop load shedding")
-            _LOGGER.debug(
-                "Scheduling a full data refresh after failed load shedding stop"
-            )
-            await self.async_request_refresh()
+        """Stop load shedding."""
+        _LOGGER.debug("Stopping load shedding")
+        if not await self.controller.stop_load_shedding():
+            raise HomeAssistantError("Failed to stop load shedding")
+        self._apply_optimistic_status("load_shedding_active", False)
 
     async def start_sequence(self) -> None:
-        """Start the outlet sequence and refresh data."""
-        _LOGGER.info("Coordinator: Starting outlet sequence")
-        success = await self.controller.start_sequence()
-
-        if success:
-            # Update status in local data
-            if "status" in self._data:
-                _LOGGER.debug(
-                    "Updating local sequence_active state to True (was %s)",
-                    self._data["status"].get("sequence_active", False),
-                )
-                self._data["status"]["sequence_active"] = True
-
-            # Ensure we update the entity states right away
-            _LOGGER.debug("Pushing updated data to entities after sequence start")
-            self.async_set_updated_data(self._data)
-
-            # Refresh data to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after starting sequence")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to start outlet sequence")
-            _LOGGER.debug("Scheduling a full data refresh after failed sequence start")
-            await self.async_request_refresh()
+        """Start the outlet sequence."""
+        _LOGGER.debug("Starting outlet sequence")
+        if not await self.controller.start_sequence():
+            raise HomeAssistantError("Failed to start outlet sequence")
+        self._apply_optimistic_status("sequence_active", True)
 
     async def stop_sequence(self) -> None:
-        """Stop the outlet sequence and refresh data."""
-        _LOGGER.info("Coordinator: Stopping outlet sequence")
-        success = await self.controller.stop_sequence()
+        """Stop the outlet sequence."""
+        _LOGGER.debug("Stopping outlet sequence")
+        if not await self.controller.stop_sequence():
+            raise HomeAssistantError("Failed to stop outlet sequence")
+        self._apply_optimistic_status("sequence_active", False)
 
-        if success:
-            # Update status in local data
-            if "status" in self._data:
-                _LOGGER.debug(
-                    "Updating local sequence_active state to False (was %s)",
-                    self._data["status"].get("sequence_active", False),
-                )
-                self._data["status"]["sequence_active"] = False
+    async def set_outlet_name(self, outlet: int, name: str) -> None:
+        """Set the user label of an outlet."""
+        _LOGGER.debug("Setting outlet %d name to %s", outlet, name)
+        if not await self.controller.set_outlet_name(outlet, name):
+            raise HomeAssistantError(f"Failed to set name of outlet {outlet}")
+        await self.async_request_refresh()
 
-            # Ensure we update the entity states right away
-            _LOGGER.debug("Pushing updated data to entities after sequence stop")
-            self.async_set_updated_data(self._data)
-
-            # Refresh data to get accurate state
-            _LOGGER.debug("Scheduling a full data refresh after stopping sequence")
-            await self.async_request_refresh()
-        else:
-            _LOGGER.warning("Coordinator: Failed to stop outlet sequence")
-            _LOGGER.debug("Scheduling a full data refresh after failed sequence stop")
-            await self.async_request_refresh()
-
-    async def test_direct_commands(self) -> str:
-        """Test direct commands with the RackLink device.
-
-        This is a debug method to attempt various command syntaxes.
-        """
-        _LOGGER.info("Coordinator: Running direct command tests")
-        return await self.controller.test_direct_commands()
+    async def set_pdu_name(self, name: str) -> None:
+        """Set the PDU display name."""
+        _LOGGER.debug("Setting PDU name to %s", name)
+        if not await self.controller.set_pdu_name(name):
+            raise HomeAssistantError("Failed to set PDU name")
+        await self.async_request_refresh()

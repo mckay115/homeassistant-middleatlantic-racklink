@@ -1,37 +1,64 @@
-# Integration Quality Scale Tracking
-# This file tracks our progress toward Home Assistant quality tiers
-# Target: Bronze tier (minimum for new integrations)
+# Integration Quality Scale tracking
+# Honest assessment of what this custom integration implements.
 
 rules:
-  # Bronze tier requirements
-  config_flow: done
-  config_flow_test_coverage: done
-  dependency_imports_in_executor: done
-  docs_actions: done
-  docs_config_flow: done
-  docs_platform: done
-  entity_device_info: done
-  entity_unique_id: done
-  integration_owner: done
-  iot_class: done
-  test_before_setup: done
-  valid_integration_type: done
-  
-  # Silver tier requirements (future goals)
-  code_owner_response:
-    status: exempt
-    comment: Custom integration, not applicable yet
-  
-  # Gold tier requirements (future goals)
-  config_flow_discovery:
+  # Bronze
+  action-setup:
     status: done
-    comment: Implemented zeroconf discovery
-    
-  # Areas needing work
-  dependency_transparency:
-    status: partial
-    comment: Need to extract socket communication to external PyPI library
-    
-  test_coverage_entity_registry:
-    status: partial
-    comment: Basic entity tests exist, need expansion
+    comment: Entity services are registered by the switch platform.
+  appropriate-polling: done
+  brands:
+    status: exempt
+    comment: Custom integration distributed via HACS.
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency:
+    status: exempt
+    comment: No external requirements; uses aiohttp/zeroconf shipped with Home Assistant.
+  docs-actions: done
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: todo
+  entity-event-setup:
+    status: exempt
+    comment: Entities do not subscribe to external events.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: todo
+  parallel-updates: todo
+  reauthentication-flow: done
+  test-coverage: todo
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery: done
+  discovery-update-info: done
+  dynamic-devices: done
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default: todo
+  entity-translations: done
+  exception-translations: todo
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues: todo
+  stale-devices: todo
+
+  # Platinum
+  async-dependency: done
+  inject-websession: todo
+  strict-typing: todo

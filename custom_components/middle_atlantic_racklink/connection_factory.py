@@ -11,6 +11,7 @@ from .const import (
     DEFAULT_REDFISH_HTTP_PORT,
     DEFAULT_REDFISH_PORT,
 )
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 from .redfish_connection import RedfishConfig, RedfishConnection
 from .socket_connection import SocketConfig, SocketConnection
 from typing import Union
@@ -41,9 +42,6 @@ class ConnectionFactory:
         connection_type = config_data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
         host = config_data["host"]
         port = config_data["port"]
-        username = config_data.get("username")
-        password = config_data.get("password")
-        timeout = config_data.get("timeout", 20)
 
         _LOGGER.debug(
             "Creating connection: type=%s, host=%s, port=%d",
@@ -54,13 +52,11 @@ class ConnectionFactory:
 
         if connection_type == CONNECTION_TYPE_REDFISH:
             return ConnectionFactory._create_redfish_connection(config_data)
-        elif connection_type == CONNECTION_TYPE_TELNET:
+        if connection_type == CONNECTION_TYPE_TELNET:
             return ConnectionFactory._create_socket_connection(config_data)
-        elif connection_type == CONNECTION_TYPE_AUTO:
-            # Auto-detect: try Redfish first, then fallback to Telnet
-            return ConnectionFactory._create_auto_connection(config_data)
-        else:
-            raise ValueError(f"Unknown connection type: {connection_type}")
+        # Auto detection is handled by AutoConnectionManager before this
+        # factory is called; reaching here with "auto" is a programming error.
+        raise ValueError(f"Unknown connection type: {connection_type}")
 
     @staticmethod
     def _create_redfish_connection(config_data: dict) -> RedfishConnection:
@@ -113,36 +109,6 @@ class ConnectionFactory:
         _LOGGER.info("Creating Telnet/Binary connection to %s:%d", host, port)
         return SocketConnection(config)
 
-    @staticmethod
-    def _create_auto_connection(
-        config_data: dict,
-    ) -> Union[RedfishConnection, SocketConnection]:
-        """Create connection with auto-detection.
-
-        This method will be used during setup to try Redfish first,
-        then fallback to Telnet if Redfish is not available.
-        For now, it creates a Redfish connection as a placeholder.
-        The actual auto-detection logic will be implemented in the validation phase.
-        """
-        # For auto mode, we'll prefer Redfish by default
-        # The actual detection will happen during connection validation
-        _LOGGER.debug("Auto connection mode - will attempt Redfish first")
-
-        # Create a Redfish config first
-        redfish_config = dict(config_data)
-        redfish_config[CONF_CONNECTION_TYPE] = CONNECTION_TYPE_REDFISH
-
-        # Set default Redfish settings if not specified
-        if "port" not in redfish_config or redfish_config["port"] == config_data.get(
-            "port"
-        ):
-            redfish_config["port"] = DEFAULT_REDFISH_PORT
-        if CONF_USE_HTTPS not in redfish_config:
-            redfish_config[CONF_USE_HTTPS] = True
-
-        return ConnectionFactory._create_redfish_connection(redfish_config)
-
-
 class AutoConnectionManager:
     """Manager for auto-detection of connection types."""
 
@@ -159,11 +125,11 @@ class AutoConnectionManager:
             The best available connection instance
 
         Raises:
-            ConnectionError: If no connection type works
+            RacklinkAuthenticationError: If a device is found but rejects
+                the provided credentials.
+            RacklinkConnectionError: If no connection type works.
         """
         host = config_data["host"]
-        username = config_data.get("username")
-        password = config_data.get("password")
 
         _LOGGER.info("Auto-detecting connection type for %s", host)
 
@@ -204,6 +170,10 @@ class AutoConnectionManager:
                     return connection
                 else:
                     await connection.disconnect()
+            except RacklinkAuthenticationError:
+                # A device answered but rejected the credentials; retrying
+                # other transports with the same credentials will not help.
+                raise
             except Exception as err:
                 _LOGGER.debug("Redfish connection failed: %s", err)
 
@@ -233,9 +203,13 @@ class AutoConnectionManager:
                     return connection
                 else:
                     await connection.disconnect()
+            except RacklinkAuthenticationError:
+                raise
             except Exception as err:
                 _LOGGER.debug(
                     "Telnet/Binary connection to port %d failed: %s", port, err
                 )
 
-        raise ConnectionError(f"Could not establish any connection type to {host}")
+        raise RacklinkConnectionError(
+            f"Could not establish any connection type to {host}"
+        )
