@@ -109,6 +109,7 @@ class ConnectionFactory:
         _LOGGER.info("Creating Telnet/Binary connection to %s:%d", host, port)
         return SocketConnection(config)
 
+
 class AutoConnectionManager:
     """Manager for auto-detection of connection types."""
 

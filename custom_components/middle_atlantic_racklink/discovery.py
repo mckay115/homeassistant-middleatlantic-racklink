@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from homeassistant.components import zeroconf
+from homeassistant.core import HomeAssistant
 from typing import Dict, List, Optional, Set, Tuple
+from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+from zeroconf.asyncio import AsyncServiceInfo
 
 import asyncio
 import logging
-
-from homeassistant.components import zeroconf
-from homeassistant.core import HomeAssistant
-from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
-from zeroconf.asyncio import AsyncServiceInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -150,7 +149,10 @@ class RackLinkDiscovery:
             }
 
             _LOGGER.debug(
-                "Discovered RackLink device: %s at %s:%s", hostname, ip_address, info.port
+                "Discovered RackLink device: %s at %s:%s",
+                hostname,
+                ip_address,
+                info.port,
             )
             return DiscoveredDevice(
                 hostname=hostname,

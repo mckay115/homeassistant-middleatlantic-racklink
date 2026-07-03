@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, cast, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 import aiohttp
 import asyncio
 import logging
 import ssl
-
-from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,11 +165,7 @@ class RedfishConnection:
                 if response.status == 200:
                     data = await response.json()
                     _LOGGER.debug("Redfish service root response: %s", data)
-                    # Capture RedfishVersion if available
-                    try:
-                        self._redfish_version = data.get("RedfishVersion")
-                    except Exception:
-                        pass
+                    self._redfish_version = data.get("RedfishVersion")
                     return True
                 else:
                     _LOGGER.error(
@@ -201,7 +196,9 @@ class RedfishConnection:
 
                     if self._auth_token:
                         # Add auth token to session headers
-                        self._require_session().headers["X-Auth-Token"] = self._auth_token
+                        self._require_session().headers[
+                            "X-Auth-Token"
+                        ] = self._auth_token
                         _LOGGER.debug("Authentication successful, got token")
                         return True
                     else:
@@ -350,9 +347,7 @@ class RedfishConnection:
                             urljoin(self._base_url, relative_url)
                         ) as retry_resp:
                             if retry_resp.status == 200:
-                                return cast(
-                                    Dict[str, Any], await retry_resp.json()
-                                )
+                                return cast(Dict[str, Any], await retry_resp.json())
                             else:
                                 _LOGGER.error(
                                     "Retry failed after re-authentication, status: %d",
@@ -798,9 +793,7 @@ class RedfishConnection:
             ) as response:
                 if response.status in (200, 202, 204):
                     return True
-                _LOGGER.error(
-                    "Failed to set PDU name, status: %d", response.status
-                )
+                _LOGGER.error("Failed to set PDU name, status: %d", response.status)
                 return False
         except Exception as err:
             _LOGGER.error("Error setting PDU name: %s", err)

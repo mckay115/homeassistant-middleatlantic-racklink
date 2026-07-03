@@ -2,17 +2,7 @@
 
 from __future__ import annotations
 
-from ipaddress import ip_address
-from unittest.mock import patch
-
-import pytest
-from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
+from .conftest import MOCK_CONFIG, MOCK_PDU_INFO
 from custom_components.middle_atlantic_racklink.config_flow import (
     CannotConnect,
     InvalidAuth,
@@ -27,8 +17,16 @@ from custom_components.middle_atlantic_racklink.const import (
     DEFAULT_REDFISH_PORT,
     DOMAIN,
 )
+from homeassistant import config_entries
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+from ipaddress import ip_address
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from unittest.mock import patch
 
-from .conftest import MOCK_CONFIG, MOCK_PDU_INFO
+import pytest
 
 USER_INPUT = {
     CONF_HOST: "192.168.1.100",
@@ -72,8 +70,7 @@ def mock_setup_entry():
 def mock_validate():
     """Mock a successful connection validation."""
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         return_value=dict(MOCK_PDU_INFO),
     ) as mock:
         yield mock
@@ -137,8 +134,7 @@ async def test_user_flow_cannot_connect_then_recover(
     )
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         side_effect=CannotConnect("boom"),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -149,8 +145,7 @@ async def test_user_flow_cannot_connect_then_recover(
     assert result["errors"] == {"base": "cannot_connect"}
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         return_value=dict(MOCK_PDU_INFO),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -169,8 +164,7 @@ async def test_user_flow_invalid_auth(hass: HomeAssistant) -> None:
     )
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         side_effect=InvalidAuth("denied"),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -190,8 +184,7 @@ async def test_user_flow_unknown_error(hass: HomeAssistant) -> None:
     )
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         side_effect=RuntimeError("boom"),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -201,9 +194,7 @@ async def test_user_flow_unknown_error(hass: HomeAssistant) -> None:
     assert result["errors"] == {"base": "unknown"}
 
 
-async def test_user_flow_duplicate_aborts(
-    hass: HomeAssistant, mock_validate
-) -> None:
+async def test_user_flow_duplicate_aborts(hass: HomeAssistant, mock_validate) -> None:
     """Test configuring an already-configured device aborts."""
     MockConfigEntry(
         domain=DOMAIN,
@@ -326,8 +317,7 @@ async def test_reauth_flow_invalid_auth(hass: HomeAssistant) -> None:
     result = await entry.start_reauth_flow(hass)
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         side_effect=InvalidAuth("denied"),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -381,8 +371,7 @@ async def test_reconfigure_flow_cannot_connect(hass: HomeAssistant) -> None:
     result = await entry.start_reconfigure_flow(hass)
 
     with patch(
-        "custom_components.middle_atlantic_racklink.config_flow."
-        "validate_connection",
+        "custom_components.middle_atlantic_racklink.config_flow." "validate_connection",
         side_effect=CannotConnect("boom"),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -400,9 +389,7 @@ async def test_reconfigure_flow_cannot_connect(hass: HomeAssistant) -> None:
 
 async def test_options_flow(hass: HomeAssistant, mock_config_entry) -> None:
     """Test the options flow stores the scan interval."""
-    result = await hass.config_entries.options.async_init(
-        mock_config_entry.entry_id
-    )
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
 

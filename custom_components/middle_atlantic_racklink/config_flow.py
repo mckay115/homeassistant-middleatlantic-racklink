@@ -2,26 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
-import asyncio
-import logging
-
-import voluptuous as vol
-
-from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_USERNAME,
-)
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
-
 from .const import (
     CONF_CONNECTION_TYPE,
     CONF_ENABLE_VENDOR_FEATURES,
@@ -38,8 +18,25 @@ from .const import (
     DOMAIN,
 )
 from .controller.racklink_controller import RacklinkController
-from .discovery import DiscoveredDevice, discover_racklink_devices
+from .discovery import discover_racklink_devices, DiscoveredDevice
 from .exceptions import RacklinkAuthenticationError
+from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+)
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+from typing import Any, Dict, List, Optional
+
+import asyncio
+import logging
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,9 +172,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         # Set a provisional unique ID from the hostname; it is replaced with
         # the MAC address once the device has been validated.
         await self.async_set_unique_id(hostname)
-        self._abort_if_unique_id_configured(
-            updates={CONF_HOST: discovery_info.host}
-        )
+        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.host})
 
         self._pending_input = {CONF_HOST: discovery_info.host}
         self.context["title_placeholders"] = {"name": hostname}
@@ -368,9 +363,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             }
         )
 
-    async def async_step_reauth(
-        self, entry_data: Dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: Dict[str, Any]) -> ConfigFlowResult:
         """Handle reauthentication when the device rejects the credentials."""
         return await self.async_step_reauth_confirm()
 
@@ -411,9 +404,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             step_id="reauth_confirm",
             data_schema=data_schema,
             errors=errors,
-            description_placeholders={
-                "host": reauth_entry.data.get(CONF_HOST, "")
-            },
+            description_placeholders={"host": reauth_entry.data.get(CONF_HOST, "")},
         )
 
     async def async_step_reconfigure(

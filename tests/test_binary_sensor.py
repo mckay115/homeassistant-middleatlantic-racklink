@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
+from .conftest import MOCK_PDU_INFO
+from custom_components.middle_atlantic_racklink.const import DOMAIN
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-
-from custom_components.middle_atlantic_racklink.const import DOMAIN
-
-from .conftest import MOCK_PDU_INFO
+from unittest.mock import MagicMock
 
 SERIAL = MOCK_PDU_INFO["pdu_serial"]
 
@@ -56,9 +53,7 @@ async def test_outlet_non_critical_sensors(
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert (
-        _get_state(hass, f"{SERIAL}_outlet_1_non_critical").state == STATE_OFF
-    )
+    assert _get_state(hass, f"{SERIAL}_outlet_1_non_critical").state == STATE_OFF
     assert _get_state(hass, f"{SERIAL}_outlet_2_non_critical").state == STATE_ON
 
 

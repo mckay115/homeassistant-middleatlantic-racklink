@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
 from custom_components.middle_atlantic_racklink.const import (
     CONNECTION_TYPE_REDFISH,
     CONNECTION_TYPE_TELNET,
@@ -22,6 +18,9 @@ from custom_components.middle_atlantic_racklink.redfish_connection import (
 from custom_components.middle_atlantic_racklink.socket_connection import (
     SocketConnection,
 )
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 CONTROLLER_MODULE = (
     "custom_components.middle_atlantic_racklink.controller.racklink_controller"

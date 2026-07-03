@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-03
+
+### Added
+- Reauthentication flow: Home Assistant prompts for new credentials when the device rejects them
+- Reconfiguration flow: change host, credentials, or connection type without deleting the entry
+- Working zeroconf discovery flow that completes pairing and supports multiple PDUs
+- Entity services `cycle_outlet`, `cycle_all_outlets`, `set_outlet_name`, and `set_pdu_name` (previously documented but not implemented)
+- Diagnostics support with redacted credentials
+- Translations (`translations/en.json`), `icons.json`, and translated entity names
+- Dynamic outlet discovery: entities are created from real device data and added when new outlets appear
+
+### Changed
+- Migrated to `entry.runtime_data` with a typed coordinator and `DeviceInfo`
+- Sensors rewritten with `SensorEntityDescription`; missing readings report `unknown` instead of `0`
+- Energy readings are stored in Wh internally and exposed in kWh without heuristics (fixes corrupted long-term statistics)
+- Binary sensors now update through the data update coordinator
+- Options changes apply the polling interval in place instead of reloading the entry
+- Release workflow is tag-driven and validates the tag against the manifest version
+
+### Fixed
+- Redfish auto-detection port bug that broke auto mode
+- Binary-protocol ping task racing command reads on the same stream
+- Telnet disconnects now mark the connection lost so reconnection works
+- aiohttp session leaks on reconnect
+- Outlet sensor unique IDs (`unknown_*`) migrated to serial-based IDs with history preserved
+- Default port mismatch (60000 vs 6000) in setup
+- `cycle_all_outlets` no longer treats failed responses as success
+
+### Removed
+- ~2,700 lines of dead code (unused controller stack, parser, debug scripts)
+- Hardcoded 8-outlet fallback
+- Pre-filled default password in the config flow
+- Plaintext credential logging
+
 ## [1.0.0] - 2024-01-XX
 
 ### Added - Major Release: Redfish API Support & Comprehensive Power Monitoring

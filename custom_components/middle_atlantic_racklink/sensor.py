@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from . import RacklinkConfigEntry
+from .const import DOMAIN
+from .coordinator import RacklinkCoordinator
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Set
-
-import logging
-
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -22,16 +21,15 @@ from homeassistant.const import (
     UnitOfFrequency,
     UnitOfPower,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Any, Dict, Optional, Set
 
-from . import RacklinkConfigEntry
-from .const import DOMAIN
-from .coordinator import RacklinkCoordinator
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -196,9 +194,7 @@ def _migrate_legacy_outlet_unique_ids(
     for outlet in coordinator.outlet_data:
         for description in OUTLET_SENSORS:
             legacy_unique_id = f"unknown_{outlet}_{description.key}"
-            entity_id = registry.async_get_entity_id(
-                "sensor", DOMAIN, legacy_unique_id
-            )
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, legacy_unique_id)
             if entity_id is None:
                 continue
             entry = registry.async_get(entity_id)
@@ -252,9 +248,7 @@ class RacklinkPduSensor(RacklinkSensorBase):
     ) -> None:
         """Initialize the PDU sensor."""
         super().__init__(coordinator, description)
-        self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_{description.key}"
-        )
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
 
     @property
     def native_value(self) -> StateType:

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-import pytest
+from .conftest import MOCK_PDU_INFO
+from custom_components.middle_atlantic_racklink.const import (
+    DOMAIN,
+    SERVICE_CYCLE_ALL_OUTLETS,
+    SERVICE_CYCLE_OUTLET,
+    SERVICE_SET_OUTLET_NAME,
+    SERVICE_SET_PDU_NAME,
+)
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -17,16 +22,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from unittest.mock import MagicMock
 
-from custom_components.middle_atlantic_racklink.const import (
-    DOMAIN,
-    SERVICE_CYCLE_ALL_OUTLETS,
-    SERVICE_CYCLE_OUTLET,
-    SERVICE_SET_OUTLET_NAME,
-    SERVICE_SET_PDU_NAME,
-)
-
-from .conftest import MOCK_PDU_INFO
+import pytest
 
 SERIAL = MOCK_PDU_INFO["pdu_serial"]
 
@@ -62,10 +60,7 @@ async def test_outlet_switch_states(
 
     # No hardcoded 8-outlet fallback: only real outlets exist
     registry = er.async_get(hass)
-    assert (
-        registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_outlet_3")
-        is None
-    )
+    assert registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_outlet_3") is None
 
 
 async def test_turn_on_off(

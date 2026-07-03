@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any, Dict, Optional, Union
-
-import asyncio
-import logging
-import re
-
 from ..connection_factory import AutoConnectionManager, ConnectionFactory
 from ..const import (
     CONF_CONNECTION_TYPE,
@@ -26,6 +19,12 @@ from ..socket_connection import (
     SocketConfig,
     SocketConnection,
 )
+from collections.abc import Iterable
+from typing import Any, Dict, Optional, Union
+
+import asyncio
+import logging
+import re
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -512,9 +511,7 @@ class RacklinkController:
                     self.outlet_names.update(self.connection.outlet_names)
                 else:
                     for outlet_num in outlet_data:
-                        self.outlet_names.setdefault(
-                            outlet_num, f"Outlet {outlet_num}"
-                        )
+                        self.outlet_names.setdefault(outlet_num, f"Outlet {outlet_num}")
             else:
                 _LOGGER.warning("No outlet states found via Telnet")
             return
@@ -728,9 +725,7 @@ class RacklinkController:
             return False
 
         except Exception as err:
-            _LOGGER.error(
-                "Error turning outlet %d %s: %s", outlet, state_name, err
-            )
+            _LOGGER.error("Error turning outlet %d %s: %s", outlet, state_name, err)
             return False
 
     async def cycle_outlet(self, outlet: int, cycle_time: int = 5) -> bool:
@@ -881,9 +876,8 @@ class RacklinkController:
                 response = await telnet_conn.send_command(sequence_cmd)
 
                 # Set a 2-second delay between each outlet
-                delay_cmd = (
-                    "pdu outletSequenceDelay "
-                    + ";".join(f"{outlet}:2" for outlet in outlet_list)
+                delay_cmd = "pdu outletSequenceDelay " + ";".join(
+                    f"{outlet}:2" for outlet in outlet_list
                 )
                 delay_response = await telnet_conn.send_command(delay_cmd)
 
@@ -934,9 +928,8 @@ class RacklinkController:
                 response = await telnet_conn.send_command("pdu outletSequence default")
 
                 outlet_list = sorted(self.outlet_states.keys())
-                delay_cmd = (
-                    "pdu outletSequenceDelay "
-                    + ";".join(f"{outlet}:0" for outlet in outlet_list)
+                delay_cmd = "pdu outletSequenceDelay " + ";".join(
+                    f"{outlet}:0" for outlet in outlet_list
                 )
                 delay_response = await telnet_conn.send_command(delay_cmd)
 

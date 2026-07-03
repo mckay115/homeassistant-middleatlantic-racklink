@@ -2,21 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Set
-
-import logging
-
-import voluptuous as vol
-
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_platform
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-
 from . import RacklinkConfigEntry
 from .const import (
     SERVICE_CYCLE_ALL_OUTLETS,
@@ -25,6 +10,18 @@ from .const import (
     SERVICE_SET_PDU_NAME,
 )
 from .coordinator import RacklinkCoordinator
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import CONF_NAME
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Any, Dict, Optional, Set
+
+import logging
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 

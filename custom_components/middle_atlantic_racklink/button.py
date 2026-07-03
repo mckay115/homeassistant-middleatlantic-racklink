@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
+from . import RacklinkConfigEntry
+from .coordinator import RacklinkCoordinator
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Set
-
-import logging
-
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback, HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Any, Set
 
-from . import RacklinkConfigEntry
-from .coordinator import RacklinkCoordinator
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,9 +122,7 @@ class RacklinkPduButton(RacklinkButtonBase):
         """Initialize the button."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_{description.key}"
-        )
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
 
     async def async_press(self) -> None:
         """Press the button."""

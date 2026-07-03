@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
 from custom_components.middle_atlantic_racklink.const import (
     CONF_CONNECTION_TYPE,
     CONNECTION_TYPE_REDFISH,
     DOMAIN,
 )
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 MOCK_CONFIG = {
     "host": "192.168.1.100",

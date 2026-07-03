@@ -2,22 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
-import logging
-
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_USERNAME,
-    Platform,
-)
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.typing import ConfigType
-
 from .const import (
     CONF_CONNECTION_TYPE,
     CONF_ENABLE_VENDOR_FEATURES,
@@ -32,6 +16,20 @@ from .const import (
 )
 from .controller.racklink_controller import RacklinkController
 from .coordinator import RacklinkCoordinator
+from datetime import timedelta
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+    Platform,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
+
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,9 +133,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: RacklinkConfigEntry) ->
     return unload_ok
 
 
-async def async_migrate_entry(
-    _hass: HomeAssistant, entry: RacklinkConfigEntry
-) -> bool:
+async def async_migrate_entry(_hass: HomeAssistant, entry: RacklinkConfigEntry) -> bool:
     """Migrate an old config entry to the new version."""
     _LOGGER.debug("Migrating from version %s", entry.version)
     return True

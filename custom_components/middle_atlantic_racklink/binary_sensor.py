@@ -2,25 +2,23 @@
 
 from __future__ import annotations
 
+from . import RacklinkConfigEntry
+from .coordinator import RacklinkCoordinator
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Set
-
-import logging
-
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback, HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Any, Dict, Optional, Set
 
-from . import RacklinkConfigEntry
-from .coordinator import RacklinkCoordinator
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,9 +133,7 @@ class RacklinkStatusBinarySensor(RacklinkBinarySensorBase):
     ) -> None:
         """Initialize the status binary sensor."""
         super().__init__(coordinator, description)
-        self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_{description.key}"
-        )
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
 
     @property
     def is_on(self) -> Optional[bool]:

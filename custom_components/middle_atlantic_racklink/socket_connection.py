@@ -7,6 +7,7 @@ Supports both the framed binary protocol (Premium+ series, typically port
 
 from __future__ import annotations
 
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
@@ -14,8 +15,6 @@ import asyncio
 import logging
 import re
 import time
-
-from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -453,10 +452,16 @@ class SocketConnection:
 
     async def _read_unescaped_byte(self, timeout: float) -> int:
         """Read a single logical byte from the stream, resolving escapes."""
-        byte = (await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout))[0]
+        byte = (
+            await asyncio.wait_for(
+                self._require_reader().readexactly(1), timeout=timeout
+            )
+        )[0]
         if byte == ESCAPE_BYTE:
             escaped = (
-                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
             )[0]
             return escaped ^ 0xFF
         return byte
@@ -478,7 +483,9 @@ class SocketConnection:
         try:
             # Header is never escaped
             header = (
-                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
             )[0]
             if header != HEADER_BYTE:
                 _LOGGER.warning("Invalid header byte: 0x%02X", header)
@@ -494,7 +501,9 @@ class SocketConnection:
 
             # Tail is never escaped
             tail = (
-                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
             )[0]
 
             expected_checksum = (header + length + sum(data_envelope)) & 0x7F
@@ -546,7 +555,9 @@ class SocketConnection:
                 and message[1] == SUBCMD_PING
             ):
                 _LOGGER.debug("Received PING while awaiting response, sending PONG")
-                await self._send_raw_data(RackLinkMessage(CMD_PING, SUBCMD_PONG).build())
+                await self._send_raw_data(
+                    RackLinkMessage(CMD_PING, SUBCMD_PONG).build()
+                )
                 self._last_ping_time = time.time()
                 continue
             return message
@@ -825,7 +836,9 @@ class SocketConnection:
             await self._require_writer().drain()
 
             try:
-                data = await asyncio.wait_for(self._require_reader().read(512), timeout=1.0)
+                data = await asyncio.wait_for(
+                    self._require_reader().read(512), timeout=1.0
+                )
                 response = data.decode("utf-8", errors="ignore")
 
                 corruption_indicators = [
@@ -833,9 +846,7 @@ class SocketConnection:
                     "(1/2/3/4/5/6/7/8/all)" in response,
                     "^\r\n" in response,
                     # Long command history indicates buffer overflow
-                    len(response) > 200
-                    and "show" in response
-                    and "outlet" in response,
+                    len(response) > 200 and "show" in response and "outlet" in response,
                 ]
 
                 if any(corruption_indicators):
@@ -912,7 +923,9 @@ class SocketConnection:
         try:
             while True:
                 try:
-                    data = await asyncio.wait_for(self._require_reader().read(1024), timeout=0.1)
+                    data = await asyncio.wait_for(
+                        self._require_reader().read(1024), timeout=0.1
+                    )
                     if not data:
                         break
                     _LOGGER.debug("Flushed %d bytes from input buffer", len(data))
@@ -1041,7 +1054,9 @@ class SocketConnection:
             await self._require_writer().drain()
 
             # Read final authentication response
-            auth_response = await asyncio.wait_for(self._require_reader().read(1024), timeout=5.0)
+            auth_response = await asyncio.wait_for(
+                self._require_reader().read(1024), timeout=5.0
+            )
             auth_text = auth_response.decode("utf-8", errors="ignore")
 
             # Check for successful login (welcome message or command prompt)
@@ -1066,10 +1081,17 @@ class SocketConnection:
                 self._authenticated = True
                 return True
 
-            if any(
-                failure in auth_text_lower
-                for failure in ("login incorrect", "authentication failed", "denied")
-            ) or "login:" in auth_text_lower:
+            if (
+                any(
+                    failure in auth_text_lower
+                    for failure in (
+                        "login incorrect",
+                        "authentication failed",
+                        "denied",
+                    )
+                )
+                or "login:" in auth_text_lower
+            ):
                 raise RacklinkAuthenticationError(
                     "Telnet authentication failed: invalid credentials"
                 )

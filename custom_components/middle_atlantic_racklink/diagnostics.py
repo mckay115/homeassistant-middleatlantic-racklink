@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from . import RacklinkConfigEntry
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-
-from . import RacklinkConfigEntry
+from typing import Any, Dict
 
 TO_REDACT = {CONF_HOST, CONF_PASSWORD, CONF_USERNAME, "mac_address"}
 

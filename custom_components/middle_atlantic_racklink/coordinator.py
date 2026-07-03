@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from .const import ATTR_MANUFACTURER, ATTR_MODEL, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .controller.racklink_controller import RacklinkController
+from .exceptions import RacklinkAuthenticationError
 from datetime import timedelta
-from typing import Any, Dict, cast
-
-import logging
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
@@ -15,10 +14,9 @@ from homeassistant.helpers.device_registry import (
     DeviceInfo,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from typing import Any, cast, Dict
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DEFAULT_SCAN_INTERVAL, DOMAIN
-from .controller.racklink_controller import RacklinkController
-from .exceptions import RacklinkAuthenticationError
+import logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,9 +117,7 @@ class RacklinkCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         for outlet_num, state in controller.outlet_states.items():
             outlets[outlet_num] = {
                 "state": state,
-                "name": controller.outlet_names.get(
-                    outlet_num, f"Outlet {outlet_num}"
-                ),
+                "name": controller.outlet_names.get(outlet_num, f"Outlet {outlet_num}"),
                 "attrs": controller.outlet_attrs.get(outlet_num),
                 "power": controller.outlet_power_data.get(outlet_num),
                 "energy_wh": controller.outlet_energy_data.get(outlet_num),

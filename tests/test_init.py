@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-from unittest.mock import MagicMock
-
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-
+from .conftest import MOCK_PDU_INFO
 from custom_components.middle_atlantic_racklink.const import (
     ATTR_MANUFACTURER,
     CONF_SCAN_INTERVAL,
@@ -20,8 +14,11 @@ from custom_components.middle_atlantic_racklink.coordinator import (
 from custom_components.middle_atlantic_racklink.exceptions import (
     RacklinkAuthenticationError,
 )
-
-from .conftest import MOCK_PDU_INFO
+from datetime import timedelta
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from unittest.mock import MagicMock
 
 
 async def test_setup_and_unload_entry(
