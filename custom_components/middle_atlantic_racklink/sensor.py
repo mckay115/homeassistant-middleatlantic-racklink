@@ -55,6 +55,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("voltage"),
     ),
     RacklinkSensorEntityDescription(
@@ -63,6 +64,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=2,
         value_fn=lambda data: data.get("current"),
     ),
     RacklinkSensorEntityDescription(
@@ -71,6 +73,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("power"),
     ),
     RacklinkSensorEntityDescription(
@@ -79,6 +82,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
         value_fn=lambda data: _wh_to_kwh(data.get("energy_wh")),
     ),
     RacklinkSensorEntityDescription(
@@ -87,6 +91,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.FREQUENCY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("frequency"),
     ),
     RacklinkSensorEntityDescription(
@@ -95,6 +100,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.APPARENT_POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("apparent_power"),
     ),
     RacklinkSensorEntityDescription(
@@ -102,6 +108,7 @@ PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         translation_key="power_factor",
         device_class=SensorDeviceClass.POWER_FACTOR,
         state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
         value_fn=lambda data: data.get("power_factor"),
     ),
 )
@@ -113,6 +120,7 @@ OUTLET_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=1,
         value_fn=lambda data: data.get("power"),
     ),
     RacklinkSensorEntityDescription(
@@ -121,6 +129,7 @@ OUTLET_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
         value_fn=lambda data: _wh_to_kwh(data.get("energy_wh")),
     ),
     RacklinkSensorEntityDescription(
@@ -129,6 +138,7 @@ OUTLET_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=2,
         value_fn=lambda data: data.get("current"),
     ),
     RacklinkSensorEntityDescription(
@@ -137,6 +147,9 @@ OUTLET_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=1,
+        # Duplicates the mains voltage on every outlet; hidden by default
+        entity_registry_enabled_default=False,
         value_fn=lambda data: data.get("voltage"),
     ),
 )

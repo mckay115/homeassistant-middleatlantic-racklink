@@ -9,6 +9,7 @@ from ..const import (
     CONNECTION_TYPE_REDFISH,
     CONNECTION_TYPE_TELNET,
     DEFAULT_PORT,
+    DEFAULT_SEQUENCE_DELAY,
 )
 from ..exceptions import RacklinkAuthenticationError
 from ..redfish_connection import RedfishConnection
@@ -854,7 +855,7 @@ class RacklinkController:
             _LOGGER.error("Error during load shedding %s: %s", action, err)
             return False
 
-    async def start_sequence(self) -> bool:
+    async def start_sequence(self, delay_seconds: int = DEFAULT_SEQUENCE_DELAY) -> bool:
         """Start outlet sequencing using config mode commands."""
         telnet_conn = self._get_telnet_connection()
         if not telnet_conn:
@@ -862,7 +863,9 @@ class RacklinkController:
             return False
 
         try:
-            _LOGGER.debug("Configuring outlet startup sequence")
+            _LOGGER.debug(
+                "Configuring outlet startup sequence (%ds delay)", delay_seconds
+            )
 
             # Enter config mode
             await telnet_conn.send_command("config")
@@ -875,9 +878,8 @@ class RacklinkController:
                 sequence_cmd = f"pdu outletSequence {sequence_order}"
                 response = await telnet_conn.send_command(sequence_cmd)
 
-                # Set a 2-second delay between each outlet
                 delay_cmd = "pdu outletSequenceDelay " + ";".join(
-                    f"{outlet}:2" for outlet in outlet_list
+                    f"{outlet}:{delay_seconds}" for outlet in outlet_list
                 )
                 delay_response = await telnet_conn.send_command(delay_cmd)
 

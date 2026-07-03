@@ -10,7 +10,7 @@ from .const import (
     SERVICE_SET_PDU_NAME,
 )
 from .coordinator import RacklinkCoordinator
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import CONF_NAME
 from homeassistant.core import callback, HomeAssistant
 from homeassistant.helpers import config_validation as cv
@@ -56,6 +56,18 @@ async def async_setup_entry(
         "async_set_pdu_name",
     )
 
+    # Load shedding and sequencing are controlled over the telnet channel
+    if (
+        coordinator.controller.enable_vendor_features
+        and coordinator.controller.has_vendor_features
+    ):
+        async_add_entities(
+            [
+                RacklinkLoadSheddingSwitch(coordinator),
+                RacklinkSequenceSwitch(coordinator),
+            ]
+        )
+
     known_outlets: Set[int] = set()
 
     @callback
@@ -78,6 +90,7 @@ class RacklinkOutletSwitch(CoordinatorEntity[RacklinkCoordinator], SwitchEntity)
 
     _attr_has_entity_name = True
     _attr_translation_key = "outlet"
+    _attr_device_class = SwitchDeviceClass.OUTLET
 
     def __init__(self, coordinator: RacklinkCoordinator, outlet_number: int) -> None:
         """Initialize the outlet switch."""
@@ -146,3 +159,63 @@ class RacklinkOutletSwitch(CoordinatorEntity[RacklinkCoordinator], SwitchEntity)
     async def async_set_pdu_name(self, name: str) -> None:
         """Set the PDU display name on the device (service handler)."""
         await self.coordinator.set_pdu_name(name)
+
+
+class RacklinkStatusSwitchBase(CoordinatorEntity[RacklinkCoordinator], SwitchEntity):
+    """Base class for PDU-wide feature switches backed by status data."""
+
+    _attr_has_entity_name = True
+    _key: str
+    _status_key: str
+
+    def __init__(self, coordinator: RacklinkCoordinator) -> None:
+        """Initialize the status switch."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{self._key}"
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        """Return True if the feature is active."""
+        return self.coordinator.status_data.get(self._status_key)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return self.coordinator.device_info
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return super().available and self.coordinator.controller.connected
+
+
+class RacklinkLoadSheddingSwitch(RacklinkStatusSwitchBase):
+    """Switch controlling the PDU's load shedding mode."""
+
+    _attr_translation_key = "load_shedding"
+    _key = "load_shedding"
+    _status_key = "load_shedding_active"
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Start load shedding (non-critical outlets power off)."""
+        await self.coordinator.start_load_shedding()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Stop load shedding (non-critical outlets power back on)."""
+        await self.coordinator.stop_load_shedding()
+
+
+class RacklinkSequenceSwitch(RacklinkStatusSwitchBase):
+    """Switch controlling the PDU's outlet power-on sequencing."""
+
+    _attr_translation_key = "sequence"
+    _key = "sequence"
+    _status_key = "sequence_active"
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable outlet sequencing with the configured delay."""
+        await self.coordinator.start_sequence()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable outlet sequencing."""
+        await self.coordinator.stop_sequence()

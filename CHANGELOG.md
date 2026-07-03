@@ -15,12 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostics support with redacted credentials
 - Translations (`translations/en.json`), `icons.json`, and translated entity names
 - Dynamic outlet discovery: entities are created from real device data and added when new outlets appear
+- Load shedding and outlet sequence switches (replacing the start/stop button pairs and status binary sensors)
+- Outlet sequence delay number entity (1-60 s, persisted in the config entry options and applied when sequencing starts)
+- `SwitchDeviceClass.OUTLET` on outlet switches and `suggested_display_precision` on all measurement sensors
 
 ### Changed
 - Migrated to `entry.runtime_data` with a typed coordinator and `DeviceInfo`
 - Sensors rewritten with `SensorEntityDescription`; missing readings report `unknown` instead of `0`
 - Energy readings are stored in Wh internally and exposed in kWh without heuristics (fixes corrupted long-term statistics)
 - Binary sensors now update through the data update coordinator
+- Surge protection is exposed as a `problem` binary sensor (on = protection lost)
+- Per-outlet voltage sensors are disabled by default (they duplicate the mains voltage)
 - Options changes apply the polling interval in place instead of reloading the entry
 - Release workflow is tag-driven and validates the tag against the manifest version
 

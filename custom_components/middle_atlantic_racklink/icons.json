@@ -4,14 +4,8 @@
       "surge_protection": {
         "default": "mdi:flash-alert",
         "state": {
-          "on": "mdi:flash"
+          "off": "mdi:flash"
         }
-      },
-      "load_shedding": {
-        "default": "mdi:transmission-tower-off"
-      },
-      "sequence": {
-        "default": "mdi:timer-play-outline"
       },
       "outlet_non_critical": {
         "default": "mdi:power-plug-off-outline"
@@ -23,23 +17,22 @@
       },
       "cycle_all_outlets": {
         "default": "mdi:restart-alert"
-      },
-      "start_load_shedding": {
-        "default": "mdi:transmission-tower-off"
-      },
-      "stop_load_shedding": {
-        "default": "mdi:transmission-tower"
-      },
-      "start_sequence": {
-        "default": "mdi:timer-play"
-      },
-      "stop_sequence": {
-        "default": "mdi:timer-stop"
       }
     },
     "switch": {
       "outlet": {
         "default": "mdi:power-socket"
+      },
+      "load_shedding": {
+        "default": "mdi:transmission-tower-off"
+      },
+      "sequence": {
+        "default": "mdi:timer-play-outline"
+      }
+    },
+    "number": {
+      "sequence_delay": {
+        "default": "mdi:timer-cog-outline"
       }
     }
   },

@@ -89,20 +89,19 @@
     },
     "binary_sensor": {
       "surge_protection": { "name": "Surge protection" },
-      "load_shedding": { "name": "Load shedding" },
-      "sequence": { "name": "Outlet sequence" },
       "outlet_non_critical": { "name": "Outlet {outlet_number} sheds on load shedding" }
     },
     "switch": {
-      "outlet": { "name": "Outlet {outlet_number}" }
+      "outlet": { "name": "Outlet {outlet_number}" },
+      "load_shedding": { "name": "Load shedding" },
+      "sequence": { "name": "Outlet sequence" }
     },
     "button": {
       "cycle_outlet": { "name": "Cycle outlet {outlet_number}" },
-      "cycle_all_outlets": { "name": "Cycle all outlets" },
-      "start_load_shedding": { "name": "Start load shedding" },
-      "stop_load_shedding": { "name": "Stop load shedding" },
-      "start_sequence": { "name": "Start outlet sequence" },
-      "stop_sequence": { "name": "Stop outlet sequence" }
+      "cycle_all_outlets": { "name": "Cycle all outlets" }
+    },
+    "number": {
+      "sequence_delay": { "name": "Outlet sequence delay" }
     }
   },
   "services": {

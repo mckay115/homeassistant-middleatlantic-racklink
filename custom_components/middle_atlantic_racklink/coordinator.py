@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    ATTR_MANUFACTURER,
+    ATTR_MODEL,
+    CONF_SEQUENCE_DELAY,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SEQUENCE_DELAY,
+    DOMAIN,
+)
 from .controller.racklink_controller import RacklinkController
 from .exceptions import RacklinkAuthenticationError
 from datetime import timedelta
@@ -216,10 +223,24 @@ class RacklinkCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             raise HomeAssistantError("Failed to stop load shedding")
         self._apply_optimistic_status("load_shedding_active", False)
 
+    @property
+    def sequence_delay(self) -> int:
+        """Return the configured delay between outlets when sequencing."""
+        return int(
+            self.config_entry.options.get(CONF_SEQUENCE_DELAY, DEFAULT_SEQUENCE_DELAY)
+        )
+
+    async def async_set_sequence_delay(self, delay: int) -> None:
+        """Persist a new sequence delay in the config entry options."""
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            options={**self.config_entry.options, CONF_SEQUENCE_DELAY: delay},
+        )
+
     async def start_sequence(self) -> None:
         """Start the outlet sequence."""
         _LOGGER.debug("Starting outlet sequence")
-        if not await self.controller.start_sequence():
+        if not await self.controller.start_sequence(self.sequence_delay):
             raise HomeAssistantError("Failed to start outlet sequence")
         self._apply_optimistic_status("sequence_active", True)
 

@@ -55,36 +55,18 @@ async def test_cycle_all_outlets_button(
     mock_controller.cycle_all_outlets.assert_awaited_once()
 
 
-async def test_vendor_feature_buttons(
+async def test_no_vendor_feature_buttons(
     hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
 ) -> None:
-    """Test load shedding and sequence buttons call the controller."""
-    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    await _press(hass, _entity_id(hass, f"{SERIAL}_start_load_shedding"))
-    mock_controller.start_load_shedding.assert_awaited_once()
-
-    await _press(hass, _entity_id(hass, f"{SERIAL}_stop_sequence"))
-    mock_controller.stop_sequence.assert_awaited_once()
-
-
-async def test_vendor_buttons_absent_without_telnet(
-    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
-) -> None:
-    """Test vendor-feature buttons are not created without a telnet channel."""
-    mock_controller.has_vendor_features = False
-
+    """Test load shedding/sequence are not buttons (they are switches)."""
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
     registry = er.async_get(hass)
-    assert (
-        registry.async_get_entity_id("button", DOMAIN, f"{SERIAL}_start_load_shedding")
-        is None
-    )
-    # The plain cycle-all button is always present
-    assert (
-        registry.async_get_entity_id("button", DOMAIN, f"{SERIAL}_all_outlets_cycle")
-        is not None
-    )
+    for unique_id in (
+        f"{SERIAL}_start_load_shedding",
+        f"{SERIAL}_stop_load_shedding",
+        f"{SERIAL}_start_sequence",
+        f"{SERIAL}_stop_sequence",
+    ):
+        assert registry.async_get_entity_id("button", DOMAIN, unique_id) is None

@@ -171,3 +171,86 @@ async def test_unavailable_when_disconnected(
     await hass.async_block_till_done()
 
     assert hass.states.get(entity_id).state == "unavailable"
+
+
+def _feature_entity_id(hass: HomeAssistant, key: str) -> str:
+    """Return the entity ID of a PDU feature switch."""
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_{key}")
+    assert entity_id is not None, f"No switch registered for {key}"
+    return entity_id
+
+
+async def test_outlet_switch_device_class(
+    hass: HomeAssistant, setup_entry, mock_controller: MagicMock
+) -> None:
+    """Test outlet switches carry the outlet device class."""
+    state = hass.states.get(_entity_id(hass, 1))
+    assert state.attributes["device_class"] == "outlet"
+
+
+async def test_load_shedding_switch(
+    hass: HomeAssistant, setup_entry, mock_controller: MagicMock
+) -> None:
+    """Test the load shedding switch controls and reflects the PDU state."""
+    entity_id = _feature_entity_id(hass, "load_shedding")
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    mock_controller.start_load_shedding.assert_awaited_once()
+    assert hass.states.get(entity_id).state == STATE_ON
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    mock_controller.stop_load_shedding.assert_awaited_once()
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+
+async def test_sequence_switch(
+    hass: HomeAssistant, setup_entry, mock_controller: MagicMock
+) -> None:
+    """Test the sequence switch starts sequencing with the configured delay."""
+    entity_id = _feature_entity_id(hass, "sequence")
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    # Default delay of 2 seconds is passed through
+    mock_controller.start_sequence.assert_awaited_once_with(2)
+    assert hass.states.get(entity_id).state == STATE_ON
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    mock_controller.stop_sequence.assert_awaited_once()
+    assert hass.states.get(entity_id).state == STATE_OFF
+
+
+async def test_feature_switches_absent_without_telnet(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test feature switches are not created without a telnet channel."""
+    mock_controller.has_vendor_features = False
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    for key in ("load_shedding", "sequence"):
+        assert registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_{key}") is None

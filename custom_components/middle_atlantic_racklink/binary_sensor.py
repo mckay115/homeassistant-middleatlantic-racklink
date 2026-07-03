@@ -23,6 +23,13 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 
+def _invert(value: Optional[bool]) -> Optional[bool]:
+    """Invert an optional boolean, preserving None."""
+    if value is None:
+        return None
+    return not value
+
+
 @dataclass(frozen=True, kw_only=True)
 class RacklinkBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Describes a RackLink binary sensor fed from a coordinator data dict."""
@@ -30,26 +37,15 @@ class RacklinkBinarySensorEntityDescription(BinarySensorEntityDescription):
     value_fn: Callable[[Dict[str, Any]], Optional[bool]]
 
 
+# Load shedding and sequencing expose read/write state and are therefore
+# modeled as switch entities rather than binary sensors.
 STATUS_BINARY_SENSORS: tuple[RacklinkBinarySensorEntityDescription, ...] = (
     RacklinkBinarySensorEntityDescription(
         key="surge_protection",
         translation_key="surge_protection",
+        device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.get("surge_protection_ok"),
-    ),
-    RacklinkBinarySensorEntityDescription(
-        key="load_shedding",
-        translation_key="load_shedding",
-        device_class=BinarySensorDeviceClass.RUNNING,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.get("load_shedding_active"),
-    ),
-    RacklinkBinarySensorEntityDescription(
-        key="sequence",
-        translation_key="sequence",
-        device_class=BinarySensorDeviceClass.RUNNING,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.get("sequence_active"),
+        value_fn=lambda data: _invert(data.get("surge_protection_ok")),
     ),
 )
 

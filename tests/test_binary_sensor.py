@@ -20,16 +20,14 @@ def _get_state(hass: HomeAssistant, unique_id: str):
     return hass.states.get(entity_id)
 
 
-async def test_status_binary_sensors(
+async def test_surge_protection_problem_sensor(
     hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
 ) -> None:
-    """Test PDU status binary sensors reflect coordinator data."""
+    """Test the surge protection problem sensor is off while protection is OK."""
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert _get_state(hass, f"{SERIAL}_surge_protection").state == STATE_ON
-    assert _get_state(hass, f"{SERIAL}_load_shedding").state == STATE_OFF
-    assert _get_state(hass, f"{SERIAL}_sequence").state == STATE_OFF
+    assert _get_state(hass, f"{SERIAL}_surge_protection").state == STATE_OFF
 
 
 async def test_unknown_status_is_unknown(
@@ -37,13 +35,11 @@ async def test_unknown_status_is_unknown(
 ) -> None:
     """Test missing device data yields unknown, not a fabricated default."""
     mock_controller.surge_protection_ok = None
-    mock_controller.load_shedding_active = None
 
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
     assert _get_state(hass, f"{SERIAL}_surge_protection").state == STATE_UNKNOWN
-    assert _get_state(hass, f"{SERIAL}_load_shedding").state == STATE_UNKNOWN
 
 
 async def test_outlet_non_critical_sensors(
@@ -64,9 +60,10 @@ async def test_binary_sensors_follow_updates(
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    mock_controller.load_shedding_active = True
+    mock_controller.surge_protection_ok = False
     coordinator = mock_config_entry.runtime_data
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
-    assert _get_state(hass, f"{SERIAL}_load_shedding").state == STATE_ON
+    # Protection failed -> problem sensor turns on
+    assert _get_state(hass, f"{SERIAL}_surge_protection").state == STATE_ON

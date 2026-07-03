@@ -9,7 +9,7 @@ Control and monitor Middle Atlantic (Legrand) RackLink PDUs from Home Assistant.
 - Outlet control: turn outlets on/off and cycle power (per outlet or all at once)
 - Power monitoring: voltage, current, power, apparent power, power factor, frequency, and energy (with Home Assistant Energy dashboard support)
 - Per-outlet power/energy/current/voltage sensors (Redfish mode)
-- Load shedding and outlet sequencing controls (vendor features via telnet)
+- Load shedding and outlet sequencing switches with configurable sequence delay (vendor features via telnet)
 - Surge protection status
 - Rename outlets and the PDU from Home Assistant
 - Automatic discovery via mDNS/zeroconf
@@ -68,11 +68,16 @@ The polling interval can be tuned under the integration's **Configure** menu (5�
 
 ## Entities
 
-- **Switches**: one per outlet, with outlet metadata (power-on delays, rated current) as attributes
+- **Switches**: one per outlet (device class *outlet*), with outlet metadata (power-on delays, rated current) as attributes; plus **Load shedding** and **Outlet sequence** switches when a telnet channel is available
 - **Sensors** (PDU): voltage, current, power, apparent power, power factor, frequency, energy
-- **Sensors** (per outlet, Redfish): power, energy, current, voltage
-- **Binary sensors**: surge protection, load shedding active, sequence active, per-outlet non-critical flag
-- **Buttons**: cycle per outlet, cycle all outlets, start/stop load shedding, start/stop sequence (vendor-feature buttons appear only when a telnet channel is available)
+- **Sensors** (per outlet, Redfish): power, energy, current, voltage (voltage is disabled by default since it duplicates the mains voltage)
+- **Binary sensors**: surge protection problem, per-outlet non-critical (sheds on load shedding) flag
+- **Buttons**: cycle per outlet, cycle all outlets
+- **Numbers**: outlet sequence delay (seconds between outlets during a power-on sequence)
+
+### Energy dashboard
+
+The PDU **Energy** sensor and the per-outlet **Outlet N energy** sensors are total-increasing kWh sensors, so they can be added to the Home Assistant Energy dashboard under **Individual devices** to track rack-level and per-device consumption. The power sensors (W) feed the power graphs and can drive automations (e.g. shut down a server when its outlet draws less than a threshold).
 
 ## Services
 
@@ -104,7 +109,7 @@ data:
      - Premium+: enable via Device Settings → Network Services → Control Protocol
 2. **Authentication failed**
    - Home Assistant will prompt for reauthentication; enter the current device credentials
-3. **Vendor features missing** (load shedding/sequencing buttons absent)
+3. **Vendor features missing** (load shedding/sequencing switches absent)
    - These require a telnet channel; enable vendor features, and make sure port 6000 is reachable
 
 ### Debug logging

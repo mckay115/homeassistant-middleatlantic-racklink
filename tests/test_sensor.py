@@ -46,9 +46,16 @@ async def test_outlet_sensors(
     assert _get_state(hass, f"{SERIAL}_outlet_1_power").state == "50.0"
     assert _get_state(hass, f"{SERIAL}_outlet_1_energy").state == "2.0"
     assert _get_state(hass, f"{SERIAL}_outlet_1_current").state == "0.4"
-    assert _get_state(hass, f"{SERIAL}_outlet_1_voltage").state == "120.0"
     # A 0.0 reading is a real value, not "unknown"
     assert _get_state(hass, f"{SERIAL}_outlet_2_power").state == "0.0"
+
+    # Outlet voltage duplicates the mains voltage, so it is disabled by default
+    registry = er.async_get(hass)
+    voltage_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{SERIAL}_outlet_1_voltage"
+    )
+    assert voltage_entity_id is not None
+    assert registry.async_get(voltage_entity_id).disabled_by is not None
 
 
 async def test_missing_values_are_unknown(

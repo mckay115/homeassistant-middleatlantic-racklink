@@ -28,6 +28,12 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_CONNECTION_TYPE = "connection_type"
 CONF_USE_HTTPS = "use_https"
 CONF_ENABLE_VENDOR_FEATURES = "enable_vendor_features"
+CONF_SEQUENCE_DELAY = "sequence_delay"
+
+# Outlet sequencing
+DEFAULT_SEQUENCE_DELAY = 2  # Seconds between outlets when sequencing
+MIN_SEQUENCE_DELAY = 1
+MAX_SEQUENCE_DELAY = 60
 
 # Connection types
 CONNECTION_TYPE_REDFISH = "redfish"

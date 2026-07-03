@@ -23,7 +23,6 @@ class RacklinkButtonEntityDescription(ButtonEntityDescription):
     """Describes a RackLink button that invokes a coordinator action."""
 
     press_fn: Callable[[RacklinkCoordinator], Coroutine[Any, Any, None]]
-    requires_vendor_features: bool = False
 
 
 PDU_BUTTONS: tuple[RacklinkButtonEntityDescription, ...] = (
@@ -31,30 +30,6 @@ PDU_BUTTONS: tuple[RacklinkButtonEntityDescription, ...] = (
         key="all_outlets_cycle",
         translation_key="cycle_all_outlets",
         press_fn=lambda coordinator: coordinator.cycle_all_outlets(),
-    ),
-    RacklinkButtonEntityDescription(
-        key="start_load_shedding",
-        translation_key="start_load_shedding",
-        press_fn=lambda coordinator: coordinator.start_load_shedding(),
-        requires_vendor_features=True,
-    ),
-    RacklinkButtonEntityDescription(
-        key="stop_load_shedding",
-        translation_key="stop_load_shedding",
-        press_fn=lambda coordinator: coordinator.stop_load_shedding(),
-        requires_vendor_features=True,
-    ),
-    RacklinkButtonEntityDescription(
-        key="start_sequence",
-        translation_key="start_sequence",
-        press_fn=lambda coordinator: coordinator.start_sequence(),
-        requires_vendor_features=True,
-    ),
-    RacklinkButtonEntityDescription(
-        key="stop_sequence",
-        translation_key="stop_sequence",
-        press_fn=lambda coordinator: coordinator.stop_sequence(),
-        requires_vendor_features=True,
     ),
 )
 
@@ -66,13 +41,9 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Middle Atlantic RackLink buttons from a config entry."""
     coordinator = config_entry.runtime_data
-    controller = coordinator.controller
 
     entities: list[ButtonEntity] = [
-        RacklinkPduButton(coordinator, description)
-        for description in PDU_BUTTONS
-        if not description.requires_vendor_features
-        or (controller.enable_vendor_features and controller.has_vendor_features)
+        RacklinkPduButton(coordinator, description) for description in PDU_BUTTONS
     ]
     async_add_entities(entities)
 
