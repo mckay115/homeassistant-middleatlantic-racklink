@@ -1,194 +1,161 @@
-"""Binary Sensor platform for the Middle Atlantic RackLink integration."""
+"""Binary sensor platform for the Middle Atlantic RackLink integration."""
 
 from __future__ import annotations
 
-# Local application/library specific imports
-from .const import ATTR_MANUFACTURER, ATTR_MODEL, DOMAIN
-from .controller.racklink_controller import RacklinkController
+from . import RacklinkConfigEntry
 from .coordinator import RacklinkCoordinator
-
-# Home Assistant core imports
+from collections.abc import Callable
+from dataclasses import dataclass
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
+    BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.const import EntityCategory
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from typing import Any, Dict
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from typing import Any, Dict, Optional, Set
 
-# Standard library imports
 import logging
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def _invert(value: Optional[bool]) -> Optional[bool]:
+    """Invert an optional boolean, preserving None."""
+    if value is None:
+        return None
+    return not value
+
+
+@dataclass(frozen=True, kw_only=True)
+class RacklinkBinarySensorEntityDescription(BinarySensorEntityDescription):
+    """Describes a RackLink binary sensor fed from a coordinator data dict."""
+
+    value_fn: Callable[[Dict[str, Any]], Optional[bool]]
+
+
+# Load shedding and sequencing expose read/write state and are therefore
+# modeled as switch entities rather than binary sensors.
+STATUS_BINARY_SENSORS: tuple[RacklinkBinarySensorEntityDescription, ...] = (
+    RacklinkBinarySensorEntityDescription(
+        key="surge_protection",
+        translation_key="surge_protection",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: _invert(data.get("surge_protection_ok")),
+    ),
+)
+
+OUTLET_BINARY_SENSORS: tuple[RacklinkBinarySensorEntityDescription, ...] = (
+    RacklinkBinarySensorEntityDescription(
+        key="non_critical",
+        translation_key="outlet_non_critical",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.get("non_critical"),
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: RacklinkConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Middle Atlantic Racklink binary sensors."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
-    controller = (
-        coordinator.controller
-    )  # Access the actual controller through the coordinator
+    """Set up the Middle Atlantic RackLink binary sensors."""
+    coordinator = config_entry.runtime_data
 
-    # Get model capabilities to determine number of outlets
-    capabilities = controller.get_model_capabilities()
-    outlet_count = capabilities.get("num_outlets", 8)  # Default to 8 if not determined
+    async_add_entities(
+        RacklinkStatusBinarySensor(coordinator, description)
+        for description in STATUS_BINARY_SENSORS
+    )
 
-    binary_sensors = []
+    known_outlets: Set[int] = set()
 
-    # Add surge protection sensor if model supports it
-    if capabilities.get("has_surge_protection", False):
-        binary_sensors.append(RacklinkSurgeProtection(controller))
+    @callback
+    def _add_outlet_entities() -> None:
+        """Add binary sensors for outlets discovered on the device."""
+        new_outlets = sorted(set(coordinator.outlet_data) - known_outlets)
+        if not new_outlets:
+            return
+        known_outlets.update(new_outlets)
+        async_add_entities(
+            RacklinkOutletBinarySensor(coordinator, description, outlet)
+            for outlet in new_outlets
+            for description in OUTLET_BINARY_SENSORS
+        )
 
-    # Add load shedding participation binary sensor for each outlet
-    for i in range(1, outlet_count + 1):
-        binary_sensors.append(RacklinkOutletNonCritical(controller, i))
-
-    if binary_sensors:
-        async_add_entities(binary_sensors)
+    _add_outlet_entities()
+    config_entry.async_on_unload(coordinator.async_add_listener(_add_outlet_entities))
 
 
-class RacklinkBinarySensor(BinarySensorEntity):
-    """Base class for Racklink binary sensors."""
+class RacklinkBinarySensorBase(
+    CoordinatorEntity[RacklinkCoordinator], BinarySensorEntity
+):
+    """Base class for RackLink binary sensors."""
+
+    entity_description: RacklinkBinarySensorEntityDescription
+    _attr_has_entity_name = True
 
     def __init__(
         self,
-        controller: RacklinkController,
-        name: str,
-        device_class: str | None,
-        sensor_type: str,
+        coordinator: RacklinkCoordinator,
+        description: RacklinkBinarySensorEntityDescription,
     ) -> None:
-        """Initialize the sensor."""
-        self._controller = controller
-        self._attr_name = name
-        self._attr_device_class = device_class
-        self._state = None
-        self._sensor_type = sensor_type
-        self._attr_unique_id = f"{controller.pdu_serial}_{self._sensor_type}"
-        self._attr_available = False
-        self._attr_has_entity_name = True
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return self._attr_name
-
-    @property
-    def is_on(self) -> bool | None:
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return self._controller.connected and self._controller.available
+        """Initialize the binary sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device info."""
-        device_info = {
-            "identifiers": {(DOMAIN, self._controller.pdu_serial)},
-            "name": f"Racklink PDU {self._controller.pdu_name}",
-            "manufacturer": ATTR_MANUFACTURER,
-            "model": self._controller.pdu_model or ATTR_MODEL,
-            "sw_version": self._controller.pdu_firmware,
-        }
+        """Return device information."""
+        return self.coordinator.device_info
 
-        # Add MAC address as a connection info if available
-        if self._controller.mac_address:
-            device_info["connections"] = {("mac", self._controller.mac_address)}
-
-        return device_info
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return super().available and self.coordinator.controller.connected
 
 
-class RacklinkSurgeProtection(RacklinkBinarySensor):
-    """Surge protection binary sensor."""
+class RacklinkStatusBinarySensor(RacklinkBinarySensorBase):
+    """PDU status binary sensor reading from the coordinator status data."""
 
-    def __init__(self, controller: RacklinkController) -> None:
-        """Initialize the surge protection sensor."""
-        super().__init__(
-            controller,
-            "Surge Protection OK",
-            None,  # Do not use SAFETY to avoid 'unsafe' semantics on True
-            "surge_protection",
-        )
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+    def __init__(
+        self,
+        coordinator: RacklinkCoordinator,
+        description: RacklinkBinarySensorEntityDescription,
+    ) -> None:
+        """Initialize the status binary sensor."""
+        super().__init__(coordinator, description)
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
 
-    async def async_update(self) -> None:
-        """Update the sensor state."""
-        try:
-            self._state = await self._controller.get_surge_protection_status()
-            self._attr_available = (
-                self._controller.connected and self._controller.available
-            )
-        except Exception as err:
-            _LOGGER.error("Error updating surge protection sensor: %s", err)
-            self._state = None
-            self._attr_available = False
+    @property
+    def is_on(self) -> Optional[bool]:
+        """Return the state of the binary sensor."""
+        return self.entity_description.value_fn(self.coordinator.status_data)
 
 
-class RacklinkOutletNonCritical(RacklinkBinarySensor):
-    """Binary sensor indicating if an outlet WILL BE SHED during load shedding.
+class RacklinkOutletBinarySensor(RacklinkBinarySensorBase):
+    """Per-outlet binary sensor reading from the coordinator outlet data."""
 
-    True  => Outlet will turn OFF during load shedding (participates in shedding)
-    False => Outlet remains ON during load shedding (critical/exempt)
-    """
-
-    def __init__(self, controller: RacklinkController, outlet: int) -> None:
-        """Initialize the outlet non-critical sensor."""
+    def __init__(
+        self,
+        coordinator: RacklinkCoordinator,
+        description: RacklinkBinarySensorEntityDescription,
+        outlet: int,
+    ) -> None:
+        """Initialize the outlet binary sensor."""
+        super().__init__(coordinator, description)
         self._outlet = outlet
-
-        # Get outlet name if available or create a default
-        outlet_name = controller.outlet_names.get(outlet, f"Outlet {outlet}")
-
-        # Always include outlet number in sensor name
-        base = (
-            f"{outlet_name} Sheds on Load Shedding"
-            if outlet_name.startswith(f"Outlet {outlet}")
-            else f"Outlet {outlet} - {outlet_name} Sheds on Load Shedding"
+        self._attr_unique_id = (
+            f"{coordinator.controller.pdu_serial}_outlet_{outlet}_{description.key}"
         )
+        self._attr_translation_placeholders = {"outlet_number": str(outlet)}
 
-        super().__init__(
-            controller,
-            base,
-            None,  # device class None to avoid Problem/OK semantics confusion
-            f"outlet_{outlet}_non_critical",
-        )
-        self._outlet_name = outlet_name
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    async def async_update(self) -> None:
-        """Update the sensor state."""
-        if not self._controller.connected:
-            self._attr_available = False
-            return
-
-        try:
-            # Update the name in case it changed
-            new_outlet_name = self._controller.outlet_names.get(
-                self._outlet, f"Outlet {self._outlet}"
-            )
-            if new_outlet_name != self._outlet_name:
-                self._outlet_name = new_outlet_name
-                # Always include outlet number in sensor name
-                if self._outlet_name.startswith(f"Outlet {self._outlet}"):
-                    self._attr_name = f"{self._outlet_name} Sheds on Load Shedding"
-                else:
-                    self._attr_name = f"Outlet {self._outlet} - {self._outlet_name} Sheds on Load Shedding"
-
-            # True means this outlet will be shed (turn off) during load shedding
-            self._state = self._controller.outlet_non_critical.get(self._outlet, False)
-            self._attr_available = (
-                self._controller.connected and self._controller.available
-            )
-        except Exception as err:
-            _LOGGER.error(
-                "Error updating outlet %d non-critical sensor: %s", self._outlet, err
-            )
-            self._state = None
-            self._attr_available = False
+    @property
+    def is_on(self) -> Optional[bool]:
+        """Return the state of the binary sensor."""
+        outlet_data = self.coordinator.outlet_data.get(self._outlet, {})
+        return self.entity_description.value_fn(outlet_data)

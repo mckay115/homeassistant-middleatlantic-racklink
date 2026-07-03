@@ -1,16 +1,15 @@
 """Config flow for Middle Atlantic RackLink."""
 
-# Standard library imports
-# Local application/library specific imports
+from __future__ import annotations
+
 from .const import (
     CONF_CONNECTION_TYPE,
     CONF_ENABLE_VENDOR_FEATURES,
+    CONF_SCAN_INTERVAL,
     CONF_USE_HTTPS,
     CONNECTION_TYPE_AUTO,
-    CONNECTION_TYPE_DESCRIPTIONS,
     CONNECTION_TYPE_REDFISH,
     CONNECTION_TYPE_TELNET,
-    DEFAULT_PASSWORD,
     DEFAULT_PORT,
     DEFAULT_REDFISH_HTTP_PORT,
     DEFAULT_REDFISH_PORT,
@@ -20,67 +19,37 @@ from .const import (
 )
 from .controller.racklink_controller import RacklinkController
 from .discovery import discover_racklink_devices, DiscoveredDevice
-
-# Home Assistant core imports
+from .exceptions import RacklinkAuthenticationError
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
-    CONF_SCAN_INTERVAL,
     CONF_USERNAME,
 )
 from homeassistant.core import callback, HomeAssistant
-from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from typing import Any, Dict, List, Optional
 
 import asyncio
 import logging
-
-# Third-party imports
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 
-# Constants
 CONNECTION_TIMEOUT = 10
 
-# Data schema for connection type selection (no auto-detection)
 STEP_CONNECTION_TYPE_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_CONNECTION_TYPE, default=CONNECTION_TYPE_REDFISH): vol.In(
-            {
-                CONNECTION_TYPE_REDFISH: CONNECTION_TYPE_DESCRIPTIONS[
-                    CONNECTION_TYPE_REDFISH
-                ],
-                CONNECTION_TYPE_TELNET: CONNECTION_TYPE_DESCRIPTIONS[
-                    CONNECTION_TYPE_TELNET
-                ],
-            }
-        ),
-    }
-)
-
-# Data schema for the user input in the config flow
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-        vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=65535)
-        ),
-        vol.Optional(CONF_USE_HTTPS, default=True): cv.boolean,
-    }
-)
-
-# Data schema for the options flow
-OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
-            vol.Coerce(int), vol.Range(min=5, max=300)
+            [
+                CONNECTION_TYPE_REDFISH,
+                CONNECTION_TYPE_TELNET,
+                CONNECTION_TYPE_AUTO,
+            ]
         ),
     }
 )
@@ -89,144 +58,80 @@ OPTIONS_SCHEMA = vol.Schema(
 async def validate_connection(
     _hass: HomeAssistant, data: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Validate the connection to the RackLink PDU."""
-    host = data[CONF_HOST]
-    port = data[CONF_PORT]
-    username = data[CONF_USERNAME]
-    password = data[CONF_PASSWORD]
+    """Validate the connection to the RackLink PDU.
+
+    Returns a dict with device metadata on success.
+
+    Raises:
+        CannotConnect: If the device cannot be reached.
+        InvalidAuth: If the device rejects the credentials.
+    """
+    host = data.get(CONF_HOST)
+    port = data.get(CONF_PORT, DEFAULT_PORT)
+    username = data.get(CONF_USERNAME) or ""
+    password = data.get(CONF_PASSWORD) or ""
     connection_type = data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
     use_https = data.get(CONF_USE_HTTPS, True)
-    enable_vendor_features = data.get(CONF_ENABLE_VENDOR_FEATURES, True)
 
-    # Guard against missing/empty host
     if host is None or (isinstance(host, str) and not host.strip()):
-        _LOGGER.error(
-            "Host is required but was missing/empty in validate_connection: %r", host
-        )
         raise CannotConnect("Host is required")
 
-    _LOGGER.info(
-        "Creating RacklinkController with: host=%s, port=%s, connection_type=%s, use_https=%s",
+    _LOGGER.debug(
+        "Validating connection: host=%s, port=%s, connection_type=%s, use_https=%s",
         host,
         port,
         connection_type,
         use_https,
     )
-    try:
-        controller = RacklinkController(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            timeout=CONNECTION_TIMEOUT,
-            connection_type=connection_type,
-            use_https=use_https,
-            enable_vendor_features=enable_vendor_features,
-        )
-        _LOGGER.info("RacklinkController created successfully")
-    except Exception as init_err:
-        _LOGGER.error(
-            "Failed to create RacklinkController: %s (type: %s)",
-            init_err,
-            type(init_err).__name__,
-        )
-        import traceback
 
-        _LOGGER.error("Controller init traceback: %s", traceback.format_exc())
-        raise CannotConnect(
-            f"Controller initialization failed: {init_err}"
-        ) from init_err
+    controller = RacklinkController(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        timeout=CONNECTION_TIMEOUT,
+        connection_type=connection_type,
+        use_https=use_https,
+        enable_vendor_features=data.get(CONF_ENABLE_VENDOR_FEATURES, True),
+    )
 
     try:
-        # Connect to the device
         if not await controller.connect():
-            _LOGGER.error("Failed to connect to device: %s:%s", host, port)
             raise CannotConnect("Connection failed")
 
-        # Try to retrieve device information
+        # Retrieve device information
         await controller.update()
 
-        # Test basic device communication
-        device_responsive = True
-        try:
-            if hasattr(controller.connection, "send_command"):
-                # For socket connections, test with help command
-                test_response = await controller.connection.send_command("help")
-                _LOGGER.info(
-                    "Device connectivity test - 'help' command response: %r",
-                    test_response[:200],
-                )
-                device_responsive = bool(test_response.strip())
-            elif hasattr(controller.connection, "get_outlet_count"):
-                # For Redfish connections, test by getting outlet count
-                outlet_count = controller.connection.get_outlet_count()
-                device_responsive = outlet_count > 0
-                _LOGGER.info(
-                    "Device connectivity test - outlet count: %d", outlet_count
-                )
-        except Exception as err:
-            _LOGGER.warning("Device connectivity test failed: %s", err)
-            device_responsive = False
-
-        # Validate that we can at least communicate with the device
-        # Even if parsing fails, as long as we're connected, authenticated, and device responds, it's valid
         if (
-            not controller.connection.connected
+            controller.connection is None
+            or not controller.connection.connected
             or not controller.connection.authenticated
         ):
-            _LOGGER.error("Failed to establish authenticated connection to device")
-            await controller.disconnect()
-            raise CannotConnect("Authentication failed")
+            raise InvalidAuth("Authentication failed")
 
-        if not device_responsive:
-            _LOGGER.warning(
-                "Device not responding to basic commands, but connection established"
-            )
-            # Don't fail here - device might have different command format
-
-        # Log what information we were able to retrieve
-        _LOGGER.info(
-            "Device validation: name=%s, model=%s, firmware=%s, serial=%s, mac=%s",
-            controller.pdu_name or "Unknown",
-            controller.pdu_model or "Unknown",
-            controller.pdu_firmware or "Unknown",
-            controller.pdu_serial or "Unknown",
-            controller.mac_address or "Unknown",
-        )
-
-        # Get device information for the config entry title
         info = {
             "pdu_name": controller.pdu_name or "RackLink PDU",
             "pdu_model": controller.pdu_model or "Unknown Model",
             "pdu_firmware": controller.pdu_firmware or "Unknown Firmware",
             "pdu_serial": controller.pdu_serial or "Unknown Serial",
-            "mac_address": controller.mac_address or "Unknown MAC",
+            "mac_address": controller.mac_address or None,
         }
 
         _LOGGER.info(
             "Successfully connected to %s (%s)", info["pdu_name"], info["pdu_model"]
         )
-
-        # Properly disconnect from the device
-        await controller.disconnect()
         return info
 
+    except RacklinkAuthenticationError as exc:
+        raise InvalidAuth(str(exc)) from exc
+    except (CannotConnect, InvalidAuth):
+        raise
     except asyncio.TimeoutError as exc:
-        _LOGGER.error("Timeout connecting to device: %s:%s", host, port)
-        await controller.disconnect()
         raise CannotConnect("Connection timeout") from exc
-    except (OSError, asyncio.exceptions.CancelledError) as exc:
-        _LOGGER.error("Error connecting to device: %s", exc)
-        await controller.disconnect()
-        raise CannotConnect(f"Connection error: {exc}") from exc
-    except ValueError as exc:
-        _LOGGER.error("Authentication failed: %s", exc)
-        await controller.disconnect()
-        raise InvalidAuth(f"Authentication failed: {exc}") from exc
     except Exception as exc:
-        _LOGGER.error("Error connecting to device: %s", exc)
-        await controller.disconnect()
         raise CannotConnect(f"Error connecting to device: {exc}") from exc
+    finally:
+        await controller.disconnect()
 
 
 class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -239,15 +144,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Initialize the config flow."""
         self._discovered_devices: List[DiscoveredDevice] = []
         self._discovery_completed = False
-        self._connection_type: Optional[str] = None
 
-        # For storing selected device info
-        self._selected_host: Optional[str] = None
-        self._selected_username: Optional[str] = None
-        self._selected_password: Optional[str] = None
-
-        # For storing manual input
-        self._manual_input: Optional[Dict[str, Any]] = None
+        # Connection details gathered across steps
+        self._pending_input: Optional[Dict[str, Any]] = None
 
     @staticmethod
     @callback
@@ -255,244 +154,159 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         config_entry: config_entries.ConfigEntry,
     ) -> "OptionsFlowHandler":
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
-    def is_matching(self, other_flow: config_entries.ConfigEntry) -> bool:
-        """Check if the entry matches the current flow."""
-        return other_flow.unique_id == self.unique_id
-
-    async def async_step_zeroconf(self, discovery_info: Dict[str, Any]) -> FlowResult:
+    async def async_step_zeroconf(
+        self, discovery_info: ZeroconfServiceInfo
+    ) -> ConfigFlowResult:
         """Handle zeroconf discovery."""
-        _LOGGER.debug("Zeroconf discovery info: %s", discovery_info)
+        hostname = (discovery_info.hostname or "").rstrip(".")
+        _LOGGER.debug("Zeroconf discovery: %s (%s)", hostname, discovery_info.host)
 
-        # Extract device info from zeroconf discovery
-        hostname = discovery_info.get("hostname", "").rstrip(".")
-        properties = discovery_info.get("properties", {})
-
-        # Check if this looks like a RackLink device
         if not any(
             identifier in hostname.lower()
-            for identifier in ["racklink", "pdu", "power"]
+            for identifier in ("racklink", "pdu", "power")
         ):
             return self.async_abort(reason="not_racklink_device")
 
-        # Set unique ID based on hostname
+        # Set a provisional unique ID from the hostname; it is replaced with
+        # the MAC address once the device has been validated.
         await self.async_set_unique_id(hostname)
-        self._abort_if_unique_id_configured()
+        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.host})
 
-        # Store discovery info and proceed to user confirmation
+        self._pending_input = {CONF_HOST: discovery_info.host}
         self.context["title_placeholders"] = {"name": hostname}
-        return await self.async_step_zeroconf_confirm(discovery_info)
+        return await self.async_step_zeroconf_confirm()
 
     async def async_step_zeroconf_confirm(
-        self, discovery_info: Dict[str, Any]
-    ) -> FlowResult:
-        """Confirm zeroconf discovery."""
-        hostname = discovery_info.get("hostname", "").rstrip(".")
-        host = discovery_info.get("host")
-        port = discovery_info.get("port", DEFAULT_PORT)
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> ConfigFlowResult:
+        """Confirm zeroconf discovery and collect credentials."""
+        if user_input is not None:
+            self._pending_input = {
+                CONF_HOST: user_input[CONF_HOST],
+                CONF_USERNAME: user_input[CONF_USERNAME],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            return await self.async_step_connection_type()
 
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
+        host = self._pending_input.get(CONF_HOST) if self._pending_input else None
 
-        # Pre-fill the form with discovered information
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_HOST, default=host): cv.string,
-                vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-                vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-                vol.Optional(CONF_PORT, default=port): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=65535)
-                ),
+                vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
             }
         )
 
         return self.async_show_form(
             step_id="zeroconf_confirm",
             data_schema=data_schema,
-            description_placeholders={"hostname": hostname},
+            description_placeholders={"hostname": host or ""},
         )
 
     async def async_step_connection_type(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Handle connection type selection."""
-        if user_input is not None:
-            self._connection_type = user_input[CONF_CONNECTION_TYPE]
+    ) -> ConfigFlowResult:
+        """Handle connection type selection and validate the connection."""
+        errors: Dict[str, str] = {}
 
-            # Build final config data
-            if self._selected_host:
-                # Using discovered device
-                final_input = {
-                    CONF_HOST: self._selected_host,
-                    CONF_USERNAME: self._selected_username,
-                    CONF_PASSWORD: self._selected_password,
-                    CONF_CONNECTION_TYPE: self._connection_type,
-                }
-            elif self._manual_input:
-                # Using manual input
-                final_input = self._manual_input.copy()
-                final_input[CONF_CONNECTION_TYPE] = self._connection_type
-            else:
-                # Fallback
+        if user_input is not None:
+            if not self._pending_input:
                 _LOGGER.warning("No host selected or entered; returning to user step")
                 return await self.async_step_user()
 
-            # Set automatic port and protocol based on connection type
-            if self._connection_type == CONNECTION_TYPE_REDFISH:
-                # For Redfish, default to HTTPS first (self-signed certs common)
-                final_input[CONF_PORT] = DEFAULT_REDFISH_PORT  # 443
+            connection_type = user_input[CONF_CONNECTION_TYPE]
+            final_input = dict(self._pending_input)
+            final_input[CONF_CONNECTION_TYPE] = connection_type
+
+            # Set port and protocol based on connection type
+            if connection_type == CONNECTION_TYPE_REDFISH:
+                final_input[CONF_PORT] = DEFAULT_REDFISH_PORT
                 final_input[CONF_USE_HTTPS] = True
-                final_input[CONF_ENABLE_VENDOR_FEATURES] = True  # Default to enabled
+                final_input.setdefault(CONF_ENABLE_VENDOR_FEATURES, True)
+            elif connection_type == CONNECTION_TYPE_TELNET:
+                final_input[CONF_PORT] = DEFAULT_PORT
             else:
-                # For Telnet, use standard port
-                final_input[CONF_PORT] = DEFAULT_PORT  # 6000 for telnet
+                # Auto detection ignores the configured port
+                final_input.setdefault(CONF_PORT, DEFAULT_PORT)
 
-            # Validate and create entry - try HTTP first for Redfish, then HTTPS
             try:
-                _LOGGER.info(
-                    "Starting connection validation with config: %s",
-                    {
-                        k: v if k != CONF_PASSWORD else "***"
-                        for k, v in final_input.items()
-                    },
-                )
-                info = await validate_connection(self.hass, final_input)
-
-                # Handle unique ID based on MAC address
-                mac_address = info.get("mac_address")
-                if mac_address and mac_address != "Unknown MAC":
-                    await self.async_set_unique_id(mac_address)
-                    try:
-                        self._abort_if_unique_id_configured(updates=final_input)
-                    except AbortFlow as err:
-                        return self.async_abort(reason=err.reason)
-
-                # Create entry
-                title = info["pdu_name"]
-                if info["pdu_model"] != "Unknown Model":
-                    title = f"{title} ({info['pdu_model']})"
-
-                return self.async_create_entry(title=title, data=final_input)
-
-            except CannotConnect as err:
-                # For Redfish, if HTTPS failed, try HTTP as fallback
-                if (
-                    self._connection_type == CONNECTION_TYPE_REDFISH
-                    and final_input.get(CONF_USE_HTTPS, False)
-                ):
-                    try:
-                        _LOGGER.info("HTTPS failed, trying HTTP for Redfish connection")
-                        final_input[CONF_PORT] = DEFAULT_REDFISH_HTTP_PORT  # 80
-                        final_input[CONF_USE_HTTPS] = False
-
-                        info = await validate_connection(self.hass, final_input)
-
-                        # Handle unique ID
-                        mac_address = info.get("mac_address")
-                        if mac_address and mac_address != "Unknown MAC":
-                            await self.async_set_unique_id(mac_address)
-                            try:
-                                self._abort_if_unique_id_configured(updates=final_input)
-                            except AbortFlow as err:
-                                return self.async_abort(reason=err.reason)
-
-                        # Create entry
-                        title = info["pdu_name"]
-                        if info["pdu_model"] != "Unknown Model":
-                            title = f"{title} ({info['pdu_model']})"
-
-                        return self.async_create_entry(title=title, data=final_input)
-
-                    except Exception as https_err:
-                        # Both HTTP and HTTPS failed
-                        _LOGGER.error(
-                            "HTTPS retry also failed: %s (type: %s)",
-                            https_err,
-                            type(https_err).__name__,
-                        )
-                        import traceback
-
-                        _LOGGER.error(
-                            "HTTPS retry traceback: %s", traceback.format_exc()
-                        )
-
-                return self.async_show_form(
-                    step_id="connection_type",
-                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
-                    errors={"base": "cannot_connect"},
-                )
-            except InvalidAuth as err:
-                return self.async_show_form(
-                    step_id="connection_type",
-                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
-                    errors={"base": "invalid_auth"},
-                )
-            except Exception as err:
-                _LOGGER.error(
-                    "Unexpected error during validation: %s (type: %s)",
-                    err,
-                    type(err).__name__,
-                )
-                import traceback
-
-                _LOGGER.error("Full traceback: %s", traceback.format_exc())
-                return self.async_show_form(
-                    step_id="connection_type",
-                    data_schema=STEP_CONNECTION_TYPE_SCHEMA,
-                    errors={"base": "unknown"},
-                )
+                info = await self._validate_with_fallback(final_input)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected error during validation")
+                errors["base"] = "unknown"
+            else:
+                return await self._async_create_or_update_entry(info, final_input)
 
         return self.async_show_form(
             step_id="connection_type",
             data_schema=STEP_CONNECTION_TYPE_SCHEMA,
+            errors=errors,
         )
+
+    async def _validate_with_fallback(
+        self, final_input: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate the connection, falling back to HTTP for Redfish."""
+        try:
+            return await validate_connection(self.hass, final_input)
+        except CannotConnect:
+            if final_input.get(
+                CONF_CONNECTION_TYPE
+            ) == CONNECTION_TYPE_REDFISH and final_input.get(CONF_USE_HTTPS):
+                _LOGGER.debug("HTTPS failed, trying HTTP for Redfish connection")
+                final_input[CONF_PORT] = DEFAULT_REDFISH_HTTP_PORT
+                final_input[CONF_USE_HTTPS] = False
+                return await validate_connection(self.hass, final_input)
+            raise
+
+    async def _async_create_or_update_entry(
+        self, info: Dict[str, Any], final_input: Dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Create the config entry after successful validation."""
+        mac_address = info.get("mac_address")
+        if mac_address:
+            await self.async_set_unique_id(mac_address, raise_on_progress=False)
+            self._abort_if_unique_id_configured(updates=final_input)
+
+        title = info["pdu_name"]
+        if info["pdu_model"] != "Unknown Model":
+            title = f"{title} ({info['pdu_model']})"
+
+        return self.async_create_entry(title=title, data=final_input)
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
-        # Always do discovery first to find devices (much simpler UX)
+        # Discover devices first for a better UX
         if not self._discovery_completed:
-            return await self.async_step_discovery()
+            await self._async_run_discovery()
 
         if user_input is not None:
-            try:
-                # Handle device selection from discovery
-                if "device" in user_input:
-                    device_selection = user_input["device"]
-                    if device_selection == "manual":
-                        # User chose manual entry, rebuild form for manual input
-                        return self.async_show_form(
-                            step_id="user",
-                            data_schema=self._build_user_data_schema(),
-                            errors=errors,
-                        )
-                    else:
-                        # Selected device IP (no port parsing needed)
-                        self._selected_host = device_selection
-                        self._selected_username = user_input.get(
-                            CONF_USERNAME, DEFAULT_USERNAME
-                        )
-                        self._selected_password = user_input.get(
-                            CONF_PASSWORD, DEFAULT_PASSWORD
-                        )
+            device_selection = user_input.get("device")
+            if device_selection == "manual":
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=self._build_user_data_schema(),
+                    errors=errors,
+                )
 
-                        # Go to connection type selection
-                        return await self.async_step_connection_type()
+            self._pending_input = {
+                CONF_HOST: device_selection or user_input.get(CONF_HOST),
+                CONF_USERNAME: user_input.get(CONF_USERNAME, DEFAULT_USERNAME),
+                CONF_PASSWORD: user_input.get(CONF_PASSWORD, ""),
+            }
+            return await self.async_step_connection_type()
 
-                # If we get here, user provided manual connection details
-                # Store manual input and proceed to connection type selection
-                self._manual_input = user_input
-                return await self.async_step_connection_type()
-
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception during config flow: %s", err)
-                errors["base"] = "unknown"
-
-        # Show discovered devices or manual entry form
         if self._discovered_devices:
             return self.async_show_form(
                 step_id="user",
@@ -502,220 +316,168 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     "discovered_count": str(len(self._discovered_devices))
                 },
             )
-        else:
-            return self.async_show_form(
-                step_id="user",
-                data_schema=self._build_user_data_schema(),
-                errors=errors,
-            )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self._build_user_data_schema(),
+            errors=errors,
+            description_placeholders={"discovered_count": "0"},
+        )
 
-    async def async_step_discovery(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Handle device discovery - now the first step for better UX."""
-        _LOGGER.info("Starting RackLink device discovery...")
-
+    async def _async_run_discovery(self) -> None:
+        """Run mDNS discovery for RackLink devices."""
+        _LOGGER.debug("Starting RackLink device discovery")
         try:
-            # Discover devices using mDNS
             self._discovered_devices = await discover_racklink_devices(
                 self.hass, timeout=8.0
             )
+            _LOGGER.debug("Discovery found %d devices", len(self._discovered_devices))
+        except Exception as err:
+            _LOGGER.debug("Error during discovery: %s", err)
+            self._discovered_devices = []
+        finally:
             self._discovery_completed = True
 
-            _LOGGER.info("Discovery found %d devices", len(self._discovered_devices))
-
-            # Always show device selection (discovered + manual option)
-            if self._discovered_devices:
-                if len(self._discovered_devices) == 1:
-                    # Single device found - show it with manual option
-                    device = self._discovered_devices[0]
-                    return self.async_show_form(
-                        step_id="user",
-                        data_schema=self._build_single_device_schema(device),
-                        description_placeholders={"device_name": device.name},
-                    )
-                else:
-                    # Multiple devices found, let user choose
-                    return self.async_show_form(
-                        step_id="user",
-                        data_schema=self._build_device_selection_schema(),
-                        description_placeholders={
-                            "discovered_count": str(len(self._discovered_devices))
-                        },
-                    )
-            else:
-                # No devices found - offer manual entry
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=self._build_user_data_schema(),
-                    description_placeholders={"discovered_count": "0"},
-                )
-
-        except Exception as err:
-            _LOGGER.error("Error during discovery: %s", err)
-            # On discovery error, fall back to manual entry
-            return self.async_show_form(
-                step_id="user",
-                data_schema=self._build_user_data_schema(),
-                description_placeholders={"discovered_count": "0"},
-            )
-
-    async def _test_connection_with_discovery(self, user_input: Dict[str, Any]) -> bool:
-        """Test connection and try to discover correct port if needed."""
-        from .socket_connection import SocketConfig, SocketConnection
-
-        host = user_input[CONF_HOST]
-        port = user_input[CONF_PORT]
-        username = user_input[CONF_USERNAME]
-        password = user_input[CONF_PASSWORD]
-
-        # First, try the provided port with full authentication test
-        config = SocketConfig(
-            host=host, port=port, username=username, password=password
-        )
-        socket_conn = SocketConnection(config)
-
-        try:
-            # Test actual connection and authentication, not just port accessibility
-            connection_result = await socket_conn.connect()
-            if (
-                connection_result
-                and socket_conn.connected
-                and socket_conn.authenticated
-            ):
-                _LOGGER.info("Successfully authenticated on port %d", port)
-                await socket_conn.disconnect()
-                return True
-            elif socket_conn.connected and not socket_conn.authenticated:
-                _LOGGER.warning("Port %d accessible but authentication failed", port)
-                await socket_conn.disconnect()
-            else:
-                _LOGGER.warning("Failed to establish connection to port %d", port)
-                if socket_conn.connected:
-                    await socket_conn.disconnect()
-        except Exception as err:
-            _LOGGER.warning("Connection failed on port %d: %s", port, err)
-            if socket_conn.connected:
-                await socket_conn.disconnect()
-
-        # If authentication fails, try to discover the correct port
-        _LOGGER.info("Trying to discover correct port and protocol...")
-        discovered_port = await socket_conn.discover_racklink_port()
-
-        if discovered_port and discovered_port != port:
-            _LOGGER.info("Discovered working port %d, updating config", discovered_port)
-            user_input[CONF_PORT] = discovered_port
-
-            # Test the discovered port
-            try:
-                config.port = discovered_port
-                socket_conn = SocketConnection(config)
-                connection_result = await socket_conn.connect()
-                if (
-                    connection_result
-                    and socket_conn.connected
-                    and socket_conn.authenticated
-                ):
-                    _LOGGER.info(
-                        "Successfully authenticated on discovered port %d",
-                        discovered_port,
-                    )
-                    await socket_conn.disconnect()
-                    return True
-                elif socket_conn.connected:
-                    _LOGGER.warning(
-                        "Connected to discovered port %d but authentication failed",
-                        discovered_port,
-                    )
-                    await socket_conn.disconnect()
-                else:
-                    _LOGGER.warning(
-                        "Failed to connect to discovered port %d",
-                        discovered_port,
-                    )
-            except Exception as err:
-                _LOGGER.error(
-                    "Connection error on discovered port %d: %s",
-                    discovered_port,
-                    err,
-                )
-
-        return False
-
     def _build_user_data_schema(self) -> vol.Schema:
-        """Build schema for manual entry - simple IP and credentials only."""
-        schema_dict = {
-            vol.Required(CONF_HOST): cv.string,
-            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-        }
-        return vol.Schema(schema_dict)
-
-    def _build_single_device_schema(self, device: DiscoveredDevice) -> vol.Schema:
-        """Build schema for single device with option to use it or enter manually."""
-        # Create device options - discovered device + manual entry (no port in key)
-        device_key = device.ip_address
-        device_options = {
-            device_key: f"{device.name} ({device.ip_address})",
-            "manual": "Enter manually",
-        }
-
-        schema_dict = {
-            vol.Required("device", default=device_key): vol.In(device_options),
-            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-        }
-
-        return vol.Schema(schema_dict)
+        """Build schema for manual entry."""
+        return vol.Schema(
+            {
+                vol.Required(CONF_HOST): cv.string,
+                vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
+            }
+        )
 
     def _build_device_selection_schema(self) -> vol.Schema:
         """Build schema with discovered devices."""
-        if not self._discovered_devices:
-            return self._build_user_data_schema()
-
-        # Create device options for selection (no port in key)
-        device_options = {}
-        for device in self._discovered_devices:
-            key = device.ip_address
-            label = f"{device.name} ({device.ip_address})"
-            device_options[key] = label
-
-        # Add manual entry option
+        device_options = {
+            device.ip_address: f"{device.name} ({device.ip_address})"
+            for device in self._discovered_devices
+        }
         device_options["manual"] = "Enter manually"
 
-        schema_dict = {
-            vol.Required("device"): vol.In(device_options),
-            vol.Optional(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
-            vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): cv.string,
-        }
+        return vol.Schema(
+            {
+                vol.Required("device"): vol.In(device_options),
+                vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
+            }
+        )
 
-        # Add HTTPS option for Redfish
-        if self._connection_type == CONNECTION_TYPE_REDFISH:
-            schema_dict[vol.Optional(CONF_USE_HTTPS, default=True)] = cv.boolean
-            # For Redfish connections, offer vendor features option
-            schema_dict[vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True)] = (
-                cv.boolean
-            )
+    async def async_step_reauth(self, entry_data: Dict[str, Any]) -> ConfigFlowResult:
+        """Handle reauthentication when the device rejects the credentials."""
+        return await self.async_step_reauth_confirm()
 
-        return vol.Schema(schema_dict)
-
-    async def async_step_import(
+    async def async_step_reauth_confirm(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Handle import from configuration.yaml."""
-        return await self.async_step_user(user_input)
+    ) -> ConfigFlowResult:
+        """Collect new credentials for reauthentication."""
+        errors: Dict[str, str] = {}
+        reauth_entry = self._get_reauth_entry()
+
+        if user_input is not None:
+            data = {**reauth_entry.data, **user_input}
+            try:
+                await validate_connection(self.hass, data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected error during reauth")
+                errors["base"] = "unknown"
+            else:
+                return self.async_update_reload_and_abort(
+                    reauth_entry, data_updates=user_input
+                )
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_USERNAME,
+                    default=reauth_entry.data.get(CONF_USERNAME, DEFAULT_USERNAME),
+                ): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={"host": reauth_entry.data.get(CONF_HOST, "")},
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration of an existing entry."""
+        errors: Dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            data = {**reconfigure_entry.data, **user_input}
+            connection_type = data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
+
+            # Re-derive port/protocol from the selected connection type
+            if connection_type == CONNECTION_TYPE_REDFISH:
+                data[CONF_PORT] = DEFAULT_REDFISH_PORT
+                data[CONF_USE_HTTPS] = True
+            elif connection_type == CONNECTION_TYPE_TELNET:
+                data[CONF_PORT] = DEFAULT_PORT
+
+            try:
+                info = await self._validate_with_fallback(data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected error during reconfigure")
+                errors["base"] = "unknown"
+            else:
+                mac_address = info.get("mac_address")
+                if mac_address:
+                    await self.async_set_unique_id(mac_address)
+                    self._abort_if_unique_id_mismatch()
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry, data_updates=data
+                )
+
+        current = reconfigure_entry.data
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST, default=current.get(CONF_HOST)): cv.string,
+                vol.Required(
+                    CONF_USERNAME,
+                    default=current.get(CONF_USERNAME, DEFAULT_USERNAME),
+                ): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
+                vol.Required(
+                    CONF_CONNECTION_TYPE,
+                    default=current.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO),
+                ): vol.In(
+                    [
+                        CONNECTION_TYPE_REDFISH,
+                        CONNECTION_TYPE_TELNET,
+                        CONNECTION_TYPE_AUTO,
+                    ]
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=data_schema,
+            errors=errors,
+        )
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for Middle Atlantic RackLink."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
-
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle options flow."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
@@ -734,7 +496,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=data_schema)
 
 
-# Add back exception class definitions that were removed earlier
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
 

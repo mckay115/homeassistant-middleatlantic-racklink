@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "homeassistant-middleatlantic-racklink"
-version = "1.0.0"
+version = "1.1.0"
 description = "Home Assistant integration for Middle Atlantic RackLink PDUs with Redfish and Telnet support"
 readme = "README.md"
 authors = [{ name = "mckay115", email = "" }]
@@ -14,11 +14,10 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Home Automation",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = ["aiohttp>=3.8.0", "zeroconf>=0.47.0", "voluptuous>=0.13.0"]
 
 [project.urls]
@@ -42,7 +41,7 @@ packages = ["custom_components.middle_atlantic_racklink"]
 # Code formatting and linting
 [tool.black]
 line-length = 88
-target-version = ['py311', 'py312']
+target-version = ['py313']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -98,23 +97,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "-v",
-    "--strict-markers",
-    "--strict-config",
-    "--cov=custom_components/middle_atlantic_racklink",
-    "--cov-report=term-missing",
-    "--cov-report=xml",
-    "--cov-report=html",
-    "--cov-fail-under=80",
-]
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
-]
+addopts = ["-v", "--strict-markers"]
 asyncio_mode = "auto"
 
 [tool.coverage.run]
@@ -144,7 +127,7 @@ directory = "htmlcov"
 
 # Type checking
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -167,7 +150,6 @@ module = [
     "homeassistant.*",
     "zeroconf.*",
     "voluptuous.*",
-    "pytest_homeassistant_custom_component.*",
 ]
 ignore_missing_imports = true
 

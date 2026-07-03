@@ -1,104 +1,121 @@
-"""Test for the Middle Atlantic RackLink sensor platform."""
+"""Test the Middle Atlantic RackLink sensor platform."""
 
-from custom_components.middle_atlantic_racklink.sensor import (
-    RacklinkCurrentSensor,
-    RacklinkFrequencySensor,
-    RacklinkPowerSensor,
-    RacklinkVoltageSensor,
-)
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from unittest.mock import AsyncMock, MagicMock, patch
+from __future__ import annotations
 
-import pytest
+from .conftest import MOCK_PDU_INFO
+from custom_components.middle_atlantic_racklink.const import DOMAIN
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from unittest.mock import MagicMock
 
-
-@pytest.fixture
-def controller():
-    """Create a mock controller."""
-    mock = MagicMock()
-    mock.async_request_refresh = AsyncMock()
-    mock.system_data = MagicMock()
-    mock.system_data.get = MagicMock()
-    return mock
+SERIAL = MOCK_PDU_INFO["pdu_serial"]
 
 
-@pytest.mark.asyncio
-async def test_current_sensor(controller):
-    """Test current sensor."""
-    controller.system_data.get.return_value = 10.5
-    sensor = RacklinkCurrentSensor(controller)
-
-    # Initial update
-    await sensor.async_update()
-    controller.async_request_refresh.assert_called_once()
-
-    # Check state
-    assert sensor.native_value == 10.5
-    assert sensor.device_class == SensorDeviceClass.CURRENT
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == "A"
+def _get_state(hass: HomeAssistant, unique_id: str):
+    """Return the state object for a sensor by its unique ID."""
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+    assert entity_id is not None, f"No sensor registered for {unique_id}"
+    return hass.states.get(entity_id)
 
 
-@pytest.mark.asyncio
-async def test_frequency_sensor(controller):
-    """Test frequency sensor."""
-    controller.system_data.get.return_value = 60.0
-    sensor = RacklinkFrequencySensor(controller)
+async def test_pdu_sensors(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test PDU-level sensor values."""
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
 
-    # Initial update
-    await sensor.async_update()
-    controller.async_request_refresh.assert_called_once()
-
-    # Check state
-    assert sensor.native_value == 60.0
-    assert sensor.device_class == SensorDeviceClass.FREQUENCY
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == "Hz"
-
-
-@pytest.mark.asyncio
-async def test_power_sensor(controller):
-    """Test power sensor."""
-    controller.system_data.get.return_value = 1200.0
-    sensor = RacklinkPowerSensor(controller)
-
-    # Initial update
-    await sensor.async_update()
-    controller.async_request_refresh.assert_called_once()
-
-    # Check state
-    assert sensor.native_value == 1200.0
-    assert sensor.device_class == SensorDeviceClass.POWER
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == "W"
+    assert _get_state(hass, f"{SERIAL}_voltage").state == "120.0"
+    assert _get_state(hass, f"{SERIAL}_current").state == "2.5"
+    assert _get_state(hass, f"{SERIAL}_power").state == "300.0"
+    assert _get_state(hass, f"{SERIAL}_frequency").state == "60.0"
+    assert _get_state(hass, f"{SERIAL}_apparent_power").state == "320.0"
+    assert _get_state(hass, f"{SERIAL}_power_factor").state == "0.94"
+    # Energy is stored internally in Wh and exposed in kWh
+    assert _get_state(hass, f"{SERIAL}_energy").state == "1.5"
 
 
-@pytest.mark.asyncio
-async def test_voltage_sensor(controller):
-    """Test voltage sensor."""
-    controller.system_data.get.return_value = 120.0
-    sensor = RacklinkVoltageSensor(controller)
+async def test_outlet_sensors(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test per-outlet sensor values, including legitimate zero readings."""
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
 
-    # Initial update
-    await sensor.async_update()
-    controller.async_request_refresh.assert_called_once()
+    assert _get_state(hass, f"{SERIAL}_outlet_1_power").state == "50.0"
+    assert _get_state(hass, f"{SERIAL}_outlet_1_energy").state == "2.0"
+    assert _get_state(hass, f"{SERIAL}_outlet_1_current").state == "0.4"
+    # A 0.0 reading is a real value, not "unknown"
+    assert _get_state(hass, f"{SERIAL}_outlet_2_power").state == "0.0"
 
-    # Check state
-    assert sensor.native_value == 120.0
-    assert sensor.device_class == SensorDeviceClass.VOLTAGE
-    assert sensor.state_class == SensorStateClass.MEASUREMENT
-    assert sensor.native_unit_of_measurement == "V"
+    # Outlet voltage duplicates the mains voltage, so it is disabled by default
+    registry = er.async_get(hass)
+    voltage_entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{SERIAL}_outlet_1_voltage"
+    )
+    assert voltage_entity_id is not None
+    assert registry.async_get(voltage_entity_id).disabled_by is not None
 
 
-@pytest.mark.asyncio
-async def test_sensor_error_handling(controller):
-    """Test sensor error handling."""
-    controller.system_data.get.return_value = None
-    sensor = RacklinkCurrentSensor(controller)
+async def test_missing_values_are_unknown(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test sensors report unknown instead of fabricated values."""
+    mock_controller.power_factor = None
+    mock_controller.apparent_power = None
+    mock_controller.active_energy = None
 
-    # Initial update
-    await sensor.async_update()
-    controller.async_request_refresh.assert_called_once()
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
 
-    # Check state
-    assert sensor.native_value is None
+    assert _get_state(hass, f"{SERIAL}_power_factor").state == "unknown"
+    assert _get_state(hass, f"{SERIAL}_apparent_power").state == "unknown"
+    assert _get_state(hass, f"{SERIAL}_energy").state == "unknown"
+
+
+async def test_legacy_unique_id_migration(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test broken legacy unknown_* unique IDs are migrated to the serial."""
+    registry = er.async_get(hass)
+    legacy = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "unknown_1_power",
+        config_entry=mock_config_entry,
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    migrated = registry.async_get(legacy.entity_id)
+    assert migrated is not None
+    assert migrated.unique_id == f"{SERIAL}_outlet_1_power"
+
+
+async def test_new_outlets_add_sensors(
+    hass: HomeAssistant, mock_config_entry, mock_controller: MagicMock
+) -> None:
+    """Test sensors appear for outlets discovered after setup."""
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get_entity_id("sensor", DOMAIN, f"{SERIAL}_outlet_3_power")
+        is None
+    )
+
+    mock_controller.outlet_states[3] = True
+    mock_controller.outlet_names[3] = "Outlet 3"
+    mock_controller.outlet_power_data[3] = 10.0
+
+    coordinator = mock_config_entry.runtime_data
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert (
+        registry.async_get_entity_id("sensor", DOMAIN, f"{SERIAL}_outlet_3_power")
+        is not None
+    )

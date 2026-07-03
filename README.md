@@ -1,212 +1,137 @@
 # Middle Atlantic RackLink Home Assistant Integration
 
-This integration allows Home Assistant to control and monitor Middle Atlantic RackLink PDUs (Power Distribution Units).
+Control and monitor Middle Atlantic (Legrand) RackLink PDUs from Home Assistant.
 
-**Important Note:** This integration supports Premium and Premium+ Series PDUs with control protocol capabilities.
+**Note:** This integration supports Premium and Premium+ Series PDUs with control protocol capabilities.
 
 ## Features
 
-- 🔌 Control outlets (turn on, turn off, cycle power)
-- 📊 Monitor power data (current, voltage, power, energy)
-- 🌡️ Temperature monitoring
-- 📝 Customizable outlet names
-- 🔍 **Automatic mDNS discovery** - finds RackLink devices on your network
-- 🔧 **Smart port detection** - automatically finds the correct control port
-- 🔄 **Dual protocol support** - Telnet (Select/Premium) and Binary (Premium+)
-- 🧠 **Smart protocol detection** - automatically detects and uses correct protocol
-- 🏠 **Home Assistant discovery integration** - devices appear automatically
+- Outlet control: turn outlets on/off and cycle power (per outlet or all at once)
+- Power monitoring: voltage, current, power, apparent power, power factor, frequency, and energy (with Home Assistant Energy dashboard support)
+- Per-outlet power/energy/current/voltage sensors (Redfish mode)
+- Load shedding and outlet sequencing switches with configurable sequence delay (vendor features via telnet)
+- Surge protection status
+- Rename outlets and the PDU from Home Assistant
+- Automatic discovery via mDNS/zeroconf
+- Reauthentication and reconfiguration flows — change credentials, host, or protocol without removing the integration
+- Diagnostics download for easier issue reporting
 
-## Supported Devices
+## Connection modes
 
-This integration supports Middle Atlantic RackLink PDU models with control protocol capabilities:
+| Mode | Transport | Default port | Notes |
+|------|-----------|--------------|-------|
+| **Redfish** (recommended) | HTTPS/HTTP REST API | 443 (HTTPS), 80 (HTTP fallback) | Fast 10-second polling, per-outlet metrics |
+| **Telnet** | TCP text/binary protocol | 6000 (Premium), 60000 (Premium+ binary) | 60-second polling to protect the device session |
+| **Auto** | Tries Redfish, then telnet ports | — | Detects the best available transport |
 
-### Premium Series (Telnet Protocol - Port 6000)
-- RLNK-P920R ✅ *Verified Compatible*
-- Other RLNK-P### models with control protocol support
+When Redfish is used and *vendor features* are enabled, the integration also opens a secondary telnet connection ("hybrid mode") for features Redfish does not expose: load shedding and outlet sequencing.
 
-### Premium+ Series (Binary Protocol - Port 60000)
+## Supported devices
 
-- RLNK-P415
-- RLNK-P420
-- RLNK-P915R
-- RLNK-P915R-SP
-- RLNK-P920R
-- RLNK-P920R-SP
+RackLink PDU models with control protocol capabilities, including:
 
-Model number guide:
-- The "P" prefix indicates Premium+ models (advanced features and controls)
-- Numbers "15" and "20" indicate amperage rating (15A or 20A service)
-- "R" suffix indicates rackmount/sequencer models
-- "SP" indicates models with surge protection
-- Models with part numbers ending in "20" (such as RLNK-P420) provide additional power monitoring features
+- **Premium Series** (telnet, port 6000): RLNK-P920R (verified) and other RLNK-P### models
+- **Premium+ Series** (binary, port 60000, or Redfish): RLNK-P415, RLNK-P420, RLNK-P915R(-SP), RLNK-P920R(-SP)
 
 ## Installation
 
-### HACS (Recommended)
+### HACS (recommended)
 
 1. Open HACS in your Home Assistant instance
-2. Go to "Integrations"
-3. Click the three dots in the top right corner and select "Custom repositories"
-4. Add this repository URL: `https://github.com/mckay115/homeassistant-middleatlantic-racklink`
-5. Select "Integration" as the category
-6. Click "ADD"
-7. Search for "Middle Atlantic RackLink" and install it
-8. Restart Home Assistant
+2. Add this repository as a custom repository (category: Integration): `https://github.com/mckay115/homeassistant-middleatlantic-racklink`
+3. Install "Middle Atlantic RackLink"
+4. Restart Home Assistant
 
-### Manual Installation
+### Manual
 
-1. Download the latest release and copy the `custom_components/middle_atlantic_racklink` directory to your Home Assistant's `custom_components` directory
+1. Copy `custom_components/middle_atlantic_racklink` into your Home Assistant `custom_components` directory
 2. Restart Home Assistant
 
 ## Configuration
 
-### Automatic Discovery (Recommended)
+1. Go to **Settings → Devices & Services → Add Integration**
+2. Search for "Middle Atlantic RackLink"
+3. The integration scans for devices via mDNS; pick a discovered device or choose "Enter manually"
+4. Enter the device credentials (default username is usually `admin`; the password is device-specific)
+5. Pick the connection type (Redfish, Telnet, or Auto)
 
-The integration can automatically find RackLink devices on your network:
+Devices advertised over zeroconf also appear automatically under **Settings → Devices & Services → Discovered**.
 
-1. Go to Settings → Devices & Services
-2. Click "Add Integration"  
-3. Search for "Middle Atlantic RackLink" and select it
-4. **The integration will automatically scan for devices** using mDNS discovery
-5. Select your device from the discovered list or choose "Enter manually"
-6. Verify the pre-filled connection details
-7. Click "Submit" to add the device
+### Options
 
-### Manual Configuration
+The polling interval can be tuned under the integration's **Configure** menu (5–300 seconds). Defaults are 10 s for Redfish and 60 s for telnet.
 
-If automatic discovery doesn't find your device:
+### Reconfigure and reauthentication
 
-1. Go to Settings → Devices & Services
-2. Click "Add Integration"
-3. Search for "Middle Atlantic RackLink" and select it
-4. Choose "Enter manually" if discovery was attempted
-5. Enter your PDU's IP address and port (default: 60000 for RackLink binary protocol)
-6. Enter the username and password for your PDU:
-   - **Select/Premium**: Default username "user", default password "password"
-   - **Premium+**: Any admin user with control protocol access enabled
-
-**Important:** This integration uses the RackLink binary protocol (port 60000) to communicate with RackLink PDUs. Ensure that:
-- Your PDU is configured to accept TCP connections on port 60000
-- The control protocol is enabled (see instructions below)
-- The PDU is on the same network as your Home Assistant instance
-- Firewall settings allow connections on port 60000
-
-**Enabling Control Protocol Access:**
-- **Select/Premium**: Enabled automatically after first web login and password change
-- **Premium+**: Must be enabled manually via Device Settings → Network Services → Control Protocol (checkbox)
-6. Click "Submit" to add the integration
-
-## Troubleshooting
-
-### Connection Issues
-
-1. **Cannot Connect**: 
-   - Ensure the PDU is powered on and connected to your network
-   - Integration will automatically try ports 6000 (Telnet) and 60000 (Binary)
-2. **Authentication Failed**: 
-   - Check that the username and password are correct
-   - Default is often `admin` but password is device-specific
-3. **Control Protocol Not Enabled**: 
-   - Access device web interface and enable control protocol
-   - Premium series: usually enabled by default
-   - Premium+ series: may need manual activation
-4. **Device Not Found**: 
-   - Verify your device is Premium or Premium+ series with control protocol support
-
-### Common Configuration
-
-- **Default Username**: `admin` (most common default)
-- **Default Password**: Device-specific (often changed from factory default)
-- **Ports**: 
-  - `6000` - Telnet Protocol (Premium Series)
-  - `60000` - Binary Protocol (Premium+ Series)
-  - Integration automatically detects correct port and protocol
-- **Network Requirements**: PDU and Home Assistant must be on the same network or have routing configured
-- **Control Protocol**: Must be enabled on the device (check device settings)
-
-### Logging
-
-To enable debug logging, add this to your `configuration.yaml`:
-
-```yaml
-logger:
-  logs:
-    custom_components.middle_atlantic_racklink: debug
-```
-
-## Services
-
-This integration provides the following services:
-
-- `middle_atlantic_racklink.set_outlet_name`: Set a name for an outlet
-- `middle_atlantic_racklink.set_pdu_name`: Set a name for the PDU
-- `middle_atlantic_racklink.cycle_outlet`: Cycle power for a specific outlet
-- `middle_atlantic_racklink.cycle_all_outlets`: Cycle power for all outlets
+- If the device password changes, Home Assistant prompts for reauthentication automatically.
+- Use the **Reconfigure** menu item on the integration entry to change the host, credentials, or connection type without deleting the entry.
 
 ## Entities
 
-### Switches
+- **Switches**: one per outlet (device class *outlet*), with outlet metadata (power-on delays, rated current) as attributes; plus **Load shedding** and **Outlet sequence** switches when a telnet channel is available
+- **Sensors** (PDU): voltage, current, power, apparent power, power factor, frequency, energy
+- **Sensors** (per outlet, Redfish): power, energy, current, voltage (voltage is disabled by default since it duplicates the mains voltage)
+- **Binary sensors**: surge protection problem, per-outlet non-critical (sheds on load shedding) flag
+- **Buttons**: cycle per outlet, cycle all outlets
+- **Numbers**: outlet sequence delay (seconds between outlets during a power-on sequence)
 
-Each outlet on the PDU is represented as a switch entity, allowing you to turn it on or off.
+### Energy dashboard
 
-### Sensors
+The PDU **Energy** sensor and the per-outlet **Outlet N energy** sensors are total-increasing kWh sensors, so they can be added to the Home Assistant Energy dashboard under **Individual devices** to track rack-level and per-device consumption. The power sensors (W) feed the power graphs and can drive automations (e.g. shut down a server when its outlet draws less than a threshold).
 
-Depending on your PDU model, the following sensors may be available:
+## Services
 
-- Power (W)
-- Current (A)
-- Voltage (V)
-- Energy (kWh)
-- Power Factor (%)
-- Temperature (°C)
-- Frequency (Hz)
+All services target outlet switch entities of this integration:
 
-Advanced models may also provide per-outlet power and current monitoring.
+| Service | Description |
+|---------|-------------|
+| `middle_atlantic_racklink.cycle_outlet` | Cycle power on the targeted outlet(s) |
+| `middle_atlantic_racklink.cycle_all_outlets` | Cycle power on every outlet of the PDU |
+| `middle_atlantic_racklink.set_outlet_name` | Rename the targeted outlet on the device |
+| `middle_atlantic_racklink.set_pdu_name` | Rename the PDU on the device |
 
-## Technical Details
+Example:
 
-This integration uses a direct socket connection to communicate with the PDU using asyncio, which provides better performance and compatibility with Home Assistant's asynchronous architecture. The connection is non-blocking and efficiently manages resources.
+```yaml
+service: middle_atlantic_racklink.set_outlet_name
+target:
+  entity_id: switch.rack_pdu_outlet_3
+data:
+  name: "NAS"
+```
 
 ## Troubleshooting
 
-If you encounter issues with the integration:
+1. **Cannot connect**
+   - Verify the PDU is reachable: `nc -v <pdu_ip> 443` (Redfish) or `nc -v <pdu_ip> 6000` (telnet)
+   - Ensure the control protocol is enabled on the device:
+     - Premium: enabled automatically after first web login and password change
+     - Premium+: enable via Device Settings → Network Services → Control Protocol
+2. **Authentication failed**
+   - Home Assistant will prompt for reauthentication; enter the current device credentials
+3. **Vendor features missing** (load shedding/sequencing switches absent)
+   - These require a telnet channel; enable vendor features, and make sure port 6000 is reachable
 
-1. Check the Home Assistant logs for error messages related to "middle_atlantic_racklink"
-2. Verify that your PDU is accessible from your Home Assistant instance
-3. Test the connection to your PDU using: `nc -v <pdu_ip> <port>` or `telnet <pdu_ip> <port>`
-4. If your PDU requires authentication, ensure the credentials are correct
-5. Make sure no other devices or services are trying to connect to the PDU at the same time
-
-### Enabling Debug Logging
-
-To help troubleshoot issues, you can enable debug logging for this integration. Add the following to your `configuration.yaml` file:
+### Debug logging
 
 ```yaml
 logger:
-  default: info
   logs:
     custom_components.middle_atlantic_racklink: debug
 ```
 
-This will show detailed logs including raw commands sent to the PDU and the responses received. After adding this, restart Home Assistant and check the logs for more detailed information.
+## Development
 
-The debug logs will show:
-- Raw commands sent to the PDU
-- Raw responses received from the PDU
-- Parsed data and state changes
-- Socket connection details
-- Error messages with full context
-
-After troubleshooting, it's recommended to remove the debug logging or set it back to `info` level to reduce log file size.
+```bash
+pip install -r requirements-test.txt
+pytest tests/
+mypy custom_components/middle_atlantic_racklink
+```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request or open an Issue on GitHub.
+Contributions are welcome! Please open a Pull Request or an Issue on GitHub.
 
 ## License
 
-This integration is licensed under the MIT License. See the LICENSE file for details.
-
-## Credits
-
-This integration is based on the work of multiple contributors and was created to improve compatibility with various Middle Atlantic RackLink PDU models.
+MIT — see the LICENSE file.

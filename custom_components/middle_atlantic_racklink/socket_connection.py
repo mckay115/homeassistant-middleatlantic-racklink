@@ -1,13 +1,19 @@
-"""Socket connection handler for Middle Atlantic RackLink devices using binary protocol."""
+"""Socket connection handler for Middle Atlantic RackLink devices.
+
+Supports both the framed binary protocol (Premium+ series, typically port
+60000) and the text Telnet-style CLI (Select/Premium series, typically port
+6000 or 23) over a single asyncio stream connection.
+"""
 
 from __future__ import annotations
 
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import asyncio
 import logging
-import struct
+import re
 import time
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,32 +61,21 @@ class SocketConfig:
 class RackLinkMessage:
     """Represents a RackLink protocol message."""
 
-    def __init__(self, command: int, subcommand: int, data: bytes = b""):
+    def __init__(self, command: int, subcommand: int, data: bytes = b"") -> None:
         self.command = command
         self.subcommand = subcommand
         self.data = data
 
     def build(self) -> bytes:
         """Build the complete message with header, length, checksum, and tail."""
-        # Build data envelope: command + subcommand + data
         data_envelope = bytes([self.command, self.subcommand]) + self.data
-
-        # Calculate length
         length = len(data_envelope)
 
-        # Build message without escaping first
         message = bytes([HEADER_BYTE, length]) + data_envelope
-
-        # Calculate checksum
         checksum = self._calculate_checksum(message) & 0x7F
-
-        # Add checksum and tail
         message = message + bytes([checksum, TAIL_BYTE])
 
-        # Apply escape characters
-        escaped_message = self._escape_message(message)
-
-        return escaped_message
+        return self._escape_message(message)
 
     def _calculate_checksum(self, data: bytes) -> int:
         """Calculate checksum as sum of all bytes masked with 0x7F."""
@@ -91,29 +86,23 @@ class RackLinkMessage:
         result = bytearray()
 
         for i, byte in enumerate(message):
-            if i == 0:  # Header - don't escape
+            if i == 0 or i == len(message) - 1:
+                # Header and tail are never escaped
                 result.append(byte)
-            elif i == len(message) - 1:  # Tail - don't escape
+            elif byte in (HEADER_BYTE, TAIL_BYTE, ESCAPE_BYTE):
+                result.append(ESCAPE_BYTE)
+                result.append(byte ^ 0xFF)  # Invert bits
+            else:
                 result.append(byte)
-            else:  # Message body - apply escaping
-                if byte in [HEADER_BYTE, TAIL_BYTE, ESCAPE_BYTE]:
-                    result.append(ESCAPE_BYTE)
-                    result.append(byte ^ 0xFF)  # Invert bits
-                else:
-                    result.append(byte)
 
         return bytes(result)
 
 
 class SocketConnection:
-    """Socket connection manager for Middle Atlantic RackLink devices using binary protocol."""
+    """Socket connection manager for Middle Atlantic RackLink devices."""
 
     def __init__(self, config: SocketConfig) -> None:
-        """Initialize the socket connection.
-
-        Args:
-            config: Configuration object containing connection details
-        """
+        """Initialize the socket connection."""
         self.config = config
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -123,6 +112,9 @@ class SocketConnection:
         self._command_lock = asyncio.Lock()
         self._ping_task: Optional[asyncio.Task] = None
         self._last_ping_time = 0.0
+        self._protocol_type: Optional[str] = None
+        self._initial_data: bytes = b""
+        self._outlet_names: Dict[int, str] = {}
 
     @property
     def connected(self) -> bool:
@@ -134,82 +126,107 @@ class SocketConnection:
         """Return True if authenticated with the device."""
         return self._authenticated
 
+    @property
+    def protocol_type(self) -> Optional[str]:
+        """Return the detected protocol type ('telnet' or 'binary')."""
+        return self._protocol_type
+
+    @property
+    def outlet_names(self) -> Dict[int, str]:
+        """Return outlet names parsed from the latest telnet response."""
+        return self._outlet_names
+
+    def _require_reader(self) -> asyncio.StreamReader:
+        """Return the active stream reader.
+
+        Raises:
+            RacklinkConnectionError: If the socket is not connected.
+        """
+        if self._reader is None:
+            raise RacklinkConnectionError("Socket is not connected")
+        return self._reader
+
+    def _require_writer(self) -> asyncio.StreamWriter:
+        """Return the active stream writer.
+
+        Raises:
+            RacklinkConnectionError: If the socket is not connected.
+        """
+        if self._writer is None:
+            raise RacklinkConnectionError("Socket is not connected")
+        return self._writer
+
     async def _handle_authentication(self) -> bool:
         """Handle authentication based on detected protocol type.
 
+        Raises:
+            RacklinkAuthenticationError: If the device rejects the credentials.
+
         Returns:
-            bool: True if authentication was successful, False otherwise
+            bool: True if authentication was successful, False otherwise.
         """
         if not (self.config.username and self.config.password):
             _LOGGER.error("Username and password required for authentication")
             return False
 
         # Detect protocol type using existing connection
-        if not hasattr(self, "_protocol_type"):
+        if self._protocol_type is None:
             self._protocol_type, self._initial_data = (
                 await self._detect_protocol_from_connection()
             )
 
-        _LOGGER.info("Using %s protocol for authentication", self._protocol_type)
+        _LOGGER.debug("Using %s protocol for authentication", self._protocol_type)
 
         if self._protocol_type == "telnet":
             return await self._handle_telnet_authentication()
-        elif self._protocol_type == "binary":
+        if self._protocol_type == "binary":
             return await self._handle_binary_authentication()
-        else:
-            _LOGGER.error("Unknown protocol type: %s", self._protocol_type)
-            return False
 
-    async def _detect_protocol_from_connection(self) -> tuple:
+        _LOGGER.error("Unknown protocol type: %s", self._protocol_type)
+        return False
+
+    async def _detect_protocol_from_connection(self) -> Tuple[str, bytes]:
         """Detect protocol type using the existing connection.
 
         Returns:
-            tuple: (protocol_type, initial_data) where protocol_type is 'telnet', 'binary', or 'unknown'
+            tuple: (protocol_type, initial_data) where protocol_type is
+            'telnet', 'binary', or 'unknown'.
         """
         try:
-            _LOGGER.info("Detecting protocol type using existing connection")
+            _LOGGER.debug("Detecting protocol type on existing connection")
 
-            # Read initial response to detect protocol
             try:
                 initial_response = await asyncio.wait_for(
-                    self._reader.read(1024), timeout=3.0
+                    self._require_reader().read(1024), timeout=3.0
                 )
 
                 if initial_response:
-                    response_hex = initial_response.hex()
                     response_text = initial_response.decode("utf-8", errors="ignore")
-
-                    _LOGGER.info("Initial connection response (hex): %s", response_hex)
-                    _LOGGER.info(
-                        "Initial connection response (text): %s", response_text[:200]
-                    )
 
                     # Check for Telnet IAC sequences or login prompts
                     if any(
                         seq in initial_response
-                        for seq in [b"\xff\xfb", b"\xff\xfd", b"\xff\xfe"]
+                        for seq in (b"\xff\xfb", b"\xff\xfd", b"\xff\xfe")
                     ) or any(
                         keyword in response_text.lower()
-                        for keyword in [
+                        for keyword in (
                             "login",
                             "username",
                             "password",
                             "racklink",
                             "cli",
-                        ]
+                        )
                     ):
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "Detected Telnet protocol (IAC sequences or login prompt)"
                         )
                         return "telnet", initial_response
 
-                # If we get here, assume binary protocol
-                _LOGGER.info("No Telnet indicators, assuming binary protocol")
+                _LOGGER.debug("No Telnet indicators, assuming binary protocol")
                 return "binary", initial_response
 
             except asyncio.TimeoutError:
-                # No initial response - could be binary protocol
-                _LOGGER.info("No initial response, assuming binary protocol")
+                _LOGGER.debug("No initial response, assuming binary protocol")
                 return "binary", b""
 
         except Exception as err:
@@ -219,72 +236,67 @@ class SocketConnection:
     async def _handle_binary_authentication(self) -> bool:
         """Handle RackLink binary protocol authentication.
 
-        Sends login command with username|password format.
+        Raises:
+            RacklinkAuthenticationError: If the device rejects the credentials.
 
         Returns:
-            bool: True if authentication was successful, False otherwise
+            bool: True if authentication was successful, False otherwise.
         """
         try:
-            # Create login message: username|password
             credentials = f"{self.config.username}|{self.config.password}"
-            login_data = credentials.encode("ascii")
+            login_msg = RackLinkMessage(
+                CMD_LOGIN, SUBCMD_LOGIN, credentials.encode("ascii")
+            )
 
-            # Build login message
-            login_msg = RackLinkMessage(CMD_LOGIN, SUBCMD_LOGIN, login_data)
-            message_bytes = login_msg.build()
+            _LOGGER.debug("Sending binary login message")
+            await self._send_raw_data(login_msg.build())
 
-            _LOGGER.info("Sending binary login message: %s", message_bytes.hex())
-            await self._send_raw_data(message_bytes)
-
-            # Wait for response with shorter timeout for binary login
             try:
                 response = await asyncio.wait_for(self._read_message(), timeout=5.0)
                 if not response:
                     _LOGGER.error(
-                        "No response to binary login command - device may not support binary protocol"
+                        "No response to binary login command - device may not "
+                        "support binary protocol"
                     )
                     return False
             except asyncio.TimeoutError:
                 _LOGGER.error(
-                    "Timeout waiting for binary login response - device likely uses Telnet protocol"
+                    "Timeout waiting for binary login response - device likely "
+                    "uses Telnet protocol"
                 )
                 return False
 
             # Check for NACK (error response)
             if len(response) >= 2 and response[0] == CMD_NACK:
-                error_code = response[1] if len(response) > 1 else 0x00
-                if error_code == NACK_INVALID_CREDENTIALS:
-                    _LOGGER.error("Binary authentication failed: Invalid credentials")
-                elif error_code == NACK_ACCESS_DENIED:
-                    _LOGGER.error("Binary authentication failed: Access denied")
-                else:
-                    _LOGGER.error(
-                        "Binary authentication failed: NACK error code 0x%02X",
-                        error_code,
+                error_code = response[1]
+                if error_code in (NACK_INVALID_CREDENTIALS, NACK_ACCESS_DENIED):
+                    raise RacklinkAuthenticationError(
+                        "Binary authentication failed: invalid credentials"
                     )
+                _LOGGER.error(
+                    "Binary authentication failed: NACK error code 0x%02X",
+                    error_code,
+                )
                 return False
 
-            # Successful authentication
-            _LOGGER.info("RackLink binary authentication successful")
+            _LOGGER.debug("RackLink binary authentication successful")
             self._authenticated = True
 
-            # Start ping handler to maintain connection
+            # Start ping handler to answer keepalive PINGs from the device
             self._ping_task = asyncio.create_task(self._ping_handler())
 
             return True
 
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Binary authentication error: %s", err)
             return False
 
     async def _establish_connection(self) -> bool:
-        """Establish the initial TCP connection.
-
-        Returns:
-            bool: True if connection was successful, False otherwise
-        """
+        """Establish the initial TCP connection."""
         try:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Attempting TCP connection to %s:%d with %ds timeout",
                 self.config.host,
                 self.config.port,
@@ -296,32 +308,33 @@ class SocketConnection:
                 timeout=self.config.timeout,
             )
 
-            _LOGGER.info(
+            _LOGGER.debug(
                 "TCP connection established to %s:%d",
                 self.config.host,
                 self.config.port,
             )
             return True
 
-        except asyncio.TimeoutError as err:
+        except asyncio.TimeoutError:
             _LOGGER.error(
-                "Connection timeout to %s:%d after %ds - check if device is reachable and port %d is open",
+                "Connection timeout to %s:%d after %ds - check if device is "
+                "reachable and port is open",
                 self.config.host,
                 self.config.port,
                 self.config.timeout,
-                self.config.port,
             )
             return False
-        except ConnectionRefusedError as err:
+        except ConnectionRefusedError:
             _LOGGER.error(
-                "Connection refused to %s:%d - check if control protocol is enabled on device",
+                "Connection refused to %s:%d - check if control protocol is "
+                "enabled on device",
                 self.config.host,
                 self.config.port,
             )
             return False
         except (ConnectionError, OSError) as err:
             _LOGGER.error(
-                "Network error connecting to %s:%d: %s - check network connectivity",
+                "Network error connecting to %s:%d: %s",
                 self.config.host,
                 self.config.port,
                 err,
@@ -329,7 +342,11 @@ class SocketConnection:
             return False
 
     async def connect(self) -> bool:
-        """Connect to the device and authenticate using RackLink protocol."""
+        """Connect to the device and authenticate using RackLink protocol.
+
+        Raises:
+            RacklinkAuthenticationError: If the device rejects the credentials.
+        """
         async with self._connection_lock:
             if (
                 self._connected
@@ -341,7 +358,7 @@ class SocketConnection:
                 return True
 
             try:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Connecting to RackLink device at %s:%d",
                     self.config.host,
                     self.config.port,
@@ -356,12 +373,16 @@ class SocketConnection:
 
                 self._connected = True
                 _LOGGER.info(
-                    "Successfully connected and authenticated to %s:%d",
+                    "Connected and authenticated to %s:%d (%s protocol)",
                     self.config.host,
                     self.config.port,
+                    self._protocol_type,
                 )
                 return True
 
+            except RacklinkAuthenticationError:
+                await self._cleanup_connection()
+                raise
             except (asyncio.TimeoutError, ConnectionError, OSError) as err:
                 _LOGGER.error(
                     "Error connecting to %s:%d: %s",
@@ -374,7 +395,6 @@ class SocketConnection:
 
     async def _cleanup_connection(self) -> None:
         """Clean up the connection resources."""
-        # Stop ping task
         if self._ping_task and not self._ping_task.done():
             self._ping_task.cancel()
             try:
@@ -394,6 +414,10 @@ class SocketConnection:
         self._connected = False
         self._authenticated = False
         self._ping_task = None
+        # Force re-detection on next connect; the device may expose a
+        # different protocol after a reboot or firmware change.
+        self._protocol_type = None
+        self._initial_data = b""
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
@@ -407,11 +431,9 @@ class SocketConnection:
             "Attempting to reconnect to %s:%d", self.config.host, self.config.port
         )
 
-        # Disconnect first if already connected
         if self._connected:
             await self.disconnect()
 
-        # Try to reconnect
         return await self.connect()
 
     async def ensure_connected(self) -> bool:
@@ -423,87 +445,122 @@ class SocketConnection:
             return await self.reconnect()
         return True
 
+    def _mark_disconnected(self) -> None:
+        """Mark the connection as lost so the next call reconnects."""
+        self._connected = False
+        self._authenticated = False
+
+    async def _read_unescaped_byte(self, timeout: float) -> int:
+        """Read a single logical byte from the stream, resolving escapes."""
+        byte = (
+            await asyncio.wait_for(
+                self._require_reader().readexactly(1), timeout=timeout
+            )
+        )[0]
+        if byte == ESCAPE_BYTE:
+            escaped = (
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
+            )[0]
+            return escaped ^ 0xFF
+        return byte
+
     async def _read_message(self, timeout: float = 10.0) -> Optional[bytes]:
         """Read a complete RackLink message from the device.
 
-        Args:
-            timeout: Timeout in seconds
+        The sender escapes every byte between the header and tail (including
+        the length and checksum bytes), so all of those must be read as
+        logical (unescaped) bytes.
 
         Returns:
-            bytes: The data envelope (without header, length, checksum, tail) or None if failed
+            bytes: The data envelope (without header, length, checksum, tail)
+            or None if the frame was invalid or timed out.
         """
         if not self._reader:
             return None
 
         try:
-            # Read header
-            header_byte = await asyncio.wait_for(
-                self._reader.readexactly(1), timeout=timeout
-            )
-            if header_byte[0] != HEADER_BYTE:
-                _LOGGER.warning("Invalid header byte: 0x%02X", header_byte[0])
+            # Header is never escaped
+            header = (
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
+            )[0]
+            if header != HEADER_BYTE:
+                _LOGGER.warning("Invalid header byte: 0x%02X", header)
                 return None
 
-            # Read length
-            length_byte = await asyncio.wait_for(
-                self._reader.readexactly(1), timeout=timeout
-            )
-            length = length_byte[0]
+            length = await self._read_unescaped_byte(timeout)
 
-            # Read data envelope
-            data_envelope = await asyncio.wait_for(
-                self._reader.readexactly(length), timeout=timeout
+            data_envelope = bytes(
+                [await self._read_unescaped_byte(timeout) for _ in range(length)]
             )
 
-            # Read checksum and tail
-            checksum_tail = await asyncio.wait_for(
-                self._reader.readexactly(2), timeout=timeout
-            )
+            checksum = await self._read_unescaped_byte(timeout)
 
-            # Verify checksum
-            message_for_checksum = header_byte + length_byte + data_envelope
-            expected_checksum = sum(message_for_checksum) & 0x7F
-            actual_checksum = checksum_tail[0]
+            # Tail is never escaped
+            tail = (
+                await asyncio.wait_for(
+                    self._require_reader().readexactly(1), timeout=timeout
+                )
+            )[0]
 
-            if expected_checksum != actual_checksum:
+            expected_checksum = (header + length + sum(data_envelope)) & 0x7F
+            if expected_checksum != checksum:
                 _LOGGER.warning(
                     "Checksum mismatch: expected 0x%02X, got 0x%02X",
                     expected_checksum,
-                    actual_checksum,
+                    checksum,
                 )
                 return None
 
-            # Verify tail
-            if checksum_tail[1] != TAIL_BYTE:
-                _LOGGER.warning("Invalid tail byte: 0x%02X", checksum_tail[1])
+            if tail != TAIL_BYTE:
+                _LOGGER.warning("Invalid tail byte: 0x%02X", tail)
                 return None
 
-            # Process escape characters in data envelope
-            unescaped_data = self._unescape_data(data_envelope)
-
-            _LOGGER.debug("Received message: %s", unescaped_data.hex())
-            return unescaped_data
+            _LOGGER.debug("Received message: %s", data_envelope.hex())
+            return data_envelope
 
         except asyncio.TimeoutError:
             _LOGGER.debug("Timeout reading message")
             return None
+        except asyncio.IncompleteReadError as err:
+            _LOGGER.error("Connection closed during message read: %s", err)
+            self._mark_disconnected()
+            raise ConnectionError("Connection closed by device") from err
         except (ConnectionError, OSError) as err:
             _LOGGER.error("Connection error during message read: %s", err)
+            self._mark_disconnected()
             raise
 
-    def _unescape_data(self, data: bytes) -> bytes:
-        """Remove escape characters from data."""
-        result = bytearray()
-        i = 0
-        while i < len(data):
-            if data[i] == ESCAPE_BYTE and i + 1 < len(data):
-                # Next byte is escaped, invert its bits
-                result.append(data[i + 1] ^ 0xFF)
-                i += 2
-            else:
-                result.append(data[i])
-                i += 1
-        return bytes(result)
+    async def _read_response(self, timeout: float = 10.0) -> Optional[bytes]:
+        """Read the next non-PING message, answering PINGs inline.
+
+        The device sends keepalive PINGs on the same stream that command
+        responses arrive on, so a command may receive a PING before its
+        actual response.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            message = await self._read_message(timeout=remaining)
+            if message is None:
+                return None
+            if (
+                len(message) >= 2
+                and message[0] == CMD_PING
+                and message[1] == SUBCMD_PING
+            ):
+                _LOGGER.debug("Received PING while awaiting response, sending PONG")
+                await self._send_raw_data(
+                    RackLinkMessage(CMD_PING, SUBCMD_PONG).build()
+                )
+                self._last_ping_time = time.time()
+                continue
+            return message
 
     async def _send_raw_data(self, data: bytes) -> None:
         """Send raw binary data to the device."""
@@ -511,32 +568,44 @@ class SocketConnection:
             raise ConnectionError("Not connected to device")
 
         try:
-            self._writer.write(data)
-            await self._writer.drain()
+            self._require_writer().write(data)
+            await self._require_writer().drain()
         except (ConnectionError, OSError) as err:
             _LOGGER.error("Error sending data: %s", err)
+            self._mark_disconnected()
             raise
 
     async def _ping_handler(self) -> None:
-        """Handle incoming ping messages and respond with pong."""
-        while self._connected and self._authenticated:
+        """Answer keepalive PING messages from the device.
+
+        Holds the command lock while reading so it never races a command
+        transaction for frames on the shared stream.
+        """
+        while self._connected or self._authenticated:
             try:
-                # Wait for incoming message
-                message = await self._read_message(timeout=30.0)
-                if not message:
-                    continue
-
-                if len(message) >= 2:
-                    command = message[0]
-                    subcommand = message[1]
-
-                    # Handle ping message
-                    if command == CMD_PING and subcommand == SUBCMD_PING:
+                async with self._command_lock:
+                    if not self._connected and not self._authenticated:
+                        break
+                    message = await self._read_message(timeout=1.0)
+                    if (
+                        message
+                        and len(message) >= 2
+                        and message[0] == CMD_PING
+                        and message[1] == SUBCMD_PING
+                    ):
                         _LOGGER.debug("Received PING, sending PONG")
-                        pong_msg = RackLinkMessage(CMD_PING, SUBCMD_PONG)
-                        await self._send_raw_data(pong_msg.build())
+                        await self._send_raw_data(
+                            RackLinkMessage(CMD_PING, SUBCMD_PONG).build()
+                        )
                         self._last_ping_time = time.time()
-
+                # Yield so queued commands can grab the lock
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionError, OSError):
+                _LOGGER.warning("Connection lost in ping handler")
+                self._mark_disconnected()
+                break
             except Exception as err:
                 _LOGGER.error("Error in ping handler: %s", err)
                 await asyncio.sleep(1)
@@ -544,7 +613,7 @@ class SocketConnection:
     async def send_outlet_command(
         self, outlet: int, state: int, cycle_time: int = 0
     ) -> bool:
-        """Send outlet control command.
+        """Send outlet control command via the binary protocol.
 
         Args:
             outlet: Outlet number (1-based)
@@ -554,56 +623,45 @@ class SocketConnection:
         Returns:
             bool: True if command successful, False otherwise
         """
-        async with self._command_lock:
-            if not self._connected or not self._authenticated:
-                if not await self.connect():
-                    return False
+        if not self._connected or not self._authenticated:
+            if not await self.connect():
+                return False
 
+        async with self._command_lock:
             try:
-                # Build command data
                 if state == OUTLET_CYCLE:
-                    # For cycle command, include cycle time in ASCII format
                     cycle_time_str = f"{cycle_time:04d}"
                     data = bytes([state, outlet]) + cycle_time_str.encode("ascii")
                 else:
-                    # For on/off commands
                     data = bytes([state, outlet])
 
-                # Build message
                 msg = RackLinkMessage(CMD_OUTLET, SUBCMD_OUTLET_SET, data)
-                message_bytes = msg.build()
 
                 _LOGGER.debug(
-                    "Sending outlet command: outlet=%d, state=%d, data=%s",
-                    outlet,
-                    state,
-                    message_bytes.hex(),
+                    "Sending outlet command: outlet=%d, state=%d", outlet, state
                 )
-                await self._send_raw_data(message_bytes)
+                await self._send_raw_data(msg.build())
 
-                # Wait for response
-                response = await self._read_message()
+                response = await self._read_response()
                 if not response:
                     _LOGGER.warning("No response to outlet command")
                     return False
 
-                # Check for NACK
                 if len(response) >= 2 and response[0] == CMD_NACK:
-                    error_code = response[1] if len(response) > 1 else 0x00
                     _LOGGER.warning(
-                        "Outlet command failed with NACK: 0x%02X", error_code
+                        "Outlet command failed with NACK: 0x%02X", response[1]
                     )
                     return False
 
                 _LOGGER.debug("Outlet command successful")
                 return True
 
-            except Exception as err:
+            except (ConnectionError, OSError) as err:
                 _LOGGER.error("Error sending outlet command: %s", err)
                 return False
 
     async def read_outlet_state(self, outlet: int) -> Optional[bool]:
-        """Read the state of an outlet.
+        """Read the state of an outlet via the binary protocol.
 
         Args:
             outlet: Outlet number (1-based)
@@ -611,230 +669,44 @@ class SocketConnection:
         Returns:
             bool: True if outlet is on, False if off, None if error
         """
+        if not self._connected or not self._authenticated:
+            if not await self.connect():
+                return None
+
         async with self._command_lock:
-            if not self._connected or not self._authenticated:
-                if not await self.connect():
-                    return None
-
             try:
-                # Build read state command
-                data = bytes([outlet])
-                msg = RackLinkMessage(CMD_OUTLET, SUBCMD_OUTLET_GET, data)
-                message_bytes = msg.build()
+                msg = RackLinkMessage(CMD_OUTLET, SUBCMD_OUTLET_GET, bytes([outlet]))
 
-                _LOGGER.debug(
-                    "Reading outlet %d state: %s", outlet, message_bytes.hex()
-                )
-                await self._send_raw_data(message_bytes)
+                _LOGGER.debug("Reading outlet %d state", outlet)
+                await self._send_raw_data(msg.build())
 
-                # Wait for response
-                response = await self._read_message()
+                response = await self._read_response()
                 if not response:
-                    _LOGGER.warning("No response to outlet state query")
+                    _LOGGER.debug("No response to outlet state query")
                     return None
 
-                # Check for NACK
                 if len(response) >= 2 and response[0] == CMD_NACK:
-                    error_code = response[1] if len(response) > 1 else 0x00
                     _LOGGER.warning(
-                        "Outlet state query failed with NACK: 0x%02X", error_code
+                        "Outlet state query failed with NACK: 0x%02X", response[1]
                     )
                     return None
 
-                # Parse response (expecting command, subcommand, outlet, state)
+                # Expecting command, subcommand, outlet, state
                 if (
                     len(response) >= 4
                     and response[0] == CMD_OUTLET
                     and response[1] == SUBCMD_OUTLET_GET
                 ):
-                    outlet_state = response[3]  # Fourth byte is the state
-                    return outlet_state == OUTLET_ON
+                    return response[3] == OUTLET_ON
 
                 _LOGGER.warning(
                     "Unexpected response format for outlet state: %s", response.hex()
                 )
                 return None
 
-            except Exception as err:
+            except (ConnectionError, OSError) as err:
                 _LOGGER.error("Error reading outlet state: %s", err)
                 return None
-
-    async def test_port_connectivity(self, port: int, timeout: int = 5) -> bool:
-        """Test if a specific port is open and responsive.
-
-        Args:
-            port: Port number to test
-            timeout: Connection timeout in seconds
-
-        Returns:
-            bool: True if port is accessible, False otherwise
-        """
-        try:
-            _LOGGER.info("Testing connectivity to %s:%d", self.config.host, port)
-
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.config.host, port), timeout=timeout
-            )
-
-            # Clean up connection
-            writer.close()
-            await writer.wait_closed()
-
-            _LOGGER.info("Port %d is accessible on %s", port, self.config.host)
-            return True
-
-        except Exception as err:
-            _LOGGER.info(
-                "Port %d not accessible on %s: %s", port, self.config.host, err
-            )
-            return False
-
-    async def detect_protocol_type(self, port: int, timeout: int = 5) -> str:
-        """Detect what protocol a port is using.
-
-        Args:
-            port: Port number to test
-            timeout: Connection timeout in seconds
-
-        Returns:
-            str: 'binary', 'telnet', 'http', or 'unknown'
-        """
-        try:
-            _LOGGER.debug("Detecting protocol type on %s:%d", self.config.host, port)
-
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.config.host, port), timeout=timeout
-            )
-
-            # Read initial response to detect protocol
-            try:
-                initial_response = await asyncio.wait_for(
-                    reader.read(1024), timeout=2.0
-                )
-
-                if initial_response:
-                    response_hex = initial_response.hex()
-                    response_text = initial_response.decode("utf-8", errors="ignore")
-
-                    _LOGGER.debug("Port %d initial response: %s", port, response_hex)
-
-                    # Check for Telnet IAC sequences
-                    if any(
-                        seq in initial_response
-                        for seq in [b"\xff\xfb", b"\xff\xfd", b"\xff\xfe"]
-                    ):
-                        writer.close()
-                        await writer.wait_closed()
-                        _LOGGER.debug(
-                            "Port %d detected as Telnet (IAC sequences found)", port
-                        )
-                        return "telnet"
-
-                    # Check for HTTP responses
-                    if (
-                        b"HTTP/" in initial_response
-                        or b"html" in initial_response.lower()
-                    ):
-                        writer.close()
-                        await writer.wait_closed()
-                        _LOGGER.debug("Port %d detected as HTTP", port)
-                        return "http"
-
-                    # Check for login prompts (typical for Telnet devices)
-                    if any(
-                        keyword in response_text.lower()
-                        for keyword in ["login", "username", "password", "racklink"]
-                    ):
-                        writer.close()
-                        await writer.wait_closed()
-                        _LOGGER.debug("Port %d detected as Telnet (login prompt)", port)
-                        return "telnet"
-
-                # If no initial response, try sending a binary test message
-                credentials = f"{self.config.username or 'user'}|{self.config.password or 'password'}"
-                login_data = credentials.encode("ascii")
-                login_msg = RackLinkMessage(CMD_LOGIN, SUBCMD_LOGIN, login_data)
-                message_bytes = login_msg.build()
-
-                writer.write(message_bytes)
-                await writer.drain()
-
-                # Wait for response
-                response = await asyncio.wait_for(reader.read(1024), timeout=3.0)
-                if response:
-                    _LOGGER.debug("Port %d responded to binary protocol test", port)
-                    writer.close()
-                    await writer.wait_closed()
-                    return "binary"
-
-            except asyncio.TimeoutError:
-                # No response to protocol tests
-                pass
-
-            writer.close()
-            await writer.wait_closed()
-            _LOGGER.debug("Port %d protocol type unknown", port)
-            return "unknown"
-
-        except Exception as err:
-            _LOGGER.debug("Error detecting protocol on port %d: %s", port, err)
-            return "unknown"
-
-    async def discover_racklink_port(self) -> Optional[int]:
-        """Discover which port the RackLink device is using.
-
-        Tests common RackLink ports to find the correct one.
-
-        Returns:
-            int: Discovered port number, or None if not found
-        """
-        # Common RackLink ports to test - reordered based on device compatibility
-        ports_to_test = [
-            6000,  # Telnet protocol (Select/Premium series) - try first
-            60000,  # Binary protocol (Premium+ series)
-            23,  # Standard Telnet port (older implementations)
-            4001,  # Alternative port
-            80,  # HTTP (device present but wrong protocol)
-            443,  # HTTPS (device present but wrong protocol)
-        ]
-
-        _LOGGER.info("Discovering RackLink device port on %s", self.config.host)
-
-        # Track ports by protocol type
-        working_ports = []
-
-        for port in ports_to_test:
-            if await self.test_port_connectivity(port):
-                protocol = await self.detect_protocol_type(port)
-                _LOGGER.info(
-                    "Port %d on %s: protocol=%s", port, self.config.host, protocol
-                )
-
-                if protocol in ["telnet", "binary"]:
-                    working_ports.append((port, protocol))
-                elif protocol == "http":
-                    _LOGGER.info(
-                        "Port %d is HTTP - device present but need control protocol enabled",
-                        port,
-                    )
-
-        # Prioritize based on protocol type
-        for port, protocol in working_ports:
-            if protocol == "telnet":
-                _LOGGER.info("Found Telnet RackLink device on port %d", port)
-                return port
-            elif protocol == "binary":
-                _LOGGER.info("Found binary RackLink device on port %d", port)
-                return port
-
-        # If we found any working ports, return the first one
-        if working_ports:
-            port, protocol = working_ports[0]
-            _LOGGER.info("Using port %d with protocol %s", port, protocol)
-            return port
-
-        _LOGGER.warning("No RackLink-compatible ports found on %s", self.config.host)
-        return None
 
     async def send_telnet_command(self, command: str) -> str:
         """Send a command via Telnet protocol (for Select/Premium series).
@@ -847,48 +719,47 @@ class SocketConnection:
         """
         # Serialize Telnet access to prevent concurrent reads/writes
         async with self._command_lock:
-            # Send command via Telnet
             if not self._reader or not self._writer:
                 _LOGGER.error("Telnet not connected - cannot send command")
+                self._mark_disconnected()
                 return ""
 
             try:
                 # Check if session is corrupted (stuck in command mode)
                 if await self._is_session_corrupted():
-                    _LOGGER.warning(
-                        "🚨 Session corruption detected, attempting recovery"
-                    )
+                    _LOGGER.warning("Session corruption detected, attempting recovery")
                     if not await self._recover_telnet_session():
-                        _LOGGER.error("❌ Failed to recover Telnet session")
+                        _LOGGER.error("Failed to recover Telnet session")
                         return ""
 
                 # Clear any buffered input before sending command
                 await self._flush_input_buffer()
 
-                # Send command with proper termination
                 full_command = f"{command}\r\n"
-                _LOGGER.debug("📤 Sending Telnet command: %s", command)
+                _LOGGER.debug("Sending Telnet command: %s", command)
 
-                self._writer.write(full_command.encode("ascii"))
-                await self._writer.drain()
+                self._require_writer().write(full_command.encode("ascii"))
+                await self._require_writer().drain()
 
-                # Read response with improved timeout and corruption detection
                 response_parts = []
                 corruption_detected = False
+                connection_closed = False
                 start_time = time.time()
 
                 while True:
                     try:
                         data = await asyncio.wait_for(
-                            self._reader.read(1024), timeout=3.0
+                            self._require_reader().read(1024), timeout=3.0
                         )
                         if not data:
+                            # EOF: the device closed the connection
+                            connection_closed = True
                             break
 
                         text = data.decode("utf-8", errors="ignore")
                         response_parts.append(text)
 
-                        # Check for REAL corruption indicators (not normal command responses)
+                        # Check for REAL corruption indicators (not normal responses)
                         corruption_indicators = [
                             text.count("^") > 1,
                             len(text) > 500
@@ -901,9 +772,7 @@ class SocketConnection:
 
                         if any(corruption_indicators):
                             corruption_detected = True
-                            _LOGGER.warning(
-                                "🚨 Real corruption detected: %s", text[:150]
-                            )
+                            _LOGGER.warning("Corruption detected: %s", text[:150])
                             break
 
                         # End of response when prompt appears
@@ -911,18 +780,26 @@ class SocketConnection:
                             break
 
                         if time.time() - start_time > 8.0:
-                            _LOGGER.warning("⏱️ Command timeout after 8 seconds")
+                            _LOGGER.warning("Command timeout after 8 seconds")
                             break
 
                     except asyncio.TimeoutError:
                         _LOGGER.debug(
-                            "⏱️ Timeout reading Telnet response for '%s'", command
+                            "Timeout reading Telnet response for '%s'", command
                         )
                         break
 
+                if connection_closed:
+                    _LOGGER.warning(
+                        "Telnet connection closed by device during command '%s'",
+                        command,
+                    )
+                    self._mark_disconnected()
+                    return ""
+
                 if corruption_detected:
                     _LOGGER.error(
-                        "❌ Command '%s' failed due to session corruption", command
+                        "Command '%s' failed due to session corruption", command
                     )
                     await self._recover_telnet_session()
                     return ""
@@ -931,62 +808,50 @@ class SocketConnection:
                 result = self._clean_telnet_response(full_response, command)
 
                 if result and "Unknown command" in result:
-                    _LOGGER.info(
-                        "ℹ️ Command '%s' not recognized by device: %s",
+                    _LOGGER.debug(
+                        "Command '%s' not recognized by device: %s",
                         command,
                         result.strip(),
                     )
-                    return result
                 elif result:
                     _LOGGER.debug(
-                        "✅ Command '%s' completed, response length: %d",
+                        "Command '%s' completed, response length: %d",
                         command,
                         len(result),
                     )
                 else:
-                    _LOGGER.warning("⚠️ Command '%s' returned empty response", command)
+                    _LOGGER.debug("Command '%s' returned empty response", command)
 
                 return result
 
-            except Exception as err:
-                _LOGGER.error("Error sending Telnet command '%s': %s", command, err)
+            except (ConnectionError, OSError, asyncio.TimeoutError) as err:
+                _LOGGER.error("Connection error during command '%s': %s", command, err)
+                self._mark_disconnected()
                 return ""
 
     async def _is_session_corrupted(self) -> bool:
         """Check if the Telnet session is corrupted (stuck in command mode)."""
         try:
-            # Send a simple test command that should always work
-            self._writer.write(b"\r\n")
-            await self._writer.drain()
+            self._require_writer().write(b"\r\n")
+            await self._require_writer().drain()
 
-            # Read any immediate response
             try:
-                data = await asyncio.wait_for(self._reader.read(512), timeout=1.0)
+                data = await asyncio.wait_for(
+                    self._require_reader().read(512), timeout=1.0
+                )
                 response = data.decode("utf-8", errors="ignore")
 
-                # Check for signs of corruption
                 corruption_indicators = [
-                    "label  Outlet label",
-                    "(1/2/3/4/5/6/7/8/all)",
-                    "^\r\n",
+                    "label  Outlet label" in response,
+                    "(1/2/3/4/5/6/7/8/all)" in response,
+                    "^\r\n" in response,
                     # Long command history indicates buffer overflow
                     len(response) > 200 and "show" in response and "outlet" in response,
                 ]
 
-                corruption_found = []
-                for indicator in corruption_indicators:
-                    if isinstance(indicator, str):
-                        if indicator in response:
-                            corruption_found.append(f"Found string: '{indicator}'")
-                    else:  # It's a boolean condition
-                        if indicator:
-                            corruption_found.append("Found long command history")
-
-                if corruption_found:
+                if any(corruption_indicators):
                     _LOGGER.warning(
-                        "🚨 Session corruption detected: %s\nResponse: %s",
-                        ", ".join(corruption_found),
-                        response[:200],
+                        "Session corruption detected. Response: %s", response[:200]
                     )
                     return True
 
@@ -996,47 +861,37 @@ class SocketConnection:
 
             return False
 
-        except Exception as err:
+        except (ConnectionError, OSError) as err:
             _LOGGER.debug("Error checking session corruption: %s", err)
-            return True  # Assume corrupted if we can't check
+            self._mark_disconnected()
+            return True
 
     async def _recover_telnet_session(self) -> bool:
         """Attempt to recover a corrupted Telnet session."""
         try:
             _LOGGER.info("Attempting Telnet session recovery")
 
-            # Try various recovery techniques
             recovery_sequences = [
-                # Send Ctrl+C to cancel any pending command
-                b"\x03\r\n",
-                # Send Ctrl+Z (suspend)
-                b"\x1a\r\n",
-                # Send ESC to cancel
-                b"\x1b\r\n",
-                # Send multiple enters to try to get back to prompt
-                b"\r\n\r\n\r\n",
-                # Send 'exit' and then reconnect
-                b"exit\r\n",
+                b"\x03\r\n",  # Ctrl+C to cancel any pending command
+                b"\x1b\r\n",  # ESC to cancel
+                b"\r\n\r\n\r\n",  # Multiple enters to get back to prompt
             ]
 
             for sequence in recovery_sequences:
                 _LOGGER.debug("Trying recovery sequence: %r", sequence)
-                self._writer.write(sequence)
-                await self._writer.drain()
+                self._require_writer().write(sequence)
+                await self._require_writer().drain()
 
-                # Wait for response
                 await asyncio.sleep(0.5)
 
-                # Clear any buffered response
                 try:
                     while True:
                         data = await asyncio.wait_for(
-                            self._reader.read(1024), timeout=0.5
+                            self._require_reader().read(1024), timeout=0.5
                         )
                         if not data:
                             break
                         response = data.decode("utf-8", errors="ignore")
-                        _LOGGER.debug("Recovery response: %s", response[:100])
 
                         # Check if we got back to a clean prompt
                         if "] # " in response and "label" not in response:
@@ -1044,42 +899,39 @@ class SocketConnection:
                             return True
 
                 except asyncio.TimeoutError:
-                    # Timeout is okay, means no more data
                     pass
 
             # If recovery sequences didn't work, try full reconnection
             _LOGGER.warning("Recovery sequences failed, attempting full reconnection")
-            await self.disconnect()
+            await self._cleanup_connection()
             await asyncio.sleep(1.0)
 
-            # Reconnect
-            success = await self.connect(self.config.host, self.config.port)
-            if success:
+            if await self.connect():
                 _LOGGER.info("Full reconnection successful")
                 return True
-            else:
-                _LOGGER.error("Full reconnection failed")
-                return False
 
-        except Exception as err:
+            _LOGGER.error("Full reconnection failed")
+            return False
+
+        except (ConnectionError, OSError) as err:
             _LOGGER.error("Error during session recovery: %s", err)
+            self._mark_disconnected()
             return False
 
     async def _flush_input_buffer(self) -> None:
         """Flush any pending input to clear buffer before sending commands."""
         try:
-            # Try to read any pending data with very short timeout
             while True:
                 try:
-                    data = await asyncio.wait_for(self._reader.read(1024), timeout=0.1)
+                    data = await asyncio.wait_for(
+                        self._require_reader().read(1024), timeout=0.1
+                    )
                     if not data:
                         break
-                    # Discard the data
                     _LOGGER.debug("Flushed %d bytes from input buffer", len(data))
                 except asyncio.TimeoutError:
-                    # No more data to read
                     break
-        except Exception as err:
+        except (ConnectionError, OSError) as err:
             _LOGGER.debug("Error flushing input buffer: %s", err)
 
     def _clean_telnet_response(self, response: str, command: str) -> str:
@@ -1087,14 +939,12 @@ class SocketConnection:
         if not response:
             return ""
 
-        # Split into lines for processing
         lines = response.split("\n")
         cleaned_lines = []
 
         for line in lines:
             line = line.strip()
 
-            # Skip empty lines
             if not line:
                 continue
 
@@ -1104,29 +954,23 @@ class SocketConnection:
 
             # Skip prompts and navigation
             if any(
-                prompt in line for prompt in ["] # ", "> ", "$ ", "login:", "password:"]
+                prompt in line for prompt in ("] # ", "> ", "$ ", "login:", "password:")
             ):
                 continue
 
             # Skip REAL corruption indicators (but keep normal error responses)
             corruption_indicators = [
-                # Multiple ^ characters in one line (real corruption)
                 line.count("^") > 1,
-                # Interactive prompts without context
                 "(1/2/3/4/5/6/7/8/all)" in line and "Unknown command" not in line,
-                # Label prompts without context
                 "label  Outlet label" in line and "Unknown command" not in line,
             ]
 
-            # Keep normal "^ Unknown command" responses - they're valuable info!
             if any(corruption_indicators):
                 continue
 
-            # Keep the line
             cleaned_lines.append(line)
 
-        result = "\n".join(cleaned_lines).strip()
-        return result
+        return "\n".join(cleaned_lines).strip()
 
     async def telnet_outlet_command(self, outlet: int, action: str) -> bool:
         """Send outlet control command via Telnet.
@@ -1138,30 +982,26 @@ class SocketConnection:
         Returns:
             bool: True if command succeeded
         """
-        try:
-            # Format command based on examples from response_samples
-            command = f"power outlets {outlet} {action} /y"
-            _LOGGER.info("Sending Telnet outlet command: %s", command)
-            response = await self.send_telnet_command(command)
-            _LOGGER.debug("Telnet outlet command response: %s", response[:200])
+        command = f"power outlets {outlet} {action} /y"
+        _LOGGER.debug("Sending Telnet outlet command: %s", command)
+        response = await self.send_telnet_command(command)
 
-            # For outlet commands, success is typically indicated by getting back to prompt
-            # without error messages
-            if "error" not in response.lower() and "invalid" not in response.lower():
-                _LOGGER.info("Telnet outlet %d %s command successful", outlet, action)
-                return True
-            else:
-                _LOGGER.warning(
-                    "Telnet outlet %d %s command may have failed: %s",
-                    outlet,
-                    action,
-                    response,
-                )
-                return False
-
-        except Exception as err:
-            _LOGGER.error("Error sending Telnet outlet command: %s", err)
+        if not self._connected:
             return False
+
+        # For outlet commands, success is typically indicated by getting back
+        # to the prompt without error messages
+        if "error" not in response.lower() and "invalid" not in response.lower():
+            _LOGGER.debug("Telnet outlet %d %s command successful", outlet, action)
+            return True
+
+        _LOGGER.warning(
+            "Telnet outlet %d %s command may have failed: %s",
+            outlet,
+            action,
+            response,
+        )
+        return False
 
     async def telnet_read_outlet_states(self) -> Dict[int, bool]:
         """Read all outlet states via Telnet.
@@ -1169,48 +1009,30 @@ class SocketConnection:
         Returns:
             Dict mapping outlet numbers to state (True=On, False=Off)
         """
-        try:
-            _LOGGER.info("Sending 'show outlets all' command")
-            response = await self.send_telnet_command("show outlets all")
-            _LOGGER.debug("Outlet states response: %s", response[:300])
+        _LOGGER.debug("Sending 'show outlets all' command")
+        response = await self.send_telnet_command("show outlets all")
 
-            outlet_states = {}
+        outlet_states: Dict[int, bool] = {}
 
-            # Parse response using exact format from response_samples:
-            # Outlet 1 - Firewall:
-            # Power state: On
-            import re
+        # Parse response using exact format from device output:
+        # Outlet 1 - Firewall:
+        # Power state: On
+        pattern = r"Outlet (\d+) - ([^:]+):\s*\n(?:.*?\n)*?Power state:\s*(On|Off)"
+        matches = re.findall(pattern, response, re.MULTILINE | re.DOTALL)
 
-            # Match outlet number, name, and state
-            pattern = r"Outlet (\d+) - ([^:]+):\s*\n(?:.*?\n)*?Power state:\s*(On|Off)"
-            matches = re.findall(pattern, response, re.MULTILINE | re.DOTALL)
+        for outlet_str, outlet_name, state_str in matches:
+            outlet_num = int(outlet_str)
+            outlet_states[outlet_num] = state_str.lower() == "on"
+            self._outlet_names[outlet_num] = outlet_name.strip()
 
-            for outlet_str, outlet_name, state_str in matches:
-                outlet_num = int(outlet_str)
-                state = state_str.lower() == "on"
-                outlet_states[outlet_num] = state
-
-                # Store outlet name for later retrieval
-                if not hasattr(self, "_outlet_names"):
-                    self._outlet_names = {}
-                self._outlet_names[outlet_num] = outlet_name.strip()
-
-                _LOGGER.debug(
-                    "✅ Outlet %d (%s): %s",
-                    outlet_num,
-                    outlet_name.strip(),
-                    "ON" if state else "OFF",
-                )
-
-            _LOGGER.info("Read %d outlet states via Telnet", len(outlet_states))
-            return outlet_states
-
-        except Exception as err:
-            _LOGGER.error("Error reading Telnet outlet states: %s", err)
-            return {}
+        _LOGGER.debug("Read %d outlet states via Telnet", len(outlet_states))
+        return outlet_states
 
     async def _handle_telnet_authentication(self) -> bool:
         """Handle Telnet authentication sequence.
+
+        Raises:
+            RacklinkAuthenticationError: If the device rejects the credentials.
 
         Returns:
             bool: True if authentication successful
@@ -1220,28 +1042,22 @@ class SocketConnection:
             return False
 
         try:
-            # Use stored initial data from protocol detection
-            initial_data = getattr(self, "_initial_data", b"")
-            initial_text = initial_data.decode("utf-8", errors="ignore")
-            _LOGGER.info("Telnet initial response: %s", initial_text[:200])
-
             # Send username
-            self._writer.write(f"{self.config.username}\r\n".encode())
-            await self._writer.drain()
+            self._require_writer().write(f"{self.config.username}\r\n".encode())
+            await self._require_writer().drain()
 
             # Read response (should ask for password)
-            response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
-            response_text = response.decode("utf-8", errors="ignore")
-            _LOGGER.info("Telnet username response: %s", response_text[:200])
+            await asyncio.wait_for(self._require_reader().read(1024), timeout=5.0)
 
             # Send password
-            self._writer.write(f"{self.config.password}\r\n".encode())
-            await self._writer.drain()
+            self._require_writer().write(f"{self.config.password}\r\n".encode())
+            await self._require_writer().drain()
 
             # Read final authentication response
-            auth_response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            auth_response = await asyncio.wait_for(
+                self._require_reader().read(1024), timeout=5.0
+            )
             auth_text = auth_response.decode("utf-8", errors="ignore")
-            _LOGGER.info("Telnet password response: %s", auth_text[:200])
 
             # Check for successful login (welcome message or command prompt)
             success_indicators = [
@@ -1260,57 +1076,59 @@ class SocketConnection:
             ]
             auth_text_lower = auth_text.lower()
 
-            _LOGGER.info(
-                "Checking Telnet auth response for success indicators: %s",
-                auth_text[:500],
-            )
-
             if any(indicator in auth_text_lower for indicator in success_indicators):
-                _LOGGER.info("Telnet authentication successful (found indicator)")
+                _LOGGER.debug("Telnet authentication successful")
                 self._authenticated = True
                 return True
-            else:
-                _LOGGER.error(
-                    "Telnet authentication failed - no success indicators found in response: %s",
-                    auth_text[:200],
+
+            if (
+                any(
+                    failure in auth_text_lower
+                    for failure in (
+                        "login incorrect",
+                        "authentication failed",
+                        "denied",
+                    )
                 )
-                return False
+                or "login:" in auth_text_lower
+            ):
+                raise RacklinkAuthenticationError(
+                    "Telnet authentication failed: invalid credentials"
+                )
+
+            _LOGGER.error(
+                "Telnet authentication failed - no success indicators found in "
+                "response: %s",
+                auth_text[:200],
+            )
+            return False
 
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout during Telnet authentication")
             return False
-        except Exception as err:
+        except RacklinkAuthenticationError:
+            raise
+        except (ConnectionError, OSError) as err:
             _LOGGER.error("Telnet authentication error: %s", err)
             return False
 
-    # Legacy method for compatibility with existing controller code
     async def send_command(self, command: str) -> str:
-        """Legacy text command method - now routes to appropriate protocol.
+        """Send a text command, routing to the appropriate protocol.
 
-        This method provides compatibility with the existing controller code
-        that expects text-based commands.
+        Only the Telnet protocol supports text commands; binary-protocol
+        devices return an empty string.
         """
-        _LOGGER.debug("Legacy command called: %s", command)
+        _LOGGER.debug("Text command called: %s", command)
 
-        # Ensure we're connected before sending command
         if not await self.ensure_connected():
             _LOGGER.error("Cannot send command '%s' - connection failed", command)
             return ""
 
-        try:
-            # Route to appropriate protocol based on connection type
-            # For now, try Telnet if we detect we're using a Telnet connection
-            if hasattr(self, "_protocol_type") and self._protocol_type == "telnet":
-                result = await self.send_telnet_command(command)
-                return result
-            else:
-                _LOGGER.warning(
-                    "Legacy command '%s' - no appropriate protocol handler", command
-                )
-                return ""
-        except (ConnectionError, OSError, asyncio.TimeoutError) as err:
-            _LOGGER.warning("Connection error during command '%s': %s", command, err)
-            # Mark as disconnected so next call will attempt reconnection
-            self._connected = False
-            self._authenticated = False
-            return ""
+        if self._protocol_type == "telnet":
+            return await self.send_telnet_command(command)
+
+        _LOGGER.debug(
+            "Command '%s' skipped - binary protocol does not support text commands",
+            command,
+        )
+        return ""

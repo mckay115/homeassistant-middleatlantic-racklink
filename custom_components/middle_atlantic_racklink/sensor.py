@@ -2,127 +2,243 @@
 
 from __future__ import annotations
 
-# Local application/library specific imports
-from . import DOMAIN
+from . import RacklinkConfigEntry
+from .const import DOMAIN
 from .coordinator import RacklinkCoordinator
-
-# Standard library imports
+from collections.abc import Callable
 from dataclasses import dataclass
-
-# Home Assistant core imports
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    UnitOfApparentPower,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfFrequency,
     UnitOfPower,
 )
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from typing import Optional
+from typing import Any, Dict, Optional, Set
 
 import logging
 
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass
-class SensorConfig:
-    """Configuration for a sensor entity."""
+def _wh_to_kwh(value: Optional[float]) -> Optional[float]:
+    """Convert a Wh reading to kWh, preserving None."""
+    if value is None:
+        return None
+    return value / 1000
 
-    key: str
-    name: str
-    device_class: Optional[str] = None
-    state_class: Optional[str] = None
-    unit_of_measurement: Optional[str] = None
-    entity_category: Optional[str] = None
+
+@dataclass(frozen=True, kw_only=True)
+class RacklinkSensorEntityDescription(SensorEntityDescription):
+    """Describes a RackLink sensor fed from a coordinator data dict."""
+
+    value_fn: Callable[[Dict[str, Any]], StateType]
+
+
+PDU_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
+    RacklinkSensorEntityDescription(
+        key="voltage",
+        translation_key="voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("voltage"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="current",
+        translation_key="current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.get("current"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="power",
+        translation_key="power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("power"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="energy",
+        translation_key="energy",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
+        value_fn=lambda data: _wh_to_kwh(data.get("energy_wh")),
+    ),
+    RacklinkSensorEntityDescription(
+        key="frequency",
+        translation_key="frequency",
+        device_class=SensorDeviceClass.FREQUENCY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("frequency"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="apparent_power",
+        translation_key="apparent_power",
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("apparent_power"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="power_factor",
+        translation_key="power_factor",
+        device_class=SensorDeviceClass.POWER_FACTOR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.get("power_factor"),
+    ),
+)
+
+OUTLET_SENSORS: tuple[RacklinkSensorEntityDescription, ...] = (
+    RacklinkSensorEntityDescription(
+        key="power",
+        translation_key="outlet_power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=1,
+        value_fn=lambda data: data.get("power"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="energy",
+        translation_key="outlet_energy",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
+        value_fn=lambda data: _wh_to_kwh(data.get("energy_wh")),
+    ),
+    RacklinkSensorEntityDescription(
+        key="current",
+        translation_key="outlet_current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.get("current"),
+    ),
+    RacklinkSensorEntityDescription(
+        key="voltage",
+        translation_key="outlet_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=1,
+        # Duplicates the mains voltage on every outlet; hidden by default
+        entity_registry_enabled_default=False,
+        value_fn=lambda data: data.get("voltage"),
+    ),
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: RacklinkConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Middle Atlantic RackLink sensors from config entry."""
-    coordinator: RacklinkCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    """Set up the Middle Atlantic RackLink sensors from a config entry."""
+    coordinator = config_entry.runtime_data
 
-    entities = []
+    _migrate_legacy_outlet_unique_ids(hass, config_entry, coordinator)
 
-    # Add comprehensive power monitoring sensors
-    entities.extend(
-        [
-            RacklinkVoltageSensor(coordinator),
-            RacklinkCurrentSensor(coordinator),
-            RacklinkPowerSensor(coordinator),
-            RacklinkEnergySensor(coordinator),
-            RacklinkFrequencySensor(coordinator),
-            RacklinkApparentPowerSensor(coordinator),
-            RacklinkPowerFactorSensor(coordinator),
-            RacklinkMainsVoltageSensor(coordinator),
-            RacklinkMainsCurrentSensor(coordinator),
-            RacklinkMainsPowerSensor(coordinator),
-            RacklinkMainsEnergySensor(coordinator),
-            RacklinkMainsFrequencySensor(coordinator),
-            RacklinkMainsApparentPowerSensor(coordinator),
-            RacklinkMainsPowerFactorSensor(coordinator),
-        ]
+    async_add_entities(
+        RacklinkPduSensor(coordinator, description) for description in PDU_SENSORS
     )
 
-    # Add status sensors
-    entities.extend(
-        [
-            RacklinkLoadSheddingSensor(coordinator),
-            RacklinkSequenceSensor(coordinator),
-            RacklinkHealthSensor(coordinator),
-        ]
-    )
+    known_outlets: Set[int] = set()
 
-    # Add individual outlet power sensors for Redfish connections (no session corruption risk)
-    # Create per-outlet metric sensors by default; values will be unknown until
-    # Redfish metrics are detected, at which point they populate automatically.
-    outlets = coordinator.data.get("outlets", {})
-    for outlet_id in outlets:
-        entities.extend(
-            [
-                RacklinkOutletPowerSensor(coordinator, outlet_id),
-                RacklinkOutletEnergySensor(coordinator, outlet_id),
-                RacklinkOutletCurrentSensor(coordinator, outlet_id),
-                RacklinkOutletVoltageSensor(coordinator, outlet_id),
-            ]
+    @callback
+    def _add_outlet_entities() -> None:
+        """Add sensors for outlets discovered on the device."""
+        new_outlets = sorted(set(coordinator.outlet_data) - known_outlets)
+        if not new_outlets:
+            return
+        known_outlets.update(new_outlets)
+        async_add_entities(
+            RacklinkOutletSensor(coordinator, description, outlet)
+            for outlet in new_outlets
+            for description in OUTLET_SENSORS
         )
 
-    async_add_entities(entities)
+    _add_outlet_entities()
+    config_entry.async_on_unload(coordinator.async_add_listener(_add_outlet_entities))
 
 
-class RacklinkSensorBase(CoordinatorEntity, SensorEntity):
+def _migrate_legacy_outlet_unique_ids(
+    hass: HomeAssistant,
+    config_entry: RacklinkConfigEntry,
+    coordinator: RacklinkCoordinator,
+) -> None:
+    """Migrate outlet sensor unique IDs from the legacy broken scheme.
+
+    Older versions built outlet sensor unique IDs from a non-existent
+    ``device_id`` key, producing IDs like ``unknown_1_power``. Rewrite them
+    to the serial-based scheme so entity history is preserved.
+    """
+    registry = er.async_get(hass)
+    serial = coordinator.controller.pdu_serial
+    if not serial:
+        return
+
+    for outlet in coordinator.outlet_data:
+        for description in OUTLET_SENSORS:
+            legacy_unique_id = f"unknown_{outlet}_{description.key}"
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, legacy_unique_id)
+            if entity_id is None:
+                continue
+            entry = registry.async_get(entity_id)
+            if entry is None or entry.config_entry_id != config_entry.entry_id:
+                continue
+            new_unique_id = f"{serial}_outlet_{outlet}_{description.key}"
+            if registry.async_get_entity_id("sensor", DOMAIN, new_unique_id):
+                continue
+            _LOGGER.debug(
+                "Migrating unique ID %s -> %s for %s",
+                legacy_unique_id,
+                new_unique_id,
+                entity_id,
+            )
+            registry.async_update_entity(entity_id, new_unique_id=new_unique_id)
+
+
+class RacklinkSensorBase(CoordinatorEntity[RacklinkCoordinator], SensorEntity):
     """Base class for Middle Atlantic RackLink sensor entities."""
+
+    entity_description: RacklinkSensorEntityDescription
+    _attr_has_entity_name = True
 
     def __init__(
         self,
         coordinator: RacklinkCoordinator,
-        config: SensorConfig,
+        description: RacklinkSensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
-        self._key = config.key
-
-        # Set entity attributes
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{config.key}"
-        self._attr_name = config.name
-        self._attr_has_entity_name = True
-        self._attr_device_class = config.device_class
-        self._attr_state_class = config.state_class
-        self._attr_native_unit_of_measurement = config.unit_of_measurement
-        self._attr_entity_category = config.entity_category
-        self._attr_entity_registry_enabled_default = True
+        self.entity_description = description
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -132,560 +248,46 @@ class RacklinkSensorBase(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
-        return self.coordinator.available
+        return super().available and self.coordinator.controller.connected
 
 
-class RacklinkVoltageSensor(RacklinkSensorBase):
-    """Sensor for PDU voltage."""
+class RacklinkPduSensor(RacklinkSensorBase):
+    """PDU-level sensor reading from the coordinator system data."""
 
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the voltage sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="voltage",
-                name="Voltage",
-                device_class=SensorDeviceClass.VOLTAGE,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfElectricPotential.VOLT,
-            ),
-        )
+    def __init__(
+        self,
+        coordinator: RacklinkCoordinator,
+        description: RacklinkSensorEntityDescription,
+    ) -> None:
+        """Initialize the PDU sensor."""
+        super().__init__(coordinator, description)
+        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
 
     @property
-    def native_value(self) -> float:
-        """Return the voltage value."""
-        return self.coordinator.system_data.get("voltage")
+    def native_value(self) -> StateType:
+        """Return the sensor value."""
+        return self.entity_description.value_fn(self.coordinator.system_data)
 
 
-class RacklinkCurrentSensor(RacklinkSensorBase):
-    """Sensor for PDU current."""
+class RacklinkOutletSensor(RacklinkSensorBase):
+    """Per-outlet sensor reading from the coordinator outlet data."""
 
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the current sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="current",
-                name="Current",
-                device_class=SensorDeviceClass.CURRENT,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the current value."""
-        return self.coordinator.system_data.get("current")
-
-
-class RacklinkPowerSensor(RacklinkSensorBase):
-    """Sensor for PDU power."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the power sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="power",
-                name="Power",
-                device_class=SensorDeviceClass.POWER,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfPower.WATT,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the power value."""
-        return self.coordinator.system_data.get("power")
-
-
-class RacklinkEnergySensor(RacklinkSensorBase):
-    """Sensor for PDU energy."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the energy sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="energy",
-                name="Energy",
-                device_class=SensorDeviceClass.ENERGY,
-                state_class=SensorStateClass.TOTAL_INCREASING,
-                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the energy value in kWh.
-
-        Prefer kWh directly when the controller reports kWh; otherwise
-        convert Wh to kWh if values appear large.
-        """
-        energy_val = self.coordinator.system_data.get("energy", 0)
-        if energy_val is None:
-            return 0
-        # Heuristic: if the value is small (<100000), assume kWh and return as-is
-        # If it's large, assume Wh and convert to kWh
-        try:
-            value = float(energy_val)
-        except (TypeError, ValueError):
-            return 0
-        return value if value < 100000 else value / 1000
-
-
-class RacklinkFrequencySensor(RacklinkSensorBase):
-    """Sensor for PDU frequency."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the frequency sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="frequency",
-                name="Line Frequency",
-                device_class=SensorDeviceClass.FREQUENCY,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfFrequency.HERTZ,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the frequency value."""
-        return self.coordinator.system_data.get("frequency")
-
-
-class RacklinkLoadSheddingSensor(RacklinkSensorBase):
-    """Sensor for load shedding status."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the load shedding sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="load_shedding",
-                name="Load Shedding",
-                entity_category=EntityCategory.DIAGNOSTIC,
-            ),
-        )
-
-    @property
-    def native_value(self) -> str:
-        """Return the load shedding state."""
-        return (
-            "Active"
-            if self.coordinator.status_data.get("load_shedding_active")
-            else "Inactive"
-        )
-
-
-class RacklinkSequenceSensor(RacklinkSensorBase):
-    """Sensor for sequence status."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the sequence sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="sequence",
-                name="Sequence",
-                entity_category=EntityCategory.DIAGNOSTIC,
-            ),
-        )
-
-    @property
-    def native_value(self) -> str:
-        """Return the sequence state."""
-        return (
-            "Running"
-            if self.coordinator.status_data.get("sequence_active")
-            else "Stopped"
-        )
-
-
-class RacklinkHealthSensor(RacklinkSensorBase):
-    """Sensor for Redfish health status."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="health",
-                name="Health",
-                entity_category=EntityCategory.DIAGNOSTIC,
-            ),
-        )
-
-    @property
-    def native_value(self) -> str:
-        controller = self.coordinator.controller
-        # If Redfish info present on controller, prefer it
-        try:
-            if hasattr(controller, "pdu_model"):
-                # health is not cached centrally; use available data on coordinator/system
-                # For now, expose OK when system voltage/frequency are present
-                return (
-                    "OK" if self.coordinator.system_data.get("voltage") else "Unknown"
-                )
-        except Exception:
-            pass
-        return "Unknown"
-
-
-class RacklinkOutletPowerSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for individual outlet power consumption."""
-
-    def __init__(self, coordinator: RacklinkCoordinator, outlet_id: int) -> None:
-        """Initialize the outlet power sensor."""
-        super().__init__(coordinator)
-        self._outlet_id = outlet_id
+    def __init__(
+        self,
+        coordinator: RacklinkCoordinator,
+        description: RacklinkSensorEntityDescription,
+        outlet: int,
+    ) -> None:
+        """Initialize the outlet sensor."""
+        super().__init__(coordinator, description)
+        self._outlet = outlet
         self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_power"
+            f"{coordinator.controller.pdu_serial}_outlet_{outlet}_{description.key}"
         )
-
-        # Get outlet name for entity naming and always include outlet number
-        label = (
-            coordinator.data.get("outlets", {})
-            .get(outlet_id, {})
-            .get("name", f"Outlet {outlet_id}")
-        )
-        if label != f"Outlet {outlet_id}":
-            self._attr_name = f"Outlet {outlet_id}: {label} Power"
-        else:
-            self._attr_name = f"Outlet {outlet_id} Power"
-        self._attr_has_entity_name = True
-
-        self._attr_device_class = SensorDeviceClass.POWER
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_native_unit_of_measurement = UnitOfPower.WATT
-        self._attr_entity_category = None  # Main entity, not diagnostic
+        self._attr_translation_placeholders = {"outlet_number": str(outlet)}
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return self.coordinator.device_info
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the outlet power consumption."""
-        # This will be populated by the updated controller logic
-        if hasattr(self.coordinator.controller, "outlet_power_data"):
-            return self.coordinator.controller.outlet_power_data.get(self._outlet_id)
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        # Available when coordinator is available; value may be None if no data
-        return self.coordinator.available
-
-
-class RacklinkApparentPowerSensor(RacklinkSensorBase):
-    """Sensor for PDU apparent power (VA)."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the apparent power sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="apparent_power",
-                name="Apparent Power",
-                device_class=SensorDeviceClass.APPARENT_POWER,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement="VA",
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the apparent power value."""
-        return self.coordinator.system_data.get("apparent_power")
-
-
-class RacklinkPowerFactorSensor(RacklinkSensorBase):
-    """Sensor for PDU power factor."""
-
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        """Initialize the power factor sensor."""
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="power_factor",
-                name="Power Factor",
-                device_class=SensorDeviceClass.POWER_FACTOR,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=None,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        """Return the power factor value."""
-        return self.coordinator.system_data.get("power_factor")
-
-
-class RacklinkMainsVoltageSensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_voltage",
-                name="Input Voltage",
-                device_class=SensorDeviceClass.VOLTAGE,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfElectricPotential.VOLT,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_voltage", None)
-
-
-class RacklinkMainsCurrentSensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_current",
-                name="Input Current",
-                device_class=SensorDeviceClass.CURRENT,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_current", None)
-
-
-class RacklinkMainsPowerSensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_power",
-                name="Input Power",
-                device_class=SensorDeviceClass.POWER,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfPower.WATT,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_power", None)
-
-
-class RacklinkMainsEnergySensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_energy",
-                name="Input Energy",
-                device_class=SensorDeviceClass.ENERGY,
-                state_class=SensorStateClass.TOTAL_INCREASING,
-                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        # controller stores mains energy in kWh
-        return getattr(self.coordinator.controller, "mains_energy_kwh", None)
-
-
-class RacklinkMainsFrequencySensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_frequency",
-                name="Input Frequency",
-                device_class=SensorDeviceClass.FREQUENCY,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement=UnitOfFrequency.HERTZ,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_frequency", None)
-
-
-class RacklinkMainsApparentPowerSensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_apparent_power",
-                name="Input Apparent Power",
-                device_class=SensorDeviceClass.APPARENT_POWER,
-                state_class=SensorStateClass.MEASUREMENT,
-                unit_of_measurement="VA",
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_apparent_power", None)
-
-
-class RacklinkMainsPowerFactorSensor(RacklinkSensorBase):
-    def __init__(self, coordinator: RacklinkCoordinator) -> None:
-        super().__init__(
-            coordinator=coordinator,
-            config=SensorConfig(
-                key="mains_power_factor",
-                name="Input Power Factor",
-                device_class=SensorDeviceClass.POWER_FACTOR,
-                state_class=SensorStateClass.MEASUREMENT,
-            ),
-        )
-
-    @property
-    def native_value(self) -> float:
-        return getattr(self.coordinator.controller, "mains_power_factor", None)
-
-
-class RacklinkOutletEnergySensor(CoordinatorEntity, SensorEntity):
-    """Sensor for individual outlet energy consumption."""
-
-    def __init__(self, coordinator: RacklinkCoordinator, outlet_id: int) -> None:
-        """Initialize the outlet energy sensor."""
-        super().__init__(coordinator)
-        self._outlet_id = outlet_id
-        self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_energy"
-        )
-
-        label = (
-            coordinator.data.get("outlets", {})
-            .get(outlet_id, {})
-            .get("name", f"Outlet {outlet_id}")
-        )
-        if label != f"Outlet {outlet_id}":
-            self._attr_name = f"Outlet {outlet_id}: {label} Energy"
-        else:
-            self._attr_name = f"Outlet {outlet_id} Energy"
-        self._attr_has_entity_name = True
-
-        self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-        self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-        self._attr_entity_category = None
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return self.coordinator.device_info
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the outlet energy consumption in kWh."""
-        if hasattr(self.coordinator.controller, "outlet_energy_data"):
-            energy_wh = self.coordinator.controller.outlet_energy_data.get(
-                self._outlet_id, 0
-            )
-            return energy_wh / 1000 if energy_wh else 0
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.coordinator.available
-
-
-class RacklinkOutletCurrentSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for individual outlet current."""
-
-    def __init__(self, coordinator: RacklinkCoordinator, outlet_id: int) -> None:
-        """Initialize the outlet current sensor."""
-        super().__init__(coordinator)
-        self._outlet_id = outlet_id
-        self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_current"
-        )
-
-        label = (
-            coordinator.data.get("outlets", {})
-            .get(outlet_id, {})
-            .get("name", f"Outlet {outlet_id}")
-        )
-        if label != f"Outlet {outlet_id}":
-            self._attr_name = f"Outlet {outlet_id}: {label} Current"
-        else:
-            self._attr_name = f"Outlet {outlet_id} Current"
-        self._attr_has_entity_name = True
-
-        self._attr_device_class = SensorDeviceClass.CURRENT
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-        self._attr_entity_category = None
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return self.coordinator.device_info
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the outlet current."""
-        if hasattr(self.coordinator.controller, "outlet_current_data"):
-            return self.coordinator.controller.outlet_current_data.get(self._outlet_id)
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.coordinator.available
-
-
-class RacklinkOutletVoltageSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for individual outlet voltage."""
-
-    def __init__(self, coordinator: RacklinkCoordinator, outlet_id: int) -> None:
-        """Initialize the outlet voltage sensor."""
-        super().__init__(coordinator)
-        self._outlet_id = outlet_id
-        self._attr_unique_id = (
-            f"{coordinator.data.get('device_id', 'unknown')}_{outlet_id}_voltage"
-        )
-
-        label = (
-            coordinator.data.get("outlets", {})
-            .get(outlet_id, {})
-            .get("name", f"Outlet {outlet_id}")
-        )
-        if label != f"Outlet {outlet_id}":
-            self._attr_name = f"Outlet {outlet_id}: {label} Voltage"
-        else:
-            self._attr_name = f"Outlet {outlet_id} Voltage"
-        self._attr_has_entity_name = True
-
-        self._attr_device_class = SensorDeviceClass.VOLTAGE
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
-        self._attr_entity_category = None
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return self.coordinator.device_info
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the outlet voltage."""
-        if hasattr(self.coordinator.controller, "outlet_voltage_data"):
-            return self.coordinator.controller.outlet_voltage_data.get(self._outlet_id)
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.coordinator.available
+    def native_value(self) -> StateType:
+        """Return the sensor value."""
+        outlet_data = self.coordinator.outlet_data.get(self._outlet, {})
+        return self.entity_description.value_fn(outlet_data)

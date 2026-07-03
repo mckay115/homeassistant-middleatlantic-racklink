@@ -1,11 +1,5 @@
 {
   "name": "Middle Atlantic RackLink PDU",
   "render_readme": true,
-  "domains": ["switch", "sensor", "binary_sensor", "button"],
-  "iot_class": "local_polling",
-  "country": ["US"],
-  "homeassistant": "2023.1.0",
-  "integration_type": "device",
-  "documentation": "https://github.com/mckay115/homeassistant-middleatlantic-racklink",
-  "issue_tracker": "https://github.com/mckay115/homeassistant-middleatlantic-racklink/issues"
+  "homeassistant": "2025.2.0"
 }
