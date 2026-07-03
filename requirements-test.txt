@@ -4,6 +4,9 @@
 pytest-homeassistant-custom-component==0.13.316
 pytest-cov>=7.0.0
 
+# The integration depends on the frontend component (bundled dashboard cards)
+home-assistant-frontend
+
 # Lint and type-check tooling
 black>=25.0.0
 isort>=6.0.0

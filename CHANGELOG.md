@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-03
+
+### Added
+- Bundled custom dashboard cards, loaded automatically (no manual resource setup):
+  - `custom:racklink-pdu-card`: PDU overview with live power metrics and per-outlet switch/cycle controls
+  - `custom:racklink-sequencer-card`: outlet sequencing, sequence delay, and load shedding management
+- `outlet_number` attribute on per-outlet sensors, binary sensors, and cycle buttons (used by the cards to group entities per outlet)
+
+### Changed
+- Renamed the per-outlet "sheds on load shedding" sensor to "powers off during load shedding" to avoid misreading it as the load shedding mode state
+- CI/release workflows use Node 24 action runtimes (`actions/checkout@v6`, `actions/setup-python@v6`, `softprops/action-gh-release@v3`)
+
 ## [1.1.0] - 2026-07-03
 
 ### Added

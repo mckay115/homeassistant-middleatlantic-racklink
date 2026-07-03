@@ -79,6 +79,27 @@ The polling interval can be tuned under the integration's **Configure** menu (5â
 
 The PDU **Energy** sensor and the per-outlet **Outlet N energy** sensors are total-increasing kWh sensors, so they can be added to the Home Assistant Energy dashboard under **Individual devices** to track rack-level and per-device consumption. The power sensors (W) feed the power graphs and can drive automations (e.g. shut down a server when its outlet draws less than a threshold).
 
+## Dashboard cards
+
+The integration bundles two custom Lovelace cards and registers them automatically â€” no manual resource configuration or extra HACS frontend install is needed. Both appear in the card picker ("RackLink PDU" and "RackLink sequencer") with a visual editor, or can be added via YAML:
+
+```yaml
+type: custom:racklink-pdu-card
+device_id: YOUR_PDU_DEVICE_ID   # pick the device in the visual editor
+title: Rack PDU                 # optional
+```
+
+The **PDU card** shows live voltage, current, energy, and power factor chips with the total power headline, plus one row per outlet with its state, power draw, a cycle button, and an on/off toggle. Outlets marked non-critical are tagged "sheds".
+
+```yaml
+type: custom:racklink-sequencer-card
+device_id: YOUR_PDU_DEVICE_ID
+```
+
+The **sequencer card** manages power-on sequencing (enable/disable plus a delay stepper), load shedding (with the list of outlets that will power off), and a cycle-all-outlets action. Sequencing and load shedding rows appear only when the telnet vendor channel is available.
+
+Cards discover the PDU's entities through the device registry, so they keep working if you rename entities.
+
 ## Services
 
 All services target outlet switch entities of this integration:
