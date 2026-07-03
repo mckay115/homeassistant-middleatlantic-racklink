@@ -71,6 +71,10 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # The brands check requires the domain to be registered in
+          # https://github.com/home-assistant/brands, which is only needed
+          # for inclusion in the HACS default store.
+          ignore: brands
 
   security:
     name: Security scan
