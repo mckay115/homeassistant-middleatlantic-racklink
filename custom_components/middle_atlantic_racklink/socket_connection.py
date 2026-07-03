@@ -15,7 +15,7 @@ import logging
 import re
 import time
 
-from .exceptions import RacklinkAuthenticationError
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -137,6 +137,26 @@ class SocketConnection:
         """Return outlet names parsed from the latest telnet response."""
         return self._outlet_names
 
+    def _require_reader(self) -> asyncio.StreamReader:
+        """Return the active stream reader.
+
+        Raises:
+            RacklinkConnectionError: If the socket is not connected.
+        """
+        if self._reader is None:
+            raise RacklinkConnectionError("Socket is not connected")
+        return self._reader
+
+    def _require_writer(self) -> asyncio.StreamWriter:
+        """Return the active stream writer.
+
+        Raises:
+            RacklinkConnectionError: If the socket is not connected.
+        """
+        if self._writer is None:
+            raise RacklinkConnectionError("Socket is not connected")
+        return self._writer
+
     async def _handle_authentication(self) -> bool:
         """Handle authentication based on detected protocol type.
 
@@ -178,7 +198,7 @@ class SocketConnection:
 
             try:
                 initial_response = await asyncio.wait_for(
-                    self._reader.read(1024), timeout=3.0
+                    self._require_reader().read(1024), timeout=3.0
                 )
 
                 if initial_response:
@@ -433,10 +453,10 @@ class SocketConnection:
 
     async def _read_unescaped_byte(self, timeout: float) -> int:
         """Read a single logical byte from the stream, resolving escapes."""
-        byte = (await asyncio.wait_for(self._reader.readexactly(1), timeout=timeout))[0]
+        byte = (await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout))[0]
         if byte == ESCAPE_BYTE:
             escaped = (
-                await asyncio.wait_for(self._reader.readexactly(1), timeout=timeout)
+                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
             )[0]
             return escaped ^ 0xFF
         return byte
@@ -458,7 +478,7 @@ class SocketConnection:
         try:
             # Header is never escaped
             header = (
-                await asyncio.wait_for(self._reader.readexactly(1), timeout=timeout)
+                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
             )[0]
             if header != HEADER_BYTE:
                 _LOGGER.warning("Invalid header byte: 0x%02X", header)
@@ -474,7 +494,7 @@ class SocketConnection:
 
             # Tail is never escaped
             tail = (
-                await asyncio.wait_for(self._reader.readexactly(1), timeout=timeout)
+                await asyncio.wait_for(self._require_reader().readexactly(1), timeout=timeout)
             )[0]
 
             expected_checksum = (header + length + sum(data_envelope)) & 0x7F
@@ -537,8 +557,8 @@ class SocketConnection:
             raise ConnectionError("Not connected to device")
 
         try:
-            self._writer.write(data)
-            await self._writer.drain()
+            self._require_writer().write(data)
+            await self._require_writer().drain()
         except (ConnectionError, OSError) as err:
             _LOGGER.error("Error sending data: %s", err)
             self._mark_disconnected()
@@ -707,8 +727,8 @@ class SocketConnection:
                 full_command = f"{command}\r\n"
                 _LOGGER.debug("Sending Telnet command: %s", command)
 
-                self._writer.write(full_command.encode("ascii"))
-                await self._writer.drain()
+                self._require_writer().write(full_command.encode("ascii"))
+                await self._require_writer().drain()
 
                 response_parts = []
                 corruption_detected = False
@@ -718,7 +738,7 @@ class SocketConnection:
                 while True:
                     try:
                         data = await asyncio.wait_for(
-                            self._reader.read(1024), timeout=3.0
+                            self._require_reader().read(1024), timeout=3.0
                         )
                         if not data:
                             # EOF: the device closed the connection
@@ -801,11 +821,11 @@ class SocketConnection:
     async def _is_session_corrupted(self) -> bool:
         """Check if the Telnet session is corrupted (stuck in command mode)."""
         try:
-            self._writer.write(b"\r\n")
-            await self._writer.drain()
+            self._require_writer().write(b"\r\n")
+            await self._require_writer().drain()
 
             try:
-                data = await asyncio.wait_for(self._reader.read(512), timeout=1.0)
+                data = await asyncio.wait_for(self._require_reader().read(512), timeout=1.0)
                 response = data.decode("utf-8", errors="ignore")
 
                 corruption_indicators = [
@@ -848,15 +868,15 @@ class SocketConnection:
 
             for sequence in recovery_sequences:
                 _LOGGER.debug("Trying recovery sequence: %r", sequence)
-                self._writer.write(sequence)
-                await self._writer.drain()
+                self._require_writer().write(sequence)
+                await self._require_writer().drain()
 
                 await asyncio.sleep(0.5)
 
                 try:
                     while True:
                         data = await asyncio.wait_for(
-                            self._reader.read(1024), timeout=0.5
+                            self._require_reader().read(1024), timeout=0.5
                         )
                         if not data:
                             break
@@ -892,7 +912,7 @@ class SocketConnection:
         try:
             while True:
                 try:
-                    data = await asyncio.wait_for(self._reader.read(1024), timeout=0.1)
+                    data = await asyncio.wait_for(self._require_reader().read(1024), timeout=0.1)
                     if not data:
                         break
                     _LOGGER.debug("Flushed %d bytes from input buffer", len(data))
@@ -1010,18 +1030,18 @@ class SocketConnection:
 
         try:
             # Send username
-            self._writer.write(f"{self.config.username}\r\n".encode())
-            await self._writer.drain()
+            self._require_writer().write(f"{self.config.username}\r\n".encode())
+            await self._require_writer().drain()
 
             # Read response (should ask for password)
-            await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            await asyncio.wait_for(self._require_reader().read(1024), timeout=5.0)
 
             # Send password
-            self._writer.write(f"{self.config.password}\r\n".encode())
-            await self._writer.drain()
+            self._require_writer().write(f"{self.config.password}\r\n".encode())
+            await self._require_writer().drain()
 
             # Read final authentication response
-            auth_response = await asyncio.wait_for(self._reader.read(1024), timeout=5.0)
+            auth_response = await asyncio.wait_for(self._require_reader().read(1024), timeout=5.0)
             auth_text = auth_response.decode("utf-8", errors="ignore")
 
             # Check for successful login (welcome message or command prompt)

@@ -149,6 +149,7 @@ class AutoConnectionManager:
             },
         ]
 
+        connection: Union[RedfishConnection, SocketConnection]
         for redfish_config in redfish_configs:
             try:
                 _LOGGER.debug(

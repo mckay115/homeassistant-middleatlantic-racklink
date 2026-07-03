@@ -10,6 +10,7 @@ import logging
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -17,7 +18,6 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
@@ -71,8 +71,8 @@ async def validate_connection(
     """
     host = data.get(CONF_HOST)
     port = data.get(CONF_PORT, DEFAULT_PORT)
-    username = data.get(CONF_USERNAME)
-    password = data.get(CONF_PASSWORD)
+    username = data.get(CONF_USERNAME) or ""
+    password = data.get(CONF_PASSWORD) or ""
     connection_type = data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
     use_https = data.get(CONF_USE_HTTPS, True)
 
@@ -106,7 +106,8 @@ async def validate_connection(
         await controller.update()
 
         if (
-            not controller.connection.connected
+            controller.connection is None
+            or not controller.connection.connected
             or not controller.connection.authenticated
         ):
             raise InvalidAuth("Authentication failed")
@@ -160,7 +161,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_zeroconf(
         self, discovery_info: ZeroconfServiceInfo
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle zeroconf discovery."""
         hostname = (discovery_info.hostname or "").rstrip(".")
         _LOGGER.debug("Zeroconf discovery: %s (%s)", hostname, discovery_info.host)
@@ -184,7 +185,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_zeroconf_confirm(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Confirm zeroconf discovery and collect credentials."""
         if user_input is not None:
             self._pending_input = {
@@ -212,7 +213,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_connection_type(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle connection type selection and validate the connection."""
         errors: Dict[str, str] = {}
 
@@ -272,7 +273,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def _async_create_or_update_entry(
         self, info: Dict[str, Any], final_input: Dict[str, Any]
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Create the config entry after successful validation."""
         mac_address = info.get("mac_address")
         if mac_address:
@@ -287,7 +288,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: Dict[str, str] = {}
 
@@ -369,13 +370,13 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_reauth(
         self, entry_data: Dict[str, Any]
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle reauthentication when the device rejects the credentials."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Collect new credentials for reauthentication."""
         errors: Dict[str, str] = {}
         reauth_entry = self._get_reauth_entry()
@@ -417,7 +418,7 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def async_step_reconfigure(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle reconfiguration of an existing entry."""
         errors: Dict[str, str] = {}
         reconfigure_entry = self._get_reconfigure_entry()
@@ -485,7 +486,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle options flow."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)

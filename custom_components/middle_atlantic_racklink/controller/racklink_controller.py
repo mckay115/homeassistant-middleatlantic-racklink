@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Dict, Optional, Union
 
 import asyncio
@@ -344,6 +345,8 @@ class RacklinkController:
 
     async def _update_redfish_pdu_metrics(self) -> None:
         """Fetch PDU-level metrics via the Redfish Metrics endpoint."""
+        if not isinstance(self.connection, RedfishConnection):
+            return
         try:
             metrics = await self.connection.get_power_metrics()
         except RacklinkAuthenticationError:
@@ -393,6 +396,9 @@ class RacklinkController:
                 _LOGGER.warning("Could not get PDU info via Redfish")
 
             self._last_details_fetch = now
+            return
+
+        if not isinstance(self.connection, SocketConnection):
             return
 
         # Telnet/binary path
@@ -516,6 +522,7 @@ class RacklinkController:
         # Binary protocol
         _LOGGER.debug("Fetching outlet states using binary protocol")
 
+        outlet_range: Iterable[int]
         if not self.outlet_states:
             # Try outlets 1-16 to discover available outlets
             outlet_range = range(1, 17)
@@ -762,6 +769,9 @@ class RacklinkController:
 
     async def cycle_all_outlets(self, cycle_time: int = 5) -> bool:
         """Cycle all outlets."""
+        if self.connection is None:
+            _LOGGER.error("No connection available")
+            return False
         try:
             _LOGGER.debug("Cycling all outlets (%d outlets)", len(self.outlet_states))
 

@@ -14,11 +14,10 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Home Automation",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = ["aiohttp>=3.8.0", "zeroconf>=0.47.0", "voluptuous>=0.13.0"]
 
 [project.urls]
@@ -42,7 +41,7 @@ packages = ["custom_components.middle_atlantic_racklink"]
 # Code formatting and linting
 [tool.black]
 line-length = 88
-target-version = ['py311', 'py312']
+target-version = ['py313']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -128,7 +127,7 @@ directory = "htmlcov"
 
 # Type checking
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -151,7 +150,6 @@ module = [
     "homeassistant.*",
     "zeroconf.*",
     "voluptuous.*",
-    "pytest_homeassistant_custom_component.*",
 ]
 ignore_missing_imports = true
 

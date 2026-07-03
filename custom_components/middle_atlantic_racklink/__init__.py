@@ -56,8 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: RacklinkConfigEntry) -> 
     """Set up Middle Atlantic RackLink from a config entry."""
     host = entry.data[CONF_HOST]
     port = entry.data.get(CONF_PORT, DEFAULT_PORT)
-    username = entry.data.get(CONF_USERNAME)
-    password = entry.data.get(CONF_PASSWORD)
+    username = entry.data.get(CONF_USERNAME) or ""
+    password = entry.data.get(CONF_PASSWORD) or ""
     connection_type = entry.data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
 
     scan_interval = entry.options.get(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import logging
 
@@ -66,21 +66,21 @@ class RacklinkCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     def outlet_data(self) -> Dict[int, Dict[str, Any]]:
         """Return outlet data."""
         if self.data and "outlets" in self.data:
-            return self.data["outlets"]
+            return cast(Dict[int, Dict[str, Any]], self.data["outlets"])
         return {}
 
     @property
     def system_data(self) -> Dict[str, Any]:
         """Return system power data."""
         if self.data and "system" in self.data:
-            return self.data["system"]
+            return cast(Dict[str, Any], self.data["system"])
         return {}
 
     @property
     def status_data(self) -> Dict[str, Any]:
         """Return status information."""
         if self.data and "status" in self.data:
-            return self.data["status"]
+            return cast(Dict[str, Any], self.data["status"])
         return {}
 
     async def _async_update_data(self) -> Dict[str, Any]:

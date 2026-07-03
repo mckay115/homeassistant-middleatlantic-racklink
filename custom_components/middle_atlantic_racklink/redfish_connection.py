@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 from urllib.parse import urljoin
 
 import aiohttp
@@ -11,7 +11,7 @@ import asyncio
 import logging
 import ssl
 
-from .exceptions import RacklinkAuthenticationError
+from .exceptions import RacklinkAuthenticationError, RacklinkConnectionError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,6 +84,16 @@ class RedfishConnection:
         protocol = "https" if self.config.use_https else "http"
         return f"{protocol}://{self.config.host}:{self.config.port}"
 
+    def _require_session(self) -> aiohttp.ClientSession:
+        """Return the active HTTP session.
+
+        Raises:
+            RacklinkConnectionError: If the session has not been created.
+        """
+        if self._session is None:
+            raise RacklinkConnectionError("Redfish session is not connected")
+        return self._session
+
     async def connect(self) -> bool:
         """Connect to the device and establish session."""
         try:
@@ -150,7 +160,7 @@ class RedfishConnection:
     async def _test_connectivity(self) -> bool:
         """Test basic connectivity to Redfish service."""
         try:
-            async with self._session.get(
+            async with self._require_session().get(
                 urljoin(self._base_url, REDFISH_SERVICE_ROOT)
             ) as response:
                 if response.status == 200:
@@ -180,7 +190,7 @@ class RedfishConnection:
                 "Password": self.config.password,
             }
 
-            async with self._session.post(
+            async with self._require_session().post(
                 urljoin(self._base_url, REDFISH_SESSION_SERVICE),
                 json=auth_data,
             ) as response:
@@ -191,7 +201,7 @@ class RedfishConnection:
 
                     if self._auth_token:
                         # Add auth token to session headers
-                        self._session.headers["X-Auth-Token"] = self._auth_token
+                        self._require_session().headers["X-Auth-Token"] = self._auth_token
                         _LOGGER.debug("Authentication successful, got token")
                         return True
                     else:
@@ -233,7 +243,7 @@ class RedfishConnection:
                 self._base_url, "/redfish/v1/PowerEquipment/RackPDUs"
             )
 
-            async with self._session.get(rack_pdus_url) as response:
+            async with self._require_session().get(rack_pdus_url) as response:
                 if response.status == 200:
                     data = await response.json()
                     await self._parse_rack_pdus(data)
@@ -257,7 +267,7 @@ class RedfishConnection:
                 _LOGGER.info("Found PDU at: %s", pdu_url)
 
                 # Get PDU details and outlets
-                async with self._session.get(
+                async with self._require_session().get(
                     urljoin(self._base_url, pdu_url)
                 ) as response:
                     if response.status == 200:
@@ -275,12 +285,12 @@ class RedfishConnection:
                 self._pdu_id = pdu_url.split("/")[-1]
 
                 # Get PDU details
-                async with self._session.get(
+                async with self._require_session().get(
                     urljoin(self._base_url, pdu_url)
                 ) as response:
                     if response.status == 200:
                         pdu_data = await response.json()
-                        await self._parse_pdu_outlets(pdu_data)
+                        await self._parse_pdu_outlets_direct(pdu_data)
         except Exception as err:
             _LOGGER.error("Error parsing PDU collection: %s", err)
 
@@ -290,7 +300,7 @@ class RedfishConnection:
             # Look for Outlets collection
             if "Outlets" in data:
                 outlets_url = data["Outlets"]["@odata.id"]
-                async with self._session.get(
+                async with self._require_session().get(
                     urljoin(self._base_url, outlets_url)
                 ) as response:
                     if response.status == 200:
@@ -321,9 +331,11 @@ class RedfishConnection:
     async def _fetch_json(self, relative_url: str) -> Optional[Dict[str, Any]]:
         """Helper to fetch JSON from a Redfish relative URL safely."""
         try:
-            async with self._session.get(urljoin(self._base_url, relative_url)) as resp:
+            async with self._require_session().get(
+                urljoin(self._base_url, relative_url)
+            ) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    return cast(Dict[str, Any], await resp.json())
                 elif resp.status == 401:
                     _LOGGER.warning(
                         "Authentication failed (401) for %s - session may have expired",
@@ -334,11 +346,13 @@ class RedfishConnection:
                     # Try to re-authenticate and retry the request once
                     if await self._ensure_authenticated():
                         _LOGGER.debug("Retrying request after re-authentication")
-                        async with self._session.get(
+                        async with self._require_session().get(
                             urljoin(self._base_url, relative_url)
                         ) as retry_resp:
                             if retry_resp.status == 200:
-                                return await retry_resp.json()
+                                return cast(
+                                    Dict[str, Any], await retry_resp.json()
+                                )
                             else:
                                 _LOGGER.error(
                                     "Retry failed after re-authentication, status: %d",
@@ -398,7 +412,7 @@ class RedfishConnection:
 
         info: Dict[int, Dict[str, Any]] = {}
         for item in results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 _LOGGER.debug("Outlet info fetch error: %s", item)
                 continue
             outlet_num, data = item
@@ -501,13 +515,13 @@ class RedfishConnection:
         """Fallback discovery via generic PowerEquipment endpoint."""
         try:
             power_equipment_url = urljoin(self._base_url, REDFISH_POWER_EQUIPMENT)
-            async with self._session.get(power_equipment_url) as response:
+            async with self._require_session().get(power_equipment_url) as response:
                 if response.status == 200:
                     data = await response.json()
                     # Look for PowerDistribution as fallback
                     if "PowerDistribution" in data:
                         pdu_collection_url = data["PowerDistribution"]["@odata.id"]
-                        async with self._session.get(
+                        async with self._require_session().get(
                             urljoin(self._base_url, pdu_collection_url)
                         ) as response:
                             if response.status == 200:
@@ -525,7 +539,7 @@ class RedfishConnection:
                 pdu_url = data["Members"][0]["@odata.id"]
                 self._pdu_id = pdu_url.split("/")[-1]
 
-                async with self._session.get(
+                async with self._require_session().get(
                     urljoin(self._base_url, pdu_url)
                 ) as response:
                     if response.status == 200:
@@ -571,9 +585,11 @@ class RedfishConnection:
 
             # Middle Atlantic uses RackPDUs endpoint
             pdu_url = f"/redfish/v1/PowerEquipment/RackPDUs/{self._pdu_id}"
-            async with self._session.get(urljoin(self._base_url, pdu_url)) as response:
+            async with self._require_session().get(
+                urljoin(self._base_url, pdu_url)
+            ) as response:
                 if response.status == 200:
-                    return await response.json()
+                    return cast(Dict[str, Any], await response.json())
                 elif response.status == 401:
                     _LOGGER.warning(
                         "Authentication failed (401) for PDU info - session may have expired"
@@ -596,14 +612,15 @@ class RedfishConnection:
                 return None
 
             outlet_url = self._outlet_endpoints[outlet_num]
-            async with self._session.get(
+            async with self._require_session().get(
                 urljoin(self._base_url, outlet_url)
             ) as response:
                 if response.status == 200:
                     data = await response.json()
                     # Middle Atlantic uses string PowerState: "On" or "Off"
                     power_state = data.get("PowerState", "Unknown")
-                    return power_state == "On"  # Exact string match, case-sensitive
+                    # Exact string match, case-sensitive
+                    return bool(power_state == "On")
                 else:
                     _LOGGER.error(
                         "Failed to get outlet %d state, status: %d",
@@ -629,7 +646,7 @@ class RedfishConnection:
             # Action payload with PowerState
             action_data = {"PowerState": "On" if state else "Off"}
 
-            async with self._session.post(
+            async with self._require_session().post(
                 urljoin(self._base_url, action_url),
                 json=action_data,
             ) as response:
@@ -665,7 +682,7 @@ class RedfishConnection:
             # Try PowerCycle command
             action_data = {"PowerState": "PowerCycle"}
 
-            async with self._session.post(
+            async with self._require_session().post(
                 urljoin(self._base_url, action_url),
                 json=action_data,
             ) as response:
@@ -708,7 +725,7 @@ class RedfishConnection:
 
             # Middle Atlantic metrics endpoint
             metrics_url = f"/redfish/v1/PowerEquipment/RackPDUs/{self._pdu_id}/Metrics"
-            async with self._session.get(
+            async with self._require_session().get(
                 urljoin(self._base_url, metrics_url)
             ) as response:
                 if response.status == 200:
@@ -751,7 +768,7 @@ class RedfishConnection:
                 return False
 
             outlet_url = self._outlet_endpoints[outlet_num]
-            async with self._session.patch(
+            async with self._require_session().patch(
                 urljoin(self._base_url, outlet_url),
                 json={"UserLabel": label},
             ) as response:
@@ -775,7 +792,7 @@ class RedfishConnection:
                 return False
 
             pdu_url = f"/redfish/v1/PowerEquipment/RackPDUs/{self._pdu_id}"
-            async with self._session.patch(
+            async with self._require_session().patch(
                 urljoin(self._base_url, pdu_url),
                 json={"Name": name},
             ) as response:
