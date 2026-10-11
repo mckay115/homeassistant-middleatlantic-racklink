@@ -13,7 +13,8 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_REDFISH_HTTP_PORT,
     DEFAULT_REDFISH_PORT,
-    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL_REDFISH,
+    DEFAULT_SCAN_INTERVAL_TELNET,
     DEFAULT_USERNAME,
     DOMAIN,
 )
@@ -36,7 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import asyncio
 import logging
-import voluptuous as vol
+import probatio as vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ STEP_CONNECTION_TYPE_SCHEMA = vol.Schema(
                 CONNECTION_TYPE_AUTO,
             ]
         ),
+        vol.Optional(CONF_PORT): cv.port,
+        vol.Optional(CONF_USE_HTTPS, default=True): cv.boolean,
+        vol.Optional(CONF_ENABLE_VENDOR_FEATURES, default=True): cv.boolean,
     }
 )
 
@@ -100,7 +104,8 @@ async def validate_connection(
             raise CannotConnect("Connection failed")
 
         # Retrieve device information
-        await controller.update()
+        if not await controller.update():
+            raise CannotConnect("Device did not return a valid update")
 
         if (
             controller.connection is None
@@ -115,6 +120,9 @@ async def validate_connection(
             "pdu_firmware": controller.pdu_firmware or "Unknown Firmware",
             "pdu_serial": controller.pdu_serial or "Unknown Serial",
             "mac_address": controller.mac_address or None,
+            "connection_type": controller.connection_type,
+            "port": controller.port,
+            "use_https": controller.use_https,
         }
 
         _LOGGER.info(
@@ -124,7 +132,7 @@ async def validate_connection(
 
     except RacklinkAuthenticationError as exc:
         raise InvalidAuth(str(exc)) from exc
-    except (CannotConnect, InvalidAuth):
+    except CannotConnect, InvalidAuth:
         raise
     except asyncio.TimeoutError as exc:
         raise CannotConnect("Connection timeout") from exc
@@ -223,11 +231,20 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             # Set port and protocol based on connection type
             if connection_type == CONNECTION_TYPE_REDFISH:
-                final_input[CONF_PORT] = DEFAULT_REDFISH_PORT
-                final_input[CONF_USE_HTTPS] = True
-                final_input.setdefault(CONF_ENABLE_VENDOR_FEATURES, True)
+                final_input[CONF_USE_HTTPS] = user_input.get(CONF_USE_HTTPS, True)
+                final_input[CONF_PORT] = user_input.get(
+                    CONF_PORT,
+                    (
+                        DEFAULT_REDFISH_PORT
+                        if final_input[CONF_USE_HTTPS]
+                        else DEFAULT_REDFISH_HTTP_PORT
+                    ),
+                )
+                final_input[CONF_ENABLE_VENDOR_FEATURES] = user_input.get(
+                    CONF_ENABLE_VENDOR_FEATURES, True
+                )
             elif connection_type == CONNECTION_TYPE_TELNET:
-                final_input[CONF_PORT] = DEFAULT_PORT
+                final_input[CONF_PORT] = user_input.get(CONF_PORT, DEFAULT_PORT)
             else:
                 # Auto detection ignores the configured port
                 final_input.setdefault(CONF_PORT, DEFAULT_PORT)
@@ -270,10 +287,19 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         self, info: Dict[str, Any], final_input: Dict[str, Any]
     ) -> ConfigFlowResult:
         """Create the config entry after successful validation."""
-        mac_address = info.get("mac_address")
-        if mac_address:
-            await self.async_set_unique_id(mac_address, raise_on_progress=False)
-            self._abort_if_unique_id_configured(updates=final_input)
+        for key in (CONF_CONNECTION_TYPE, CONF_PORT, CONF_USE_HTTPS):
+            if key in info:
+                final_input[key] = info[key]
+
+        unique_id = info.get("mac_address") or info.get("pdu_serial")
+        if unique_id and unique_id != "Unknown Serial":
+            await self.async_set_unique_id(unique_id, raise_on_progress=False)
+            self._abort_if_unique_id_configured()
+        else:
+            self._async_abort_entries_match({CONF_HOST: final_input[CONF_HOST]})
+
+        if info.get("pdu_serial") and info["pdu_serial"] != "Unknown Serial":
+            final_input["pdu_serial"] = info["pdu_serial"]
 
         title = info["pdu_name"]
         if info["pdu_model"] != "Unknown Model":
@@ -298,6 +324,9 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     step_id="user",
                     data_schema=self._build_user_data_schema(),
                     errors=errors,
+                    description_placeholders={
+                        "discovered_count": str(len(self._discovered_devices))
+                    },
                 )
 
             self._pending_input = {
@@ -418,11 +447,24 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             data = {**reconfigure_entry.data, **user_input}
             connection_type = data.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO)
 
-            # Re-derive port/protocol from the selected connection type
-            if connection_type == CONNECTION_TYPE_REDFISH:
+            # Keep an existing custom port unless the protocol changed.
+            changed_protocol = connection_type != reconfigure_entry.data.get(
+                CONF_CONNECTION_TYPE
+            )
+            if (
+                changed_protocol
+                and connection_type == CONNECTION_TYPE_REDFISH
+                and user_input.get(CONF_PORT, reconfigure_entry.data.get(CONF_PORT))
+                == reconfigure_entry.data.get(CONF_PORT)
+            ):
                 data[CONF_PORT] = DEFAULT_REDFISH_PORT
                 data[CONF_USE_HTTPS] = True
-            elif connection_type == CONNECTION_TYPE_TELNET:
+            elif (
+                changed_protocol
+                and connection_type == CONNECTION_TYPE_TELNET
+                and user_input.get(CONF_PORT, reconfigure_entry.data.get(CONF_PORT))
+                == reconfigure_entry.data.get(CONF_PORT)
+            ):
                 data[CONF_PORT] = DEFAULT_PORT
 
             try:
@@ -452,6 +494,16 @@ class MiddleAtlanticRacklinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     default=current.get(CONF_USERNAME, DEFAULT_USERNAME),
                 ): cv.string,
                 vol.Required(CONF_PASSWORD): cv.string,
+                vol.Optional(
+                    CONF_PORT, default=current.get(CONF_PORT, DEFAULT_PORT)
+                ): cv.port,
+                vol.Optional(
+                    CONF_USE_HTTPS, default=current.get(CONF_USE_HTTPS, True)
+                ): cv.boolean,
+                vol.Optional(
+                    CONF_ENABLE_VENDOR_FEATURES,
+                    default=current.get(CONF_ENABLE_VENDOR_FEATURES, True),
+                ): cv.boolean,
                 vol.Required(
                     CONF_CONNECTION_TYPE,
                     default=current.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_AUTO),
@@ -480,14 +532,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Handle options flow."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(
+                title="", data={**self.config_entry.options, **user_input}
+            )
 
         data_schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_SCAN_INTERVAL,
                     default=self.config_entry.options.get(
-                        CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        CONF_SCAN_INTERVAL,
+                        (
+                            DEFAULT_SCAN_INTERVAL_REDFISH
+                            if self.config_entry.data.get(CONF_CONNECTION_TYPE)
+                            == CONNECTION_TYPE_REDFISH
+                            else DEFAULT_SCAN_INTERVAL_TELNET
+                        ),
                     ),
                 ): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
             }

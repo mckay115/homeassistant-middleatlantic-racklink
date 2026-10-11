@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0] - 2026-10-11
+
+- Target Home Assistant 2026.10.1 / Python 3.14, migrate schemas to Probatio, and update device-registry tests.
+- Reject failed initial data refreshes, release failed-setup connections, protect duplicate entries, and retain stable device identifiers.
+- Add initial custom-port and vendor-feature settings, preserve polling options and protocol settings, and fix reconnects after Auto detection.
+- Correct legacy apparent-power units, reject invalid energy totals, clear missing meter data, and propagate Redfish authentication failures.
+- Fix binary cycle-all commands and avoid inferring surge protection from generic Redfish health.
+- Ship local brand images in Home Assistant's supported directory and package cards, translations, and controller modules.
+- Escape dashboard labels, improve keyboard controls, disable unavailable/pending actions, display failures, and confirm disruptive actions.
+- Add the bundled RackLink energy comparison card and clearer first-time setup, Energy dashboard, update, and rollback documentation.
+- Publish versioned release packages from main only after release validation succeeds.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

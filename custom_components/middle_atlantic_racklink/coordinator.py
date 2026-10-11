@@ -49,12 +49,22 @@ class RacklinkCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             update_interval=update_interval,
         )
         self.controller = controller
+        self._device_identifier: str | None = config_entry.data.get("pdu_serial")
+
+    @property
+    def device_identifier(self) -> str:
+        """Keep registry identifiers stable after the first successful refresh."""
+        if self._device_identifier is None:
+            self._device_identifier = (
+                self.controller.pdu_serial or self.config_entry.entry_id
+            )
+        return self._device_identifier
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
         device_info = DeviceInfo(
-            identifiers={(DOMAIN, self.controller.pdu_serial or "unknown")},
+            identifiers={(DOMAIN, self.device_identifier)},
             name=self.controller.pdu_name or "RackLink PDU",
             manufacturer=ATTR_MANUFACTURER,
             model=self.controller.pdu_model or ATTR_MODEL,

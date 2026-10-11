@@ -176,6 +176,7 @@ class RacklinkController:
                 if isinstance(self.connection, RedfishConnection):
                     self.connection_type = CONNECTION_TYPE_REDFISH
                     self.port = self.connection.config.port
+                    self.use_https = self.connection.config.use_https
                     _LOGGER.info(
                         "Auto-detected Redfish connection on port %d", self.port
                     )
@@ -194,6 +195,14 @@ class RacklinkController:
                     self.connected = False
                     self.available = False
                     return False
+
+            self._config_data.update(
+                {
+                    CONF_CONNECTION_TYPE: self.connection_type,
+                    "port": self.port,
+                    "use_https": self.use_https,
+                }
+            )
 
             # Keep a reference to the socket connection for telnet features
             if isinstance(self.connection, SocketConnection):
@@ -323,6 +332,11 @@ class RacklinkController:
 
             _LOGGER.debug("Updating outlet states")
             await self._update_outlet_states()
+
+            if isinstance(self.connection, RedfishConnection):
+                self.rms_voltage = self.rms_current = self.active_power = None
+                self.active_energy = self.line_frequency = None
+                self.apparent_power = self.power_factor = None
 
             _LOGGER.debug("Updating system status")
             await self._update_system_status()
@@ -467,15 +481,8 @@ class RacklinkController:
 
     def _parse_redfish_health(self, pdu_info: Dict[str, Any]) -> None:
         """Derive surge protection / health status from Redfish PDU info."""
-        status = pdu_info.get("Status")
-        if isinstance(status, dict):
-            health = status.get("Health")
-            if isinstance(health, str):
-                self.surge_protection_ok = health.lower() in ("ok", "healthy", "normal")
-                return
-        protected = pdu_info.get("SurgeProtected") or pdu_info.get("Protected")
-        if isinstance(protected, bool):
-            self.surge_protection_ok = protected
+        protected = pdu_info.get("SurgeProtected", pdu_info.get("Protected"))
+        self.surge_protection_ok = protected if isinstance(protected, bool) else None
 
     async def _update_outlet_states(self) -> None:
         """Update outlet states using appropriate protocol."""
@@ -493,7 +500,7 @@ class RacklinkController:
                     if data.get("attrs"):
                         self.outlet_attrs[outlet_num] = data["attrs"]
             else:
-                _LOGGER.warning("No outlet data found via Redfish")
+                raise ConnectionError("No outlet data returned by Redfish")
             return
 
         if not isinstance(self.connection, SocketConnection):
@@ -514,7 +521,7 @@ class RacklinkController:
                     for outlet_num in outlet_data:
                         self.outlet_names.setdefault(outlet_num, f"Outlet {outlet_num}")
             else:
-                _LOGGER.warning("No outlet states found via Telnet")
+                raise ConnectionError("No outlet states returned by Telnet")
             return
 
         # Binary protocol
@@ -543,7 +550,7 @@ class RacklinkController:
                 self.outlet_states[outlet_num] = state
                 self.outlet_names.setdefault(outlet_num, f"Outlet {outlet_num}")
         else:
-            _LOGGER.warning("No outlet states found via binary protocol")
+            raise ConnectionError("No outlet states returned by binary protocol")
 
     async def _update_system_status(self) -> None:
         """Update system status using actual device power measurements."""
@@ -603,7 +610,7 @@ class RacklinkController:
                 # Approximate total power for telnet devices without a
                 # dedicated power reading
                 if self.rms_voltage is not None and self.rms_current is not None:
-                    self.active_power = self.rms_voltage * self.rms_current
+                    self.apparent_power = self.rms_voltage * self.rms_current
 
             # Single loadshedding query per cycle (if telnet available)
             if telnet_conn:
@@ -614,6 +621,8 @@ class RacklinkController:
                         shedding_response
                     )
 
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error updating system status: %s", err)
 
@@ -667,6 +676,10 @@ class RacklinkController:
             return
 
         # Try proper Redfish outlet metrics first
+        self.outlet_power_data.clear()
+        self.outlet_current_data.clear()
+        self.outlet_voltage_data.clear()
+        self.outlet_energy_data.clear()
         metrics_map = await self.connection.get_all_outlets_metrics()
         if metrics_map:
             self.per_outlet_metrics_available = True
@@ -685,7 +698,7 @@ class RacklinkController:
                         self.outlet_energy_data[outlet_num] = (
                             float(metrics["energy_kwh"]) * 1000.0
                         )
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         pass
 
     async def turn_outlet_on(self, outlet: int) -> bool:
@@ -777,14 +790,13 @@ class RacklinkController:
             for outlet_num in sorted(self.outlet_states.keys()):
                 if isinstance(self.connection, RedfishConnection):
                     success = await self.connection.cycle_outlet(outlet_num)
+                elif self.connection.protocol_type == "telnet":
+                    success = await self.connection.telnet_outlet_command(
+                        outlet_num, "cycle"
+                    )
                 else:
-                    cmd = f"power outlets {outlet_num} cycle /y"
-                    response = await self.connection.send_command(cmd)
-                    # Empty response or a response without error indicators
-                    # means the command was accepted
-                    success = not response.strip() or not any(
-                        indicator in response.lower()
-                        for indicator in ("unknown command", "invalid", "error")
+                    success = await self.connection.send_outlet_command(
+                        outlet_num, OUTLET_CYCLE, cycle_time
                     )
 
                 if success:

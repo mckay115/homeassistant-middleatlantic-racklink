@@ -46,7 +46,7 @@ class RacklinkSequenceDelayNumber(CoordinatorEntity[RacklinkCoordinator], Number
     def __init__(self, coordinator: RacklinkCoordinator) -> None:
         """Initialize the sequence delay number."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_sequence_delay"
+        self._attr_unique_id = f"{coordinator.device_identifier}_sequence_delay"
 
     @property
     def device_info(self) -> DeviceInfo:

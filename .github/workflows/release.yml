@@ -2,57 +2,63 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths: ["custom_components/middle_atlantic_racklink/manifest.json"]
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: racklink-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Python 3.13
+      - name: Set up Python 3.14
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: "pip"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-test.txt
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Validate tag matches manifest version
+      - name: Read and validate version
+        id: version
         run: |
-          TAG_VERSION="${{ steps.get_version.outputs.VERSION }}"
-          MANIFEST_VERSION=$(python -c "import json; print(json.load(open('custom_components/middle_atlantic_racklink/manifest.json'))['version'])")
-
-          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
-            echo "ERROR: Tag version ($TAG_VERSION) doesn't match manifest version ($MANIFEST_VERSION)"
-            exit 1
-          fi
-          echo "Version consistency validated: $TAG_VERSION"
-
-      - name: Run tests
+          python - <<'PY'
+          import json, os, tomllib
+          from pathlib import Path
+          version = json.loads(Path("custom_components/middle_atlantic_racklink/manifest.json").read_text())["version"]
+          assert tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"] == version
+          ref = os.environ["GITHUB_REF"]
+          if ref.startswith("refs/tags/"):
+              assert ref == f"refs/tags/v{version}", "Tag does not match manifest version"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+          PY
+      - name: Validate Python
         run: |
-          pytest tests/
-
+          black --check custom_components/middle_atlantic_racklink tests
+          isort --check-only custom_components/middle_atlantic_racklink tests
+          mypy custom_components/middle_atlantic_racklink
+          pytest tests/ --timeout=60
+      - name: Validate cards
+        run: node --check custom_components/middle_atlantic_racklink/frontend/racklink-cards.js
       - name: Create release archive
         run: |
           cd custom_components/middle_atlantic_racklink
-          zip -r ../../middle_atlantic_racklink.zip .
-
-      - name: Create GitHub release
+          zip -r ../../middle_atlantic_racklink.zip . -x '*/__pycache__/*' '*.pyc'
+      - name: Publish versioned HACS release
         uses: softprops/action-gh-release@v3
         with:
-          name: "v${{ steps.get_version.outputs.VERSION }}"
+          tag_name: "v${{ steps.version.outputs.version }}"
+          target_commitish: "${{ github.sha }}"
+          name: "v${{ steps.version.outputs.version }}"
           files: middle_atlantic_racklink.zip
           generate_release_notes: true

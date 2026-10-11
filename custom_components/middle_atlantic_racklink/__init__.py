@@ -109,7 +109,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: RacklinkConfigEntry) -> 
     )
 
     # Raises ConfigEntryNotReady / ConfigEntryAuthFailed on failure
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except BaseException:
+        await controller.disconnect()
+        raise
+
+    if not entry.data.get("pdu_serial"):
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, "pdu_serial": coordinator.device_identifier}
+        )
 
     entry.runtime_data = coordinator
 

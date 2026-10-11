@@ -5,9 +5,7 @@ from __future__ import annotations
 from .conftest import MOCK_PDU_INFO
 from custom_components.middle_atlantic_racklink.const import DOMAIN
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
-from homeassistant.components.button import (
-    SERVICE_PRESS,
-)
+from homeassistant.components.button import SERVICE_PRESS
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er

@@ -1,7 +1,7 @@
 # Test framework pinned to a release matching the targeted Home Assistant
 # version (pytest-homeassistant-custom-component pins homeassistant, pytest,
 # pytest-asyncio, and friends).
-pytest-homeassistant-custom-component==0.13.316
+pytest-homeassistant-custom-component==0.13.372
 pytest-cov>=7.0.0
 
 # The integration depends on the frontend component (bundled dashboard cards)

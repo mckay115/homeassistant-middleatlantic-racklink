@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Add Middle Atlantic RackLink PDU",
-        "description": "Select your RackLink PDU from the discovered devices, or enter connection details manually. {discovered_count} devices were found on your network.",
+        "description": "Select your RackLink PDU from the discovered devices, or enter connection details manually. {discovered_count} devices were found on your network. Complete the initial login and password change in the PDU web interface first. Use the PDU address without http:// or https://.",
         "data": {
           "host": "IP address or hostname",
           "username": "Username",
@@ -13,9 +13,17 @@
       },
       "connection_type": {
         "title": "Choose connection method",
-        "description": "Select how to connect to your RackLink PDU. Redfish is modern and secure, Telnet supports legacy devices, and Auto tries Redfish first and falls back to Telnet.",
+        "description": "Redfish supports Premium+ models and per-outlet metering. HTTPS is tried first, with HTTP fallback. Telnet uses port 6000 for Premium devices; select Auto to also try Premium+ binary port 60000. Enable Control Protocol in the PDU web interface for Telnet and vendor features. Credentials are the PDU credentials, not your Home Assistant login.",
         "data": {
-          "connection_type": "Connection type"
+          "connection_type": "Connection type",
+          "port": "Port (optional)",
+          "use_https": "Use HTTPS for Redfish",
+          "enable_vendor_features": "Enable vendor features (secondary Telnet connection)"
+        },
+        "data_description": {
+          "port": "Leave blank for the protocol default. Use 60000 for a Premium+ binary PDU. Auto ignores this field.",
+          "use_https": "HTTPS first; HTTP fallback if HTTPS cannot connect. Self-signed certificates are accepted.",
+          "enable_vendor_features": "Load shedding and sequencing require Control Protocol on TCP port 6000."
         }
       },
       "zeroconf_confirm": {
@@ -37,12 +45,15 @@
       },
       "reconfigure": {
         "title": "Reconfigure RackLink PDU",
-        "description": "Update the connection settings for your RackLink PDU.",
+        "description": "Change connection settings without deleting entities or history. Vendor features require Control Protocol on port 6000. When changing connection type, the port resets to its default unless you also enter a different port.",
         "data": {
           "host": "IP address or hostname",
           "username": "Username",
           "password": "Password",
-          "connection_type": "Connection type"
+          "connection_type": "Connection type",
+          "port": "Port",
+          "use_https": "Use HTTPS for Redfish",
+          "enable_vendor_features": "Enable vendor features (secondary Telnet connection)"
         }
       }
     },
@@ -75,33 +86,71 @@
   },
   "entity": {
     "sensor": {
-      "voltage": { "name": "Voltage" },
-      "current": { "name": "Current" },
-      "power": { "name": "Power" },
-      "energy": { "name": "Energy" },
-      "frequency": { "name": "Frequency" },
-      "apparent_power": { "name": "Apparent power" },
-      "power_factor": { "name": "Power factor" },
-      "outlet_power": { "name": "Outlet {outlet_number} power" },
-      "outlet_energy": { "name": "Outlet {outlet_number} energy" },
-      "outlet_current": { "name": "Outlet {outlet_number} current" },
-      "outlet_voltage": { "name": "Outlet {outlet_number} voltage" }
+      "voltage": {
+        "name": "Voltage"
+      },
+      "current": {
+        "name": "Current"
+      },
+      "power": {
+        "name": "Power"
+      },
+      "energy": {
+        "name": "Energy"
+      },
+      "frequency": {
+        "name": "Frequency"
+      },
+      "apparent_power": {
+        "name": "Apparent power"
+      },
+      "power_factor": {
+        "name": "Power factor"
+      },
+      "outlet_power": {
+        "name": "Outlet {outlet_number} power"
+      },
+      "outlet_energy": {
+        "name": "Outlet {outlet_number} energy"
+      },
+      "outlet_current": {
+        "name": "Outlet {outlet_number} current"
+      },
+      "outlet_voltage": {
+        "name": "Outlet {outlet_number} voltage"
+      }
     },
     "binary_sensor": {
-      "surge_protection": { "name": "Surge protection" },
-      "outlet_non_critical": { "name": "Outlet {outlet_number} powers off during load shedding" }
+      "surge_protection": {
+        "name": "Surge protection"
+      },
+      "outlet_non_critical": {
+        "name": "Outlet {outlet_number} powers off during load shedding"
+      }
     },
     "switch": {
-      "outlet": { "name": "Outlet {outlet_number}" },
-      "load_shedding": { "name": "Load shedding" },
-      "sequence": { "name": "Outlet sequence" }
+      "outlet": {
+        "name": "Outlet {outlet_number}"
+      },
+      "load_shedding": {
+        "name": "Load shedding"
+      },
+      "sequence": {
+        "name": "Outlet sequence"
+      }
     },
     "button": {
-      "cycle_outlet": { "name": "Cycle outlet {outlet_number}" },
-      "cycle_all_outlets": { "name": "Cycle all outlets" }
+      "cycle_outlet": {
+        "name": "Cycle outlet {outlet_number}"
+      },
+      "cycle_all_outlets": {
+        "name": "Cycle all outlets"
+      }
     },
     "number": {
-      "sequence_delay": { "name": "Outlet sequence delay" }
+      "sequence_delay": {
+        "name": "Outlet sequence delay"
+      }
     }
   },
   "services": {
