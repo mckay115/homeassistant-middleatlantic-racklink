@@ -129,7 +129,7 @@ class RacklinkStatusBinarySensor(RacklinkBinarySensorBase):
     ) -> None:
         """Initialize the status binary sensor."""
         super().__init__(coordinator, description)
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
+        self._attr_unique_id = f"{coordinator.device_identifier}_{description.key}"
 
     @property
     def is_on(self) -> Optional[bool]:
@@ -150,7 +150,7 @@ class RacklinkOutletBinarySensor(RacklinkBinarySensorBase):
         super().__init__(coordinator, description)
         self._outlet = outlet
         self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_outlet_{outlet}_{description.key}"
+            f"{coordinator.device_identifier}_outlet_{outlet}_{description.key}"
         )
         self._attr_translation_placeholders = {"outlet_number": str(outlet)}
         self._attr_extra_state_attributes = {"outlet_number": outlet}

@@ -11,9 +11,7 @@ from homeassistant.components.number import (
     ATTR_VALUE,
 )
 from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
-from homeassistant.components.number import (
-    SERVICE_SET_VALUE,
-)
+from homeassistant.components.number import SERVICE_SET_VALUE
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_ON
 from homeassistant.core import HomeAssistant

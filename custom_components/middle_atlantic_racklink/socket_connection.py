@@ -602,7 +602,7 @@ class SocketConnection:
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 raise
-            except (ConnectionError, OSError):
+            except ConnectionError, OSError:
                 _LOGGER.warning("Connection lost in ping handler")
                 self._mark_disconnected()
                 break

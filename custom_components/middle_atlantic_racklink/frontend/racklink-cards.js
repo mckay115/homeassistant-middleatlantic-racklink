@@ -14,6 +14,18 @@
 
 const DOMAIN = "middle_atlantic_racklink";
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[char]));
+}
+
+function isAvailable(hass, entry) {
+  const state = stateOf(hass, entry);
+  return Boolean(state && state.state !== "unavailable" &&
+    (state.state !== "unknown" || entry.entity_id.startsWith("button.")));
+}
+
 /* ------------------------------------------------------------------ */
 /* Entity discovery helpers                                            */
 /* ------------------------------------------------------------------ */
@@ -104,9 +116,9 @@ function fmt(hass, entry, digits) {
   const value = Number(state.state);
   const text = Number.isFinite(value)
     ? value.toFixed(digits === undefined ? 1 : digits)
-    : state.state;
+    : escapeHtml(state.state);
   const unit = state.attributes.unit_of_measurement;
-  return unit ? `${text} ${unit}` : text;
+  return unit ? `${text} ${escapeHtml(unit)}` : text;
 }
 
 function firstDeviceOfIntegration(hass) {
@@ -144,8 +156,18 @@ class RacklinkBaseCard extends HTMLElement {
     this._render();
   }
 
-  _call(domain, service, data) {
-    this._hass.callService(domain, service, data);
+  async _call(domain, service, data) {
+    this._pending = true;
+    this._error = "";
+    this._render();
+    try {
+      await this._hass.callService(domain, service, data);
+    } catch (error) {
+      this._error = error.message || "Action failed. Check the PDU connection and try again.";
+    } finally {
+      this._pending = false;
+      this._render();
+    }
   }
 
   _moreInfo(entityId) {
@@ -163,6 +185,17 @@ class RacklinkBaseCard extends HTMLElement {
     this.shadowRoot.innerHTML = `<style>${this._styles()}</style>${this._template(
       model
     )}`;
+    if (this._error) {
+      const error = document.createElement("div");
+      error.className = "error";
+      error.setAttribute("role", "alert");
+      error.textContent = this._error;
+      this.shadowRoot.querySelector("ha-card").appendChild(error);
+    }
+    this.shadowRoot.querySelectorAll("button[data-entity]").forEach((button) => {
+      const entry = {entity_id: button.dataset.entity};
+      if (this._pending || !isAvailable(this._hass, entry)) button.disabled = true;
+    });
     this._bind(model);
   }
 
@@ -173,7 +206,7 @@ class RacklinkBaseCard extends HTMLElement {
         display: flex; align-items: baseline; justify-content: space-between;
         padding: 4px 0 8px;
       }
-      .title { font-size: 1.25rem; font-weight: 500; }
+      .title { overflow-wrap: anywhere; min-width: 0; font-size: 1.25rem; font-weight: 500; }
       .headline { font-size: 1.25rem; font-weight: 500; color: var(--primary-color); }
       .chips { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
       .chip {
@@ -202,6 +235,10 @@ class RacklinkBaseCard extends HTMLElement {
       }
       button.icon { border: none; padding: 4px; font-size: 1rem; }
       button.danger { color: var(--error-color); border-color: var(--error-color); }
+      .error { color: var(--error-color); padding-top: 12px; }
+      button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; }
+      .header { gap: 12px; flex-wrap: wrap; }
+      .row .name { overflow-wrap: anywhere; }
       button:disabled { opacity: 0.4; cursor: default; }
       .toggle {
         position: relative; width: 40px; height: 22px; flex: none;
@@ -231,17 +268,31 @@ class RacklinkBaseCard extends HTMLElement {
     const state = stateOf(this._hass, entry);
     const on = state && state.state === "on";
     const disabled =
-      !state || state.state === "unavailable" ? "disabled" : "";
+      !isAvailable(this._hass, entry) ? "disabled" : "";
     return `<button class="toggle ${on ? "on" : ""} ${cls || ""}"
       data-entity="${entry.entity_id}" data-action="toggle" ${disabled}
-      title="${entry.entity_id}"></button>`;
+      role="switch" aria-checked="${Boolean(on)}" aria-label="${escapeHtml(state?.attributes.friendly_name || entry.entity_id)}"
+      title="${escapeHtml(entry.entity_id)}"></button>`;
   }
 
   _bind() {
     this.shadowRoot.querySelectorAll("[data-action]").forEach((el) => {
+      if (el.tagName !== "BUTTON") {
+        el.tabIndex = 0;
+        el.setAttribute("role", "button");
+        el.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); el.click(); }
+        });
+      }
       el.addEventListener("click", (ev) => {
         ev.stopPropagation();
         const { action, entity } = el.dataset;
+        if (el.disabled || this._pending) return;
+        const state = this._hass.states[entity];
+        const name = state?.attributes.friendly_name || entity;
+        const disruptive = action === "press" ||
+          (action === "toggle" && (state?.state === "on" || classify(this._hass, deviceEntities(this._hass, this._config.device_id).find(entry => entry.entity_id === entity) || {entity_id: entity}) === "load_shedding"));
+        if (disruptive && !window.confirm(`Perform this action on ${name}? Connected equipment may lose power.`)) return;
         if (action === "toggle") {
           this._call("switch", "toggle", { entity_id: entity });
         } else if (action === "press") {
@@ -310,7 +361,7 @@ class RacklinkPduCard extends RacklinkBaseCard {
     return `
       <ha-card>
         <div class="header">
-          <span class="title">${title}</span>
+          <span class="title">${escapeHtml(title)}</span>
           ${
             power !== null && model.pdu.power
               ? `<span class="headline" data-action="more-info"
@@ -329,11 +380,11 @@ class RacklinkPduCard extends RacklinkBaseCard {
     if (!bucket.switch) return "";
     const state = stateOf(this._hass, bucket.switch);
     const on = state && state.state === "on";
-    const unavailable = !state || state.state === "unavailable";
+    const unavailable = !isAvailable(this._hass, bucket.switch);
     const name =
       (state && (state.attributes.outlet_name || state.attributes.friendly_name)) ||
       `Outlet ${number}`;
-    const metaParts = [];
+    const metaParts = [unavailable ? "Unavailable" : on ? "On" : "Off"];
     const power = fmt(this._hass, bucket.power, 1);
     if (power !== null) metaParts.push(power);
     const current = fmt(this._hass, bucket.current, 2);
@@ -348,12 +399,12 @@ class RacklinkPduCard extends RacklinkBaseCard {
         <span class="dot ${unavailable ? "" : on ? "on" : "off"}"></span>
         <div class="grow">
           <div class="name" data-action="more-info"
-               data-entity="${bucket.switch.entity_id}">${number}. ${name}</div>
+               data-entity="${bucket.switch.entity_id}">${number}. ${escapeHtml(name)}</div>
           ${metaParts.length ? `<div class="meta">${metaParts.join(" · ")}</div>` : ""}
         </div>
         ${
           bucket.cycle
-            ? `<button class="icon" title="Cycle outlet" data-action="press"
+            ? `<button class="icon" title="Cycle outlet" aria-label="Cycle outlet ${number}" data-action="press"
                  data-entity="${bucket.cycle.entity_id}">&#8635;</button>`
             : ""
         }
@@ -451,7 +502,7 @@ class RacklinkSequencerCard extends RacklinkBaseCard {
                    data-entity="${model.loadShedding.entity_id}">Load shedding</div>
               <div class="meta">${
                 shedding.length
-                  ? `Powers off: ${shedding.join(", ")}`
+                  ? `Powers off: ${shedding.map(escapeHtml).join(", ")}`
                   : "No outlets are marked non-critical on the PDU"
               }</div>
             </div>
@@ -474,7 +525,7 @@ class RacklinkSequencerCard extends RacklinkBaseCard {
 
     return `
       <ha-card>
-        <div class="header"><span class="title">${title}</span></div>
+        <div class="header"><span class="title">${escapeHtml(title)}</span></div>
         ${
           sections.length
             ? sections.join("")
@@ -493,6 +544,34 @@ class RacklinkSequencerCard extends RacklinkBaseCard {
 /* ------------------------------------------------------------------ */
 /* Shared visual editor (device picker + title)                        */
 /* ------------------------------------------------------------------ */
+
+class RacklinkEnergyCard extends RacklinkBaseCard {
+  static getConfigElement() { return document.createElement("racklink-card-editor"); }
+  static getStubConfig(hass) { return {device_id: firstDeviceOfIntegration(hass)}; }
+  _template(model) {
+    const rows = [...model.outlets.entries()].sort(([a], [b]) => a - b);
+    const total = rows.reduce((sum, [, bucket]) => {
+      const state = stateOf(this._hass, bucket.power);
+      return sum + (isAvailable(this._hass, bucket.power) ? Math.max(0, Number(state.state) || 0) : 0);
+    }, 0);
+    const energy = fmt(this._hass, model.pdu.energy, 3);
+    return `<ha-card><div class="header"><span class="title">${escapeHtml(this._config.title || "Rack energy")}</span>
+      <span class="headline">${energy ?? "Energy unavailable"}</span></div>
+      <div class="meta">Live outlet power · cumulative energy</div>
+      ${rows.map(([number, bucket]) => {
+        const state = stateOf(this._hass, bucket.switch);
+        const name = state?.attributes.outlet_name || `Outlet ${number}`;
+        const power = fmt(this._hass, bucket.power, 1);
+        const cumulative = fmt(this._hass, bucket.energy, 3);
+        const watts = Number(stateOf(this._hass, bucket.power)?.state) || 0;
+        return `<div class="row"><div class="grow"><div class="name">${escapeHtml(name)}</div>
+          <div class="meta">${power ?? "Power unavailable"} · ${cumulative ?? "Energy unavailable"}</div>
+          <meter min="0" max="${Math.max(total, 1)}" value="${Math.max(0, watts)}" style="width:100%" aria-label="${escapeHtml(name)} share of outlet power"></meter></div></div>`;
+      }).join("") || '<div class="empty">No outlet meters found.</div>'}
+      <p class="meta">For consumption over time, add the available kWh sensors to Settings → Energy → Individual devices. Avoid counting both the whole PDU and its outlets as separate totals.</p>
+      </ha-card>`;
+  }
+}
 
 class RacklinkCardEditor extends HTMLElement {
   setConfig(config) {
@@ -542,7 +621,8 @@ class RacklinkCardEditor extends HTMLElement {
 /* ------------------------------------------------------------------ */
 
 if (!customElements.get("racklink-pdu-card")) {
-  customElements.define("racklink-pdu-card", RacklinkPduCard);
+  customElements.define("racklink-energy-card", RacklinkEnergyCard);
+customElements.define("racklink-pdu-card", RacklinkPduCard);
 }
 if (!customElements.get("racklink-sequencer-card")) {
   customElements.define("racklink-sequencer-card", RacklinkSequencerCard);
@@ -576,3 +656,5 @@ if (!window.customCards.some((card) => card.type === "racklink-pdu-card")) {
     }
   );
 }
+
+window.customCards.push({type: "racklink-energy-card", name: "RackLink energy", description: "Live outlet power comparison and cumulative energy", preview: true});

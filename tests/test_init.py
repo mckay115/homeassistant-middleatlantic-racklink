@@ -118,8 +118,8 @@ async def test_device_registry_entry(
     await hass.async_block_till_done()
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, MOCK_PDU_INFO["pdu_serial"])}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, MOCK_PDU_INFO["pdu_serial"]), mock_config_entry.entry_id
     )
     assert device is not None
     assert device.name == MOCK_PDU_INFO["pdu_name"]

@@ -69,7 +69,7 @@ class ConnectionFactory:
         timeout = config_data.get("timeout", 20)
 
         # If no specific port is set, use defaults based on HTTPS setting
-        if port in [DEFAULT_REDFISH_PORT, DEFAULT_REDFISH_HTTP_PORT] or not port:
+        if not port:
             port = DEFAULT_REDFISH_PORT if use_https else DEFAULT_REDFISH_HTTP_PORT
 
         config = RedfishConfig(

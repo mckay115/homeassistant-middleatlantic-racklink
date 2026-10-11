@@ -1,5 +1,9 @@
 # Middle Atlantic RackLink Home Assistant Integration
 
+![Middle Atlantic Products](custom_components/middle_atlantic_racklink/brand/logo.png)
+
+**Requires Home Assistant 2026.10.1 or newer.** This is a community integration, not an official Legrand product. Local brand artwork ships with the integration.
+
 Control and monitor Middle Atlantic (Legrand) RackLink PDUs from Home Assistant.
 
 **Note:** This integration supports Premium and Premium+ Series PDUs with control protocol capabilities.
@@ -57,6 +61,16 @@ RackLink PDU models with control protocol capabilities, including:
 
 Devices advertised over zeroconf also appear automatically under **Settings → Devices & Services → Discovered**.
 
+### Before first setup
+
+1. Open the PDU web interface in your browser and finish its initial login and password change. Use those device credentials in Home Assistant.
+2. Reserve the PDU address in your router (or use a stable hostname). Enter only the address, without a URL scheme or path.
+3. For Premium devices, use Telnet on TCP 6000. For Premium+ devices, prefer Redfish; for binary control, select Telnet and set port 60000, or use Auto.
+4. Enable **Device Settings → Network Services → Control Protocol** on models that require it. Redfish vendor features open a second connection on port 6000; disable that option if you only need Redfish outlet controls and meters.
+5. Allow Home Assistant to reach the relevant PDU ports across VLANs. mDNS discovery usually needs the same network segment; manual setup works across routed networks. No configuration.yaml entry is needed.
+
+The connection screen accepts an optional port, HTTPS preference, and vendor-feature setting. Auto tries standard ports and stores the detected protocol for reliable reconnects. HTTPS accepts device self-signed certificates and can fall back to unencrypted HTTP; Telnet is unencrypted. Use these connections on a trusted local network.
+
 ### Options
 
 The polling interval can be tuned under the integration's **Configure** menu (5–300 seconds). Defaults are 10 s for Redfish and 60 s for telnet.
@@ -77,11 +91,19 @@ The polling interval can be tuned under the integration's **Configure** menu (5�
 
 ### Energy dashboard
 
-The PDU **Energy** sensor and the per-outlet **Outlet N energy** sensors are total-increasing kWh sensors, so they can be added to the Home Assistant Energy dashboard under **Individual devices** to track rack-level and per-device consumption. The power sensors (W) feed the power graphs and can drive automations (e.g. shut down a server when its outlet draws less than a threshold).
+Energy is exposed as **kWh**, with device class `energy` and state class `total_increasing`. Real zero readings remain zero; missing or invalid readings become unknown.
+
+1. Open **Settings → Energy → Individual devices** and add the PDU Energy sensor for whole-rack consumption, or the outlet energy sensors for metered equipment.
+2. If your Home Assistant energy configuration supports a parent device, set the PDU as the parent of its outlets. Otherwise, choose rack totals or outlet totals to avoid counting the same consumption twice.
+3. Allow a recorder/statistics interval before expecting history. Keep these entities included in Recorder; check **Developer Tools → Statistics** if a meter does not appear.
+
+Only available hardware meters can populate Energy. Legacy Telnet voltage × current is exposed as **apparent power (VA)**, not fabricated active power (W). If a device reports actual watts but no cumulative energy, create an **Integral helper** from that power sensor (W), with kilo prefix, hours, and a suitable maximum sub-interval, then add its kWh output to Energy. Do not integrate VA as though it were watts. Missing meters are left unknown.
+
+The PDU is a consumption submeter. Do not add it as a second grid-consumption source alongside a whole-home meter unless it measures an independent grid feed.
 
 ## Dashboard cards
 
-The integration bundles two custom Lovelace cards and registers them automatically — no manual resource configuration or extra HACS frontend install is needed. Both appear in the card picker ("RackLink PDU" and "RackLink sequencer") with a visual editor, or can be added via YAML:
+The integration bundles three custom Lovelace cards and registers them automatically — no manual resource configuration or extra HACS frontend install is needed. They appear in the card picker ("RackLink PDU", "RackLink sequencer", and "RackLink energy") with a visual editor, or can be added via YAML:
 
 ```yaml
 type: custom:racklink-pdu-card
@@ -97,6 +119,17 @@ device_id: YOUR_PDU_DEVICE_ID
 ```
 
 The **sequencer card** manages power-on sequencing (enable/disable plus a delay stepper), load shedding (with the list of outlets that will power off), and a cycle-all-outlets action. Sequencing and load shedding rows appear only when the telnet vendor channel is available.
+
+```yaml
+type: custom:racklink-energy-card
+device_id: YOUR_PDU_DEVICE_ID
+```
+
+The **energy card** compares live outlet power and shows cumulative kWh. These bars represent current power distribution, not historical consumption. For history, use Home Assistant's built-in **Statistics graph**, **History graph**, and **Energy** cards. Add your PDU and outlet meters to the Energy configuration first.
+
+Controls disable while an action is pending or its entity is unavailable. Failed actions show an error. Power-off, outlet cycling, and load-shedding activation require confirmation in the bundled cards. API calls and automations still execute directly: shut down servers and storage cleanly before cutting their power.
+
+Optional cards to consider: **ApexCharts Card** for detailed power trends and comparisons, and **Mushroom** for compact generic entity controls. They require separate frontend installation and are not bundled dependencies. Start with the included cards and built-in history cards; add these only if you need their styling or chart features.
 
 Cards discover the PDU's entities through the device registry, so they keep working if you rename entities.
 
@@ -131,7 +164,7 @@ data:
 2. **Authentication failed**
    - Home Assistant will prompt for reauthentication; enter the current device credentials
 3. **Vendor features missing** (load shedding/sequencing switches absent)
-   - These require a telnet channel; enable vendor features, and make sure port 6000 is reachable
+   - These require a telnet channel; enable vendor features in **Reconfigure**, and make sure Control Protocol on port 6000 is reachable
 
 ### Debug logging
 
@@ -140,6 +173,14 @@ logger:
   logs:
     custom_components.middle_atlantic_racklink: debug
 ```
+
+## Updating and rollback
+
+Back up Home Assistant before updating. Install the release through HACS (or replace the integration folder manually), then restart Home Assistant and refresh your browser. Existing entity IDs and history are preserved; do not delete and re-add the integration. Brand images live in the supported `brand/` directory, and the bundled cards use versioned URLs to refresh browser caches.
+
+For a manual install, extract the release ZIP into `config/custom_components/middle_atlantic_racklink/`, with `manifest.json` directly inside that directory. The ZIP contains the integration files, not an extra enclosing folder. If you need to roll back, restore the previous version through HACS or your backup and restart.
+
+Releases are published after the version bump on `main` passes release tests. Repository publication does not install code or upgrade Home Assistant on your server.
 
 ## Development
 

@@ -21,7 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from typing import Any, Dict, Optional, Set
 
 import logging
-import voluptuous as vol
+import probatio as vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,9 +96,7 @@ class RacklinkOutletSwitch(CoordinatorEntity[RacklinkCoordinator], SwitchEntity)
         """Initialize the outlet switch."""
         super().__init__(coordinator)
         self._outlet_number = outlet_number
-        self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_outlet_{outlet_number}"
-        )
+        self._attr_unique_id = f"{coordinator.device_identifier}_outlet_{outlet_number}"
         self._attr_translation_placeholders = {"outlet_number": str(outlet_number)}
 
     @property
@@ -171,7 +169,7 @@ class RacklinkStatusSwitchBase(CoordinatorEntity[RacklinkCoordinator], SwitchEnt
     def __init__(self, coordinator: RacklinkCoordinator) -> None:
         """Initialize the status switch."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{self._key}"
+        self._attr_unique_id = f"{coordinator.device_identifier}_{self._key}"
 
     @property
     def is_on(self) -> Optional[bool]:

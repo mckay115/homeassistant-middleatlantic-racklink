@@ -93,7 +93,7 @@ class RacklinkPduButton(RacklinkButtonBase):
         """Initialize the button."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
+        self._attr_unique_id = f"{coordinator.device_identifier}_{description.key}"
 
     async def async_press(self) -> None:
         """Press the button."""
@@ -110,7 +110,7 @@ class RacklinkOutletCycleButton(RacklinkButtonBase):
         super().__init__(coordinator)
         self._outlet_number = outlet_number
         self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_outlet_{outlet_number}_cycle"
+            f"{coordinator.device_identifier}_outlet_{outlet_number}_cycle"
         )
         self._attr_translation_placeholders = {"outlet_number": str(outlet_number)}
         self._attr_extra_state_attributes = {"outlet_number": outlet_number}

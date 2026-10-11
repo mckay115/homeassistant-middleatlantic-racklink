@@ -27,6 +27,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from math import isfinite
 from typing import Any, Dict, Optional, Set
 
 import logging
@@ -36,7 +37,7 @@ _LOGGER = logging.getLogger(__name__)
 
 def _wh_to_kwh(value: Optional[float]) -> Optional[float]:
     """Convert a Wh reading to kWh, preserving None."""
-    if value is None:
+    if value is None or not isfinite(value) or value < 0:
         return None
     return value / 1000
 
@@ -200,7 +201,7 @@ def _migrate_legacy_outlet_unique_ids(
     to the serial-based scheme so entity history is preserved.
     """
     registry = er.async_get(hass)
-    serial = coordinator.controller.pdu_serial
+    serial = coordinator.device_identifier
     if not serial:
         return
 
@@ -261,7 +262,7 @@ class RacklinkPduSensor(RacklinkSensorBase):
     ) -> None:
         """Initialize the PDU sensor."""
         super().__init__(coordinator, description)
-        self._attr_unique_id = f"{coordinator.controller.pdu_serial}_{description.key}"
+        self._attr_unique_id = f"{coordinator.device_identifier}_{description.key}"
 
     @property
     def native_value(self) -> StateType:
@@ -282,7 +283,7 @@ class RacklinkOutletSensor(RacklinkSensorBase):
         super().__init__(coordinator, description)
         self._outlet = outlet
         self._attr_unique_id = (
-            f"{coordinator.controller.pdu_serial}_outlet_{outlet}_{description.key}"
+            f"{coordinator.device_identifier}_outlet_{outlet}_{description.key}"
         )
         self._attr_translation_placeholders = {"outlet_number": str(outlet)}
         self._attr_extra_state_attributes = {"outlet_number": outlet}

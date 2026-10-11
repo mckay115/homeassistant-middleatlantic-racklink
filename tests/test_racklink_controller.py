@@ -179,7 +179,7 @@ async def test_cycle_all_outlets_reports_partial_failure(no_sleep) -> None:
     """Test cycle_all_outlets returns False when an outlet fails."""
     controller = make_controller(CONNECTION_TYPE_TELNET)
     connection = make_socket_connection("telnet")
-    connection.send_command = AsyncMock(side_effect=["", "error: failed"])
+    connection.telnet_outlet_command = AsyncMock(side_effect=[True, False])
     controller.connection = connection
     controller.outlet_states = {1: True, 2: True}
 
@@ -190,7 +190,7 @@ async def test_cycle_all_outlets_success(no_sleep) -> None:
     """Test cycle_all_outlets succeeds when all outlets are accepted."""
     controller = make_controller(CONNECTION_TYPE_TELNET)
     connection = make_socket_connection("telnet")
-    connection.send_command = AsyncMock(return_value="")
+    connection.telnet_outlet_command = AsyncMock(return_value=True)
     controller.connection = connection
     controller.outlet_states = {1: False, 2: False}
 

@@ -151,6 +151,8 @@ class RedfishConnection:
         except RacklinkAuthenticationError:
             await self._close_session()
             raise
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error connecting to Redfish API: %s", err)
             await self._close_session()
@@ -173,6 +175,8 @@ class RedfishConnection:
                         response.status,
                     )
                     return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error testing Redfish connectivity: %s", err)
             return False
@@ -250,6 +254,8 @@ class RedfishConnection:
                     )
                     await self._discover_via_power_equipment()
 
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error discovering PDU structure: %s", err)
 
@@ -270,6 +276,8 @@ class RedfishConnection:
                     if response.status == 200:
                         pdu_data = await response.json()
                         await self._parse_pdu_outlets_direct(pdu_data)
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error parsing RackPDUs: %s", err)
 
@@ -288,6 +296,8 @@ class RedfishConnection:
                     if response.status == 200:
                         pdu_data = await response.json()
                         await self._parse_pdu_outlets_direct(pdu_data)
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error parsing PDU collection: %s", err)
 
@@ -313,7 +323,7 @@ class RedfishConnection:
                                 try:
                                     outlet_num = int(outlet_id)
                                     self._outlet_endpoints[outlet_num] = outlet_url
-                                except (ValueError, AttributeError):
+                                except ValueError, AttributeError:
                                     _LOGGER.warning(
                                         "Could not parse outlet number from %s",
                                         outlet_id,
@@ -322,6 +332,8 @@ class RedfishConnection:
                         _LOGGER.info(
                             "Discovered %d outlets", len(self._outlet_endpoints)
                         )
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error parsing PDU outlets: %s", err)
 
@@ -348,6 +360,10 @@ class RedfishConnection:
                         ) as retry_resp:
                             if retry_resp.status == 200:
                                 return cast(Dict[str, Any], await retry_resp.json())
+                            elif retry_resp.status in (401, 403):
+                                raise RacklinkAuthenticationError(
+                                    "Device rejected credentials after reauthentication"
+                                )
                             else:
                                 _LOGGER.error(
                                     "Retry failed after re-authentication, status: %d",
@@ -407,6 +423,8 @@ class RedfishConnection:
 
         info: Dict[int, Dict[str, Any]] = {}
         for item in results:
+            if isinstance(item, RacklinkAuthenticationError):
+                raise item
             if isinstance(item, BaseException):
                 _LOGGER.debug("Outlet info fetch error: %s", item)
                 continue
@@ -488,6 +506,8 @@ class RedfishConnection:
 
             if metrics:
                 return metrics
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.debug("Outlet %d metrics fetch failed: %s", outlet_num, err)
         return None
@@ -498,6 +518,8 @@ class RedfishConnection:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         out: Dict[int, Dict[str, Any]] = {}
         for (outlet_num, _), res in zip(self._outlet_endpoints.items(), results):
+            if isinstance(res, RacklinkAuthenticationError):
+                raise res
             if isinstance(res, dict) and res:
                 out[outlet_num] = res
         return out
@@ -524,6 +546,8 @@ class RedfishConnection:
                                 await self._parse_pdu_collection_generic(pdu_data)
                     else:
                         _LOGGER.warning("No PowerDistribution found in PowerEquipment")
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error in power equipment discovery: %s", err)
 
@@ -540,6 +564,8 @@ class RedfishConnection:
                     if response.status == 200:
                         pdu_data = await response.json()
                         await self._parse_pdu_outlets_direct(pdu_data)
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error parsing generic PDU collection: %s", err)
 
@@ -558,6 +584,8 @@ class RedfishConnection:
 
             await self._close_session()
 
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error disconnecting from Redfish API: %s", err)
         finally:
@@ -595,6 +623,8 @@ class RedfishConnection:
                 else:
                     _LOGGER.error("Failed to get PDU info, status: %d", response.status)
                     return {}
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error getting PDU info: %s", err)
             return {}
@@ -623,6 +653,8 @@ class RedfishConnection:
                         response.status,
                     )
                     return None
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error getting outlet %d state: %s", outlet_num, err)
             return None
@@ -659,6 +691,8 @@ class RedfishConnection:
                         response.status,
                     )
                     return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error setting outlet %d state: %s", outlet_num, err)
             return False
@@ -693,6 +727,8 @@ class RedfishConnection:
                         await asyncio.sleep(2)  # Wait 2 seconds
                         return await self.set_outlet_state(outlet_num, True)
                     return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error cycling outlet %d: %s", outlet_num, err)
             return False
@@ -747,6 +783,8 @@ class RedfishConnection:
                 else:
                     _LOGGER.debug("Metrics endpoint not available")
                     return {}
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error getting power metrics: %s", err)
             return {}
@@ -776,6 +814,8 @@ class RedfishConnection:
                     response.status,
                 )
                 return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error setting outlet %d label: %s", outlet_num, err)
             return False
@@ -795,6 +835,8 @@ class RedfishConnection:
                     return True
                 _LOGGER.error("Failed to set PDU name, status: %d", response.status)
                 return False
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.error("Error setting PDU name: %s", err)
             return False
@@ -857,6 +899,8 @@ class RedfishConnection:
                 result["energy"] = float(e)  # kWh
 
             return result
+        except RacklinkAuthenticationError:
+            raise
         except Exception as err:
             _LOGGER.debug("Error getting mains metrics: %s", err)
             return {}
